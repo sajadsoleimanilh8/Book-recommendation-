@@ -192,6 +192,69 @@ collapses to 3 terms (**F-15**). The component count is now clamped to the
 available vocabulary, with a warning naming F-15. This keeps the engine alive
 on today's data; it does not make those embeddings useful.
 
+### F-26 · 7 of 10 LTR features have zero importance — OPEN, **PHASE 3**
+
+**Measured, not inferred.** Feature importances of the trained model:
+
+```
+log_ratings        0.673687
+log_ratings_norm   0.313736
+avg_rating         0.012577
+content_s          0.000000
+cf_s               0.000000
+cluster_match      0.000000
+inv_price          0.000000
+mood_match         0.000000
+comment_score      0.000000
+recency            0.000000
+```
+
+**Two causes, both F-13:**
+
+1. *Constant at training time* — `Recommender.fit` passes `diag = np.ones(...)`
+   for `content_s` and `cf_s`; `LearningToRank.train` hardcodes `cluster_match`
+   and `mood_match` to `np.zeros(...)`; and `comment_score` is 0.0 for every
+   book because none has a comment when the model is fitted. A gradient-boosted
+   tree never splits on a constant column — then inference feeds all five real
+   values.
+2. *Circular target* — `relevance = 0.4*(rating/5) + 0.6*norm(log(ratings_count))`
+   is a function of three of the model's own inputs, so `inv_price` and
+   `recency` carry no signal for it either.
+
+**Two consequences, both material:**
+
+- The LTR component carries the **largest ranking weight (0.32)** and is a
+  **pure popularity function**. Content similarity, collaborative filtering,
+  clustering, mood, and price contribute nothing to it.
+- **The comment feedback loop is fully decorative.** Boosting a book to the
+  maximum `comment_score` of 1.0 does not move its rank by a single position.
+  User comments do not influence recommendations at all.
+
+**Discovered:** 2026-08-19, while validating PR 3's golden baselines by
+sabotage — a maxed `comment_score` failed to change any ranking, and chasing
+why produced the measurement above.
+
+**Deferred to Phase 3 by product owner decision (2026-08-19), with reasons:**
+1. It is a ranking-affecting change to the ML engine; PR 3's scope is
+   persistence. Mixing them violates §2, one deliberate change at a time.
+2. The proper fix belongs with Phase 3's broader recommendation work — real
+   behavioural signals from `recommendation_log`, not merely un-constanting
+   the inputs — so it gets fixed once and correctly rather than patched twice.
+
+**Do not fix by only replacing the constants.** That would leave the circular
+target in place and produce a model that looks trained but still predicts a
+function of its own inputs. Phase 3 needs both halves: real features *and* a
+target derived from logged behaviour.
+
+**Guarded by** two `xfail(strict=True)` tests in
+`tests/test_golden_ranking.py` — `test_ltr_has_no_dead_features` and
+`test_comment_score_actually_changes_ranking`. Strict means they fail the
+suite the moment they start passing, forcing the markers off when fixed.
+
+**Silver lining for PR 3:** because the comment loop is already disconnected,
+migrating comments to Postgres cannot regress ranking through it. The golden
+baselines still matter, because Phase 3 reconnects it.
+
 ### F-24 · The global Python is shared — RECOMMEND A VIRTUALENV
 Installing the pinned requirements downgraded `click` and broke an unrelated
 `huggingface-hub`. Repaired, but the project should not be installing into a
@@ -210,6 +273,7 @@ Carried deliberately, with the reason. Each has a closing phase.
 | F-19 | Synchronous TTS blocks the request | Needs Redis + job queue | Phase 6 |
 | F-18 | Server-side desktop notifications (`plyer`) | Needs a real delivery channel + queue | Phase 6 |
 | F-13 | LTR trained on constant features, circular target | Needs `recommendation_log` data first | Phase 3 |
+| F-26 | 7/10 LTR features zero importance; comment loop decorative | Ranking change — belongs with Phase 3's real-signal work, not a persistence PR | Phase 3 |
 | F-14 | "CF" is popularity, not collaborative filtering | Needs real interaction data | Phase 3 |
 | F-17 | Book "pages" return placeholder strings | Needs real book text ingestion | Phase 5 |
 | F-11 | Unmounted second frontend | Product owner deferred — OI-1 | Phase 7 |
