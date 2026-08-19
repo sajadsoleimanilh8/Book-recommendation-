@@ -10,7 +10,8 @@ Full evidence for every `F-` reference is in [docs/PHASE-0-AUDIT.md](docs/PHASE-
 | Phase | State | Notes |
 |---|---|---|
 | 0 — Audit | **Complete** (2026-08-19) | 20 findings. No production code modified (§73). |
-| 1 — Foundation | **PR 1 open** on `pr/1-foundation` | 5 commits. Closes F-01…F-06, F-08, F-09, F-16, F-20(partial). |
+| 1 — Foundation | **PR 1 merged** 2026-08-19 | Closes F-01…F-06, F-08, F-09, F-16, F-21, F-23. |
+| 1b — Persistence | **PR 2 open** on `pr/2-persistence` | Postgres, Alembic, auth. Closes F-07. |
 | 2 — Content Enrichment | Not started | Google Books key received. Critical path — see F-15. |
 
 ### PR 1 — `pr/1-foundation` (awaiting review)
@@ -92,15 +93,58 @@ Undecided. Determines Postgres, Redis, and object-storage choices. Needed before
 ### OI-4 · Copyright posture (§11)
 Confirm in-app reading is restricted to public-domain (Gutenberg) text.
 
+### PR 2 — `pr/2-persistence` (in progress)
+
+| Commit | Scope | Closes |
+|---|---|---|
+| 1 | docker-compose (pg16+pgvector, redis), config.py, models, Alembic | schema foundation |
+| 2 | catalogue ingest with stable (source, external_id) identity | F-10, F-25 found |
+| 3 | argon2id + JWT auth, ownership on comments | **F-07** |
+
+Verified against live Postgres 16.15 / pgvector 0.8.6: 8 tables, migration
+round-trips, 28,399 books ingested idempotently, full F-07 exploit matrix
+rejected. 75 tests pass, 1 xfail.
+
+**Deliberate deferrals in PR 2** — each is a judgement call, not an omission:
+- **F-12 (in-memory state) is NOT migrated.** Comments, progress, reminders
+  and bandit rewards still live in Python dicts. The tables exist and are
+  ready, but moving them rewires `CommentEngine`'s `comment_score` feedback
+  into the recommender's DataFrame — a behaviour-affecting change to the ML
+  engine, which §4 says to approach with regression coverage first. PR 3.
+- **`GET /api/profile/{user_id}` is still unprotected.** Closing the delete
+  hole was the urgent half of F-07; the read-authz sweep across remaining
+  endpoints is PR 3.
+- **Token revocation.** JWTs are stateless with no denylist, so logout cannot
+  invalidate a live token. Acceptable now; revisit when Redis is load-bearing.
+
+### F-25 · 1,576 duplicate ids in the catalogue file — MITIGATED
+29,975 records collapse to 28,399 unique books; 5.3% are exact-id
+duplicates, each appearing precisely twice. Invisible before PR 2 because the
+old loader keyed on array position, so every duplicate became its own book —
+inflating the catalogue and letting the recommender surface the same title
+twice. De-duplicated at ingest (last wins).
+
+**Decision (2026-08-19): provisional.** Keep them de-duplicated for now.
+Revisit in Phase 2 once enrichment pulls real ISBNs from Google Books and
+Open Library — an ISBN is the evidence that distinguishes a genuinely
+separate edition from a true duplicate, and we do not have one today.
+Nothing is deleted from the source file, so the decision is reversible.
+
+**Phase 2 action:** after ISBN backfill, re-check the 1,576 collapsed pairs
+and split any that carry distinct ISBNs.
+
 ### OI-5 · Rate limit required before any deployment — **BLOCKING**
 **Status (2026-08-19):** product owner confirmed the app is **local-only until further notice**, so the rate limit was deliberately **excluded from PR 1**.
 
 **This is a deployment gate.** `/api/audiobook/generate` is unauthenticated (F-07) and synchronous (F-19). After PR 1 it can no longer destroy files, but each call still triggers an unbounded fetch-and-synthesise — repeated calls exhaust the server.
 
 **Before the app becomes reachable from any network, ALL of:**
-- per-IP rate limit on `/api/audiobook/generate`
-- authentication (F-07)
-- move generation to a background job (F-19)
+- ~~authentication (F-07)~~ — **done in PR 2**
+- per-IP rate limit on `/api/audiobook/generate` — still open
+- move generation to a background job (F-19) — still open
+- `JWT_SECRET` set in the environment (config refuses to boot without it
+  when `ENV=production`)
+- read-authz sweep on `GET /api/profile/{user_id}` — still open
 
 Do not deploy, port-forward, expose via tunnel, or demo over a network until these land.
 
@@ -162,7 +206,7 @@ Carried deliberately, with the reason. Each has a closing phase.
 
 | ID | Item | Why deferred | Closes in |
 |---|---|---|---|
-| F-07 | No authentication anywhere | Needs Postgres + `users`; too large for PR 1 | PR 2 / Phase 1 |
+| ~~F-07~~ | ~~No authentication anywhere~~ | **Closed in PR 2** | ✅ |
 | F-19 | Synchronous TTS blocks the request | Needs Redis + job queue | Phase 6 |
 | F-18 | Server-side desktop notifications (`plyer`) | Needs a real delivery channel + queue | Phase 6 |
 | F-13 | LTR trained on constant features, circular target | Needs `recommendation_log` data first | Phase 3 |

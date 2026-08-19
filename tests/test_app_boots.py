@@ -150,7 +150,6 @@ def test_questionnaire_returns_real_books(client):
         ("get", "/api/search?q=harry", None),
         ("get", "/api/clusters", None),
         ("post", "/api/chat", {"user_id": "t", "message": "recommend a thriller"}),
-        ("post", "/api/comments", {"user_id": "t", "book_id": 1, "comment": "good", "rating": 5}),
         ("get", "/api/comments/1", None),
         ("post", "/api/progress", {"user_id": "t", "book_id": 1, "progress": 0.5}),
         ("get", "/api/progress?user_id=t", None),
@@ -161,6 +160,23 @@ def test_questionnaire_returns_real_books(client):
 def test_live_endpoints_respond(client, method, path, body):
     r = getattr(client, method)(path, **({"json": body} if body else {}))
     assert r.status_code == 200, f"{method.upper()} {path} -> {r.status_code}"
+
+
+@pytest.mark.parametrize(
+    "method,path,body",
+    [
+        ("post", "/api/comments", {"book_id": 1, "comment": "anon", "rating": 5}),
+        ("delete", "/api/comments/1/0", None),
+    ],
+)
+def test_write_endpoints_require_auth(client, method, path, body):
+    """These returned 200 to anonymous callers before PR 2 (F-07).
+
+    Kept alongside the anonymous-read smoke tests above so the boundary
+    between "public read" and "authenticated write" stays explicit.
+    """
+    r = getattr(client, method)(path, **({"json": body} if body else {}))
+    assert r.status_code == 401, f"{method.upper()} {path} is still open to anonymous callers"
 
 
 def test_audiobook_stream_404s_for_ungenerated_book(client):
