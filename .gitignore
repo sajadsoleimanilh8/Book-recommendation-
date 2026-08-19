@@ -1,5 +1,6 @@
 # Secrets — must never be committed
 .env
+.dev-jwt-secret
 .env.*
 !.env.example
 

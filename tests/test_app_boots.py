@@ -151,10 +151,6 @@ def test_questionnaire_returns_real_books(client):
         ("get", "/api/clusters", None),
         ("post", "/api/chat", {"user_id": "t", "message": "recommend a thriller"}),
         ("get", "/api/comments/1", None),
-        ("post", "/api/progress", {"user_id": "t", "book_id": 1, "progress": 0.5}),
-        ("get", "/api/progress?user_id=t", None),
-        ("post", "/api/reminder", {"user_id": "t", "book_id": 1, "enabled": True}),
-        ("get", "/api/reminders?user_id=t", None),
     ],
 )
 def test_live_endpoints_respond(client, method, path, body):
@@ -166,7 +162,13 @@ def test_live_endpoints_respond(client, method, path, body):
     "method,path,body",
     [
         ("post", "/api/comments", {"book_id": 1, "comment": "anon", "rating": 5}),
-        ("delete", "/api/comments/1/0", None),
+        ("delete", "/api/comments/1", None),
+        # F-07 read-authz sweep (PR 3): these leaked other users' data.
+        ("post", "/api/progress", {"book_id": 1, "progress": 0.5}),
+        ("get", "/api/progress", None),
+        ("post", "/api/reminder", {"book_id": 1, "enabled": True}),
+        ("get", "/api/reminders", None),
+        ("get", "/api/profile/1", None),
     ],
 )
 def test_write_endpoints_require_auth(client, method, path, body):

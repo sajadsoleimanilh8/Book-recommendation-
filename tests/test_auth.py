@@ -231,17 +231,20 @@ def test_client_cannot_spoof_the_author(client, bob):
 
 
 def test_deleting_a_comment_requires_auth(client, alice):
-    _post_comment(client, alice)
-    r = client.delete("/api/comments/1/0")
+    cid = _post_comment(client, alice).json()["comment"]["id"]
+    r = client.delete(f"/api/comments/{cid}")
     assert r.status_code == 401, "anonymous delete was accepted — F-07 is open"
 
 
 def test_bob_cannot_delete_alices_comment(client, alice, bob):
-    """The exact F-07 exploit. This returned 200 before PR 2."""
-    assert _post_comment(client, alice, "Alice's comment").status_code == 200
+    """The exact F-07 exploit. This returned 200 to an anonymous caller
+    before PR 2, and is now id-addressed rather than index-addressed."""
+    posted = _post_comment(client, alice, "Alice's comment")
+    assert posted.status_code == 200
+    cid = posted.json()["comment"]["id"]
     before = len(client.get("/api/comments/1").json()["comments"])
 
-    r = client.delete("/api/comments/1/0", headers=auth_header(bob))
+    r = client.delete(f"/api/comments/{cid}", headers=auth_header(bob))
     assert r.status_code == 403, "Bob deleted a comment he does not own"
 
     after = len(client.get("/api/comments/1").json()["comments"])
@@ -249,15 +252,69 @@ def test_bob_cannot_delete_alices_comment(client, alice, bob):
 
 
 def test_alice_can_delete_her_own_comment(client, alice):
-    assert _post_comment(client, alice, "delete me").status_code == 200
-    comments = client.get("/api/comments/1").json()["comments"]
-    index = next(
-        i for i, c in enumerate(comments) if c["user_id"] == str(alice["id"])
-    )
-    r = client.delete(f"/api/comments/1/{index}", headers=auth_header(alice))
+    cid = _post_comment(client, alice, "delete me").json()["comment"]["id"]
+    r = client.delete(f"/api/comments/{cid}", headers=auth_header(alice))
     assert r.status_code == 200, r.text
+    remaining = [c["id"] for c in client.get("/api/comments/1").json()["comments"]]
+    assert cid not in remaining, "delete returned 200 but the row survived"
 
 
-def test_out_of_range_index_is_404_not_500(client, alice):
-    r = client.delete("/api/comments/1/9999", headers=auth_header(alice))
+def test_unknown_comment_id_is_404_not_500(client, alice):
+    r = client.delete("/api/comments/99999999", headers=auth_header(alice))
     assert r.status_code == 404
+
+
+def test_comment_survives_in_postgres(client, alice):
+    """F-12: the comment is a durable row, not a dict entry."""
+    from sqlalchemy import select
+
+    from db import SessionLocal
+    from models import Comment
+
+    cid = _post_comment(client, alice, "persisted please").json()["comment"]["id"]
+    with SessionLocal() as s:
+        row = s.scalar(select(Comment).where(Comment.id == cid))
+    assert row is not None, "comment was not written to Postgres"
+    assert row.user_id == alice["id"]
+    assert row.text == "persisted please"
+
+
+# --------------------------------------------------------------------------
+# F-07 read-authz sweep (PR 3)
+# --------------------------------------------------------------------------
+
+def test_cannot_read_another_users_profile(client, alice, bob):
+    """This exposed any user's taste profile, mood and viewing history to any
+    anonymous caller who could guess an id — the default being "guest"."""
+    r = client.get(f"/api/profile/{alice['id']}", headers=auth_header(bob))
+    assert r.status_code == 403
+
+
+def test_can_read_own_profile(client, alice):
+    r = client.get(f"/api/profile/{alice['id']}", headers=auth_header(alice))
+    assert r.status_code == 200
+    assert r.json()["user_id"] == str(alice["id"])
+
+
+def test_progress_is_scoped_to_the_caller(client, alice, bob):
+    assert client.post(
+        "/api/progress", headers=auth_header(alice),
+        json={"book_id": 1, "progress": 0.5},
+    ).status_code == 200
+
+    mine = client.get("/api/progress", headers=auth_header(alice)).json()
+    theirs = client.get("/api/progress", headers=auth_header(bob)).json()
+    assert len(mine["items"]) == 1
+    assert theirs["items"] == [], "Bob can see Alice's reading progress"
+
+
+def test_reminders_are_scoped_to_the_caller(client, alice, bob):
+    assert client.post(
+        "/api/reminder", headers=auth_header(alice),
+        json={"book_id": 1, "enabled": True},
+    ).status_code == 200
+
+    mine = client.get("/api/reminders", headers=auth_header(alice)).json()
+    theirs = client.get("/api/reminders", headers=auth_header(bob)).json()
+    assert len(mine["reminders"]) == 1
+    assert theirs["reminders"] == [], "Bob can see Alice's reminders"

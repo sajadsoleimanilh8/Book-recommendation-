@@ -1,0 +1,66 @@
+{
+  "meta": {
+    "scenario": {
+      "mood": "thoughtful"
+    },
+    "n": 10,
+    "deterministic_prefix": 9,
+    "note": "positions beyond the prefix are bandit exploration and are not pinned"
+  },
+  "results": [
+    {
+      "rank": 1,
+      "title": "Russia and the Russians",
+      "author": "Geoffrey A. Hosking",
+      "final_score": 0.8644
+    },
+    {
+      "rank": 2,
+      "title": "War",
+      "author": "Gwynne Dyer",
+      "final_score": 0.8511
+    },
+    {
+      "rank": 3,
+      "title": "The Cambridge Ancient History",
+      "author": "John Boardman, J. A. Crook, Andrew Lintott, Elizabeth Rawson",
+      "final_score": 0.8376
+    },
+    {
+      "rank": 4,
+      "title": "The Real History of World War II",
+      "author": "Alan Axelrod",
+      "final_score": 0.8364
+    },
+    {
+      "rank": 5,
+      "title": "21 lecciones para el siglo XXI",
+      "author": "Yuval Noah Harari",
+      "final_score": 0.8335
+    },
+    {
+      "rank": 6,
+      "title": "Restless Giant",
+      "author": "James T. Patterson",
+      "final_score": 0.8333
+    },
+    {
+      "rank": 7,
+      "title": "A History of the Ancient World",
+      "author": "Chester G. Starr",
+      "final_score": 0.8189
+    },
+    {
+      "rank": 8,
+      "title": "21 lições para o século 21",
+      "author": "Yuval Noah Harari",
+      "final_score": 0.8131
+    },
+    {
+      "rank": 9,
+      "title": "Dystopian Fiction East and West",
+      "author": "Erika Gottlieb",
+      "final_score": 0.8003
+    }
+  ]
+}

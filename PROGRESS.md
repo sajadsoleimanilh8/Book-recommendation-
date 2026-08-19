@@ -11,7 +11,8 @@ Full evidence for every `F-` reference is in [docs/PHASE-0-AUDIT.md](docs/PHASE-
 |---|---|---|
 | 0 — Audit | **Complete** (2026-08-19) | 20 findings. No production code modified (§73). |
 | 1 — Foundation | **PR 1 merged** 2026-08-19 | Closes F-01…F-06, F-08, F-09, F-16, F-21, F-23. |
-| 1b — Persistence | **PR 2 open** on `pr/2-persistence` | Postgres, Alembic, auth. Closes F-07. |
+| 1b — Persistence | **PR 2 merged** 2026-08-19 | Postgres, Alembic, auth. Closes F-07 (write side). |
+| 1c — State migration | **PR 3 open** on `pr/3-state-migration` | Golden baselines, F-12, read-authz sweep. |
 | 2 — Content Enrichment | Not started | Google Books key received. Critical path — see F-15. |
 
 ### PR 1 — `pr/1-foundation` (awaiting review)
@@ -133,6 +134,39 @@ Nothing is deleted from the source file, so the decision is reversible.
 **Phase 2 action:** after ISBN backfill, re-check the 1,576 collapsed pairs
 and split any that carry distinct ISBNs.
 
+### PR 3 — `pr/3-state-migration` (in progress)
+
+| Commit | Scope | Closes |
+|---|---|---|
+| 1 | golden-output baselines, recorded first | found **F-26** |
+| 2 | F-26 logged in full | — |
+| 3 | persist comments/progress/reminders; read-authz sweep | **F-12**, F-07 (reads) |
+
+**98 passed, 3 xfailed.** The golden baselines are unchanged after the
+migration — that is the evidence it did not move ranking.
+
+**Verified by hard restart** (taskkill, port confirmed free, connection
+refused, new PID, zero bind errors): comments, progress, reminders, the
+session, and the derived `comment_score` all survive. Posting a second
+comment after restart returned 0.5, proving the pre-restart 0.25 was
+replayed rather than reset.
+
+> **Testing note worth keeping.** The first restart test was a false pass.
+> `pkill` does not kill uvicorn on Windows; the replacement process failed to
+> bind with `Errno 10048` and exited, and the *original* process answered the
+> queries. It was caught only because a 1-second boot is impossible for a
+> 6-second ML fit. When testing restart behaviour, assert the port is free
+> and the new PID differs — do not trust the kill.
+
+**API contract change:** `DELETE /api/comments/{book_id}/{comment_index}` is
+now `DELETE /api/comments/{comment_id}`. Positional indices are racy once
+comments are shared persistent rows — two concurrent deletes shift each
+other's target. Ids come back from POST and from GET.
+
+### OI-6 · Frontend needs a login UI — OPEN
+Comments, progress and reminders all require a token now, so the existing
+pages get 401. Expected and accepted; lands with the Express retirement.
+
 ### OI-5 · Rate limit required before any deployment — **BLOCKING**
 **Status (2026-08-19):** product owner confirmed the app is **local-only until further notice**, so the rate limit was deliberately **excluded from PR 1**.
 
@@ -140,11 +174,12 @@ and split any that carry distinct ISBNs.
 
 **Before the app becomes reachable from any network, ALL of:**
 - ~~authentication (F-07)~~ — **done in PR 2**
+- ~~read-authz sweep~~ — **done in PR 3**
 - per-IP rate limit on `/api/audiobook/generate` — still open
 - move generation to a background job (F-19) — still open
 - `JWT_SECRET` set in the environment (config refuses to boot without it
-  when `ENV=production`)
-- read-authz sweep on `GET /api/profile/{user_id}` — still open
+  when `ENV=production`; the `.dev-jwt-secret` fallback is development-only)
+- token revocation (still no denylist) — accepted risk, revisit with Redis
 
 Do not deploy, port-forward, expose via tunnel, or demo over a network until these land.
 
@@ -192,6 +227,69 @@ collapses to 3 terms (**F-15**). The component count is now clamped to the
 available vocabulary, with a warning naming F-15. This keeps the engine alive
 on today's data; it does not make those embeddings useful.
 
+### F-26 · 7 of 10 LTR features have zero importance — OPEN, **PHASE 3**
+
+**Measured, not inferred.** Feature importances of the trained model:
+
+```
+log_ratings        0.673687
+log_ratings_norm   0.313736
+avg_rating         0.012577
+content_s          0.000000
+cf_s               0.000000
+cluster_match      0.000000
+inv_price          0.000000
+mood_match         0.000000
+comment_score      0.000000
+recency            0.000000
+```
+
+**Two causes, both F-13:**
+
+1. *Constant at training time* — `Recommender.fit` passes `diag = np.ones(...)`
+   for `content_s` and `cf_s`; `LearningToRank.train` hardcodes `cluster_match`
+   and `mood_match` to `np.zeros(...)`; and `comment_score` is 0.0 for every
+   book because none has a comment when the model is fitted. A gradient-boosted
+   tree never splits on a constant column — then inference feeds all five real
+   values.
+2. *Circular target* — `relevance = 0.4*(rating/5) + 0.6*norm(log(ratings_count))`
+   is a function of three of the model's own inputs, so `inv_price` and
+   `recency` carry no signal for it either.
+
+**Two consequences, both material:**
+
+- The LTR component carries the **largest ranking weight (0.32)** and is a
+  **pure popularity function**. Content similarity, collaborative filtering,
+  clustering, mood, and price contribute nothing to it.
+- **The comment feedback loop is fully decorative.** Boosting a book to the
+  maximum `comment_score` of 1.0 does not move its rank by a single position.
+  User comments do not influence recommendations at all.
+
+**Discovered:** 2026-08-19, while validating PR 3's golden baselines by
+sabotage — a maxed `comment_score` failed to change any ranking, and chasing
+why produced the measurement above.
+
+**Deferred to Phase 3 by product owner decision (2026-08-19), with reasons:**
+1. It is a ranking-affecting change to the ML engine; PR 3's scope is
+   persistence. Mixing them violates §2, one deliberate change at a time.
+2. The proper fix belongs with Phase 3's broader recommendation work — real
+   behavioural signals from `recommendation_log`, not merely un-constanting
+   the inputs — so it gets fixed once and correctly rather than patched twice.
+
+**Do not fix by only replacing the constants.** That would leave the circular
+target in place and produce a model that looks trained but still predicts a
+function of its own inputs. Phase 3 needs both halves: real features *and* a
+target derived from logged behaviour.
+
+**Guarded by** two `xfail(strict=True)` tests in
+`tests/test_golden_ranking.py` — `test_ltr_has_no_dead_features` and
+`test_comment_score_actually_changes_ranking`. Strict means they fail the
+suite the moment they start passing, forcing the markers off when fixed.
+
+**Silver lining for PR 3:** because the comment loop is already disconnected,
+migrating comments to Postgres cannot regress ranking through it. The golden
+baselines still matter, because Phase 3 reconnects it.
+
 ### F-24 · The global Python is shared — RECOMMEND A VIRTUALENV
 Installing the pinned requirements downgraded `click` and broke an unrelated
 `huggingface-hub`. Repaired, but the project should not be installing into a
@@ -206,10 +304,11 @@ Carried deliberately, with the reason. Each has a closing phase.
 
 | ID | Item | Why deferred | Closes in |
 |---|---|---|---|
-| ~~F-07~~ | ~~No authentication anywhere~~ | **Closed in PR 2** | ✅ |
+| ~~F-07~~ | ~~No authentication anywhere~~ | **Closed** — writes in PR 2, reads in PR 3 | ✅ |
 | F-19 | Synchronous TTS blocks the request | Needs Redis + job queue | Phase 6 |
 | F-18 | Server-side desktop notifications (`plyer`) | Needs a real delivery channel + queue | Phase 6 |
 | F-13 | LTR trained on constant features, circular target | Needs `recommendation_log` data first | Phase 3 |
+| F-26 | 7/10 LTR features zero importance; comment loop decorative | Ranking change — belongs with Phase 3's real-signal work, not a persistence PR | Phase 3 |
 | F-14 | "CF" is popularity, not collaborative filtering | Needs real interaction data | Phase 3 |
 | F-17 | Book "pages" return placeholder strings | Needs real book text ingestion | Phase 5 |
 | F-11 | Unmounted second frontend | Product owner deferred — OI-1 | Phase 7 |
