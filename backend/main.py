@@ -507,6 +507,24 @@ def get_books(
     )
     return {"items": items[:limit], "total": len(items)}
 
+# F-16: /api/books/filter-options MUST stay above /api/books/{book_id}.
+# FastAPI matches in declaration order, so with the catch-all first the
+# literal path was captured by it and int("filter-options") failed with 422 —
+# the endpoint was unreachable. Do not reorder these two.
+@app.get("/api/books/filter-options")
+def filter_options() -> Dict[str, Any]:
+    def uniq(key: str) -> List[str]:
+        return sorted({str(b.get(key, "")).strip() for b in BOOKS if b.get(key)})[:200]
+
+    return {
+        "genres": uniq("genre"),
+        "authors": uniq("author"),
+        "moods": uniq("mood"),
+        "languages": uniq("language"),
+        "clusters": sorted({b.get("cluster", -1) for b in BOOKS}),
+    }
+
+
 @app.get("/books/{book_id}")
 @app.get("/api/books/{book_id}")
 def book_detail(book_id: int):
@@ -538,20 +556,6 @@ def filter_books(payload: FilterRequest) -> Dict[str, Any]:
         reverse=True
     )
     return {"items": items, "total": len(items)}
-
-@app.get("/api/books/filter-options")
-def filter_options() -> Dict[str, Any]:
-    def uniq(key: str) -> List[str]:
-        return sorted({str(b.get(key, "")).strip() for b in BOOKS if b.get(key)})[:200]
-
-    return {
-        "genres": uniq("genre"),
-        "authors": uniq("author"),
-        "moods": uniq("mood"),
-        "languages": uniq("language"),
-        "clusters": sorted({b.get("cluster", -1) for b in BOOKS}),
-    }
-
 
 @app.post("/recommend")
 @app.post("/api/recommend")
