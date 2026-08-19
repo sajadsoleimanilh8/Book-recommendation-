@@ -71,14 +71,32 @@ JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", str(60 * 24 * 7)))
 _secret = os.getenv("JWT_SECRET", "").strip()
 if not _secret:
     if IS_PRODUCTION:
-        # Never silently generate one in production: every worker would mint
-        # a different key, so tokens would fail across workers and every
+        # Never generate one in production: every worker would mint a
+        # different key, so tokens would fail across workers and every
         # restart would log the whole userbase out.
         raise RuntimeError(
             "JWT_SECRET must be set when ENV=production. "
             "Generate one with: python -c \"import secrets;print(secrets.token_urlsafe(48))\""
         )
-    _secret = secrets.token_urlsafe(48)
+
+    # Development: generate once and persist to a gitignored file.
+    #
+    # Generating per-process meant every restart invalidated every token —
+    # which cost real time during PR 3's restart testing before the cause
+    # was obvious, and would do the same to anyone running `--reload`.
+    # A file keeps sessions alive across restarts without putting a secret
+    # in the repo. Production still requires an explicit value.
+    _secret_file = PROJECT_ROOT / ".dev-jwt-secret"
+    try:
+        if _secret_file.exists():
+            _secret = _secret_file.read_text(encoding="utf-8").strip()
+        if not _secret:
+            _secret = secrets.token_urlsafe(48)
+            _secret_file.write_text(_secret, encoding="utf-8")
+    except OSError:
+        # Read-only filesystem or similar — fall back to per-process.
+        _secret = _secret or secrets.token_urlsafe(48)
+
 JWT_SECRET = _secret
 
 

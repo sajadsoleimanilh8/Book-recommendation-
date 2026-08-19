@@ -24,7 +24,10 @@ from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 import config
-from auth import CurrentUser, OptionalUser
+import models
+import store
+from auth import CurrentUser, OptionalUser, SessionDep
+from db import SessionLocal
 from routes_auth import router as auth_router
 
 # Local Imports
@@ -116,6 +119,9 @@ CSV_FALLBACKS = [
 
 BOOKS: List[Dict[str, Any]] = []
 BOOK_BY_ID: Dict[int, Dict[str, Any]] = {}
+# books.id -> DataFrame row index. Built at startup so persisted user state
+# can be mapped back onto the in-memory engine without a title lookup.
+BOOK_IDX_BY_PK: Dict[int, int] = {}
 USER_PROFILES: Dict[str, UserProfile] = {}
 RECOMMENDER: Optional[Recommender] = None
 QUESTIONER: Optional[QuestionerEngine] = None
@@ -485,6 +491,70 @@ def startup():
     else:
         log.warning("Skipping ML fit due to empty book list.")
 
+    if RECOMMENDER is not None:
+        _build_pk_index()
+        _rehydrate_comments()
+
+
+def _build_pk_index() -> None:
+    """Map books.id -> DataFrame row index, once, at startup.
+
+    Doing this per-request would be 28k lookups; doing it by title would
+    collide on the 1,576 duplicate records F-25 found.
+    """
+    global BOOK_IDX_BY_PK
+    BOOK_IDX_BY_PK = {}
+    try:
+        with SessionLocal() as session:
+            for book in BOOKS:
+                pk = store.resolve_book_pk(session, book)
+                if pk is not None:
+                    # First occurrence wins, matching the ingest's
+                    # de-duplication so both sides agree on which row is
+                    # canonical.
+                    BOOK_IDX_BY_PK.setdefault(pk, store.df_index_for(book))
+        log.info(f"Mapped {len(BOOK_IDX_BY_PK)} books to persistent ids.")
+    except Exception as e:
+        log.error(f"Could not build the book id index: {e}")
+
+
+def _rehydrate_comments() -> None:
+    """F-12: restore persisted comments into the ranking-facing cache.
+
+    Before this, a restart erased every comment and reset comment_score to
+    0.0. Comments are replayed in id order so the cache matches the order
+    GET returns, which is what keeps delete-by-position aligned.
+
+    Note this legitimately changes comment_score at boot, which is a ranking
+    input. It cannot currently change rankings, because comment_score has
+    zero LTR importance (F-26) — but that is a bug, not a guarantee. When
+    Phase 3 fixes F-26 this becomes a real behavioural difference between a
+    cold and a warm start, and will need the fitted model to account for it.
+    """
+    if RECOMMENDER is None or getattr(RECOMMENDER, "comment", None) is None:
+        return
+    try:
+        with SessionLocal() as session:
+            grouped = store.all_comments_by_book(session)
+        restored = 0
+        for book_pk, rows in grouped.items():
+            book_idx = BOOK_IDX_BY_PK.get(book_pk)
+            if book_idx is None:
+                continue
+            for row in rows:
+                RECOMMENDER.comment.add(
+                    book_idx=book_idx,
+                    user_id=str(row.user_id),
+                    text=row.text,
+                    rating=row.rating,
+                    profile=None,
+                )
+                restored += 1
+        if restored:
+            log.info(f"Rehydrated {restored} comment(s) from Postgres.")
+    except Exception as e:
+        log.error(f"Comment rehydration failed: {e}")
+
 
 @app.get("/health")
 @app.get("/api/health")
@@ -792,10 +862,9 @@ def audiobook_generate(payload: AudiobookRequest):
 
 @app.post("/comments")
 @app.post("/api/comments")
-def add_comment(payload: CommentRequest, user: CurrentUser):
-    """F-07: now authenticated. The comment's owner is the authenticated
-    user, not a client-supplied string — without that, the ownership check on
-    DELETE has nothing trustworthy to compare against."""
+def add_comment(payload: CommentRequest, user: CurrentUser, session: SessionDep):
+    """F-07: authenticated, owner is the token holder.
+    F-12: written through to Postgres before responding."""
     if not RECOMMENDER or not getattr(RECOMMENDER, 'comment', None):
         return error_response("Comment engine not ready.")
 
@@ -803,15 +872,25 @@ def add_comment(payload: CommentRequest, user: CurrentUser):
     if not b:
         return error_response("Book not found", status.HTTP_404_NOT_FOUND)
 
-    matches = DF[DF["title"] == b["title"]] if DF is not None else pd.DataFrame()
-    if matches.empty:
+    book_pk = store.resolve_book_pk(session, b)
+    if book_pk is None:
+        return error_response(
+            "Book is not in the persistent catalogue.", status.HTTP_404_NOT_FOUND
+        )
+
+    # F-12: was DF[DF["title"] == b["title"]].index[0], which attached the
+    # comment to the first book sharing a title. Positional arithmetic is
+    # exact — see store.df_index_for.
+    book_idx = store.df_index_for(b)
+    if not (0 <= book_idx < len(RECOMMENDER.df)):
         return error_response("Book not in ML index.")
 
-    book_idx = int(matches.index[0])
     owner_id = str(user.id)
     profile = get_profile(owner_id)
 
     try:
+        # Updates comment_score on the in-memory DataFrame — the
+        # ranking-facing cache.
         comment = RECOMMENDER.comment.add(
             book_idx=book_idx,
             user_id=owner_id,
@@ -822,9 +901,20 @@ def add_comment(payload: CommentRequest, user: CurrentUser):
     except Exception as e:
         return error_response(f"Comment error: {str(e)}")
 
+    row = store.save_comment(
+        session,
+        user_id=user.id,
+        book_pk=book_pk,
+        text=comment.text,
+        rating=comment.rating,
+        sentiment=comment.sentiment,
+        keywords=list(comment.keywords or []),
+    )
+
     return {
         "ok": True,
         "comment": {
+            "id": row.id,
             "user_id": comment.user_id,
             "text": comment.text,
             "rating": comment.rating,
@@ -832,12 +922,14 @@ def add_comment(payload: CommentRequest, user: CurrentUser):
             "keywords": comment.keywords,
             "timestamp": comment.timestamp,
         },
-        "book_comment_score": round(float(RECOMMENDER.df.loc[book_idx, "comment_score"]), 3) if book_idx < len(RECOMMENDER.df) else 0.0,
+        "book_comment_score": round(float(RECOMMENDER.df.loc[book_idx, "comment_score"]), 3),
     }
 
 @app.get("/comments/{book_id}")
 @app.get("/api/comments/{book_id}")
-def get_comments(book_id: int):
+def get_comments(book_id: int, session: SessionDep):
+    """F-12: comments are read from Postgres, the source of truth. The
+    in-memory store is only the ranking-facing cache now."""
     if not RECOMMENDER or not getattr(RECOMMENDER, 'comment', None):
         return error_response("Comment engine not ready.")
 
@@ -845,68 +937,86 @@ def get_comments(book_id: int):
     if not b:
         return error_response("Book not found", status.HTTP_404_NOT_FOUND)
 
-    matches = DF[DF["title"] == b["title"]] if DF is not None else pd.DataFrame()
-    if matches.empty:
+    book_idx = store.df_index_for(b)
+    if not (0 <= book_idx < len(RECOMMENDER.df)):
         return error_response("Book not in ML index.")
 
-    book_idx = int(matches.index[0])
+    book_pk = store.resolve_book_pk(session, b)
+    rows = store.comments_for_book(session, book_pk) if book_pk is not None else []
 
     return {
         "book_id": book_id,
         "book": {"title": b["title"], "author": b["author"]},
-        "comments": RECOMMENDER.comment.get(book_idx),
+        "comments": [
+            {
+                "id": c.id,
+                "user_id": str(c.user_id),
+                "text": c.text,
+                "rating": c.rating,
+                "sentiment": c.sentiment,
+                "keywords": c.keywords or [],
+                "timestamp": c.created_at.isoformat(),
+            }
+            for c in rows
+        ],
         "summary": RECOMMENDER.comment.summary(book_idx),
     }
 
-@app.delete("/comments/{book_id}/{comment_index}")
-@app.delete("/api/comments/{book_id}/{comment_index}")
-def delete_comment(book_id: int, comment_index: int, user: CurrentUser):
-    """F-07: this endpoint previously took no authentication and performed no
-    ownership check, so any caller could delete any comment on any book by
-    index. It now requires a valid token and refuses to delete a comment the
-    caller does not own."""
+@app.delete("/api/comments/{comment_id}")
+def delete_comment(comment_id: int, user: CurrentUser, session: SessionDep):
+    """Delete one's own comment, by durable id.
+
+    F-07: previously unauthenticated with no ownership check — any caller
+    could delete any comment on any book.
+
+    F-12 / contract change: the path was
+    `/api/comments/{book_id}/{comment_index}`. Positional indices are racy
+    once comments are shared, persistent rows: two concurrent deletes shift
+    each other's target and remove the wrong comment. Comments now carry a
+    stable id, returned by POST and by GET /api/comments/{book_id}.
+    """
     if not RECOMMENDER or not getattr(RECOMMENDER, 'comment', None):
         return error_response("Comment engine not ready.")
 
-    b = BOOK_BY_ID.get(book_id)
-    if not b:
-        return error_response("Book not found", status.HTTP_404_NOT_FOUND)
+    row = session.get(models.Comment, comment_id)
+    if row is None:
+        return error_response("Comment not found.", status.HTTP_404_NOT_FOUND)
 
-    matches = DF[DF["title"] == b["title"]] if DF is not None else pd.DataFrame()
-    if matches.empty:
-        return error_response("Book not in ML index.")
-
-    book_idx = int(matches.index[0])
-
-    existing = RECOMMENDER.comment.get(book_idx)
-    if comment_index < 0 or comment_index >= len(existing):
-        return error_response("Invalid comment index.", status.HTTP_404_NOT_FOUND)
-
-    owner = str(existing[comment_index].get("user_id", ""))
-    if owner != str(user.id):
-        # 403, not 404: the caller has proven identity, and hiding the
-        # comment's existence buys nothing when it is readable via GET.
+    if row.user_id != user.id:
+        # 403, not 404: the caller has proven identity, and the comment is
+        # readable via GET anyway, so hiding its existence buys nothing.
         return error_response(
             "You can only delete your own comments.", status.HTTP_403_FORBIDDEN
         )
 
-    try:
-        removed = RECOMMENDER.comment.delete(book_idx, comment_index)
-    except Exception:
-        return error_response("Invalid comment index.")
+    book_pk = row.book_id
+    # Position within this book's comments, in the same insertion order the
+    # in-memory cache is built in, so the cache stays aligned.
+    ordered = store.comments_for_book(session, book_pk)
+    position = next((i for i, c in enumerate(ordered) if c.id == comment_id), None)
 
-    if removed is None:
-        return error_response("Invalid comment index.")
+    if not store.delete_comment(session, comment_id=comment_id, user_id=user.id):
+        return error_response("Comment not found.", status.HTTP_404_NOT_FOUND)
+
+    # Keep the ranking-facing cache and comment_score in step.
+    removed_text, removed_sentiment = row.text, row.sentiment
+    book_idx = BOOK_IDX_BY_PK.get(book_pk)
+    if book_idx is not None and position is not None:
+        try:
+            RECOMMENDER.comment.delete(book_idx, position)
+        except Exception:  # pragma: no cover - cache drift must not 500
+            log.warning(f"Comment cache out of step for book_pk={book_pk}")
 
     return {
         "ok": True,
-        "removed": {"text": removed.text, "sentiment": removed.sentiment},
+        "removed": {"id": comment_id, "text": removed_text, "sentiment": removed_sentiment},
     }
 
 
 @app.post("/reminder")
 @app.post("/api/reminder")
-def set_reminder(payload: ReminderRequest):
+def set_reminder(payload: ReminderRequest, user: CurrentUser, session: SessionDep):
+    """F-07 + F-12: authenticated, and persisted in Postgres."""
     if not RECOMMENDER or not getattr(RECOMMENDER, 'reminder', None):
         return error_response("Reminder engine not ready.")
 
@@ -914,15 +1024,25 @@ def set_reminder(payload: ReminderRequest):
     if not b:
         return error_response("Book not found", status.HTTP_404_NOT_FOUND)
 
+    book_pk = store.resolve_book_pk(session, b)
+    if book_pk is None:
+        return error_response(
+            "Book is not in the persistent catalogue.", status.HTTP_404_NOT_FOUND
+        )
+
     try:
         reminder = RECOMMENDER.reminder.set_reminder(
-            user_id=payload.user_id,
+            user_id=str(user.id),
             book_id=payload.book_id,
             title=b["title"],
             enabled=payload.enabled,
         )
     except Exception as e:
         return error_response(f"Reminder error: {str(e)}")
+
+    store.set_reminder(
+        session, user_id=user.id, book_pk=book_pk, enabled=payload.enabled
+    )
 
     if reminder is None:
         return {"ok": True, "message": f"Reminder removed for '{b['title']}'"}
@@ -939,31 +1059,43 @@ def set_reminder(payload: ReminderRequest):
 
 @app.get("/reminder/{user_id}")
 @app.get("/api/reminder/{user_id}")
-def get_reminders(user_id: str):
+def get_reminders(user_id: str, user: CurrentUser, session: SessionDep):
+    """F-07 read-authz sweep: own reminders only."""
     if not RECOMMENDER or not getattr(RECOMMENDER, 'reminder', None):
         return error_response("Reminder engine not ready.")
 
-    return {
-        "user_id": user_id,
-        "reminders": RECOMMENDER.reminder.get_user_reminders(user_id),
-    }
+    if user_id != str(user.id):
+        return error_response(
+            "You can only view your own reminders.", status.HTTP_403_FORBIDDEN
+        )
+
+    return {"user_id": user_id, "reminders": _reminder_payload(session, user)}
 
 @app.post("/progress")
 @app.post("/api/progress")
-def progress(payload: ProgressRequest) -> Dict[str, Any]:
+def progress(payload: ProgressRequest, user: CurrentUser, session: SessionDep) -> Dict[str, Any]:
+    """F-12: reading progress persists in Postgres.
+    F-07: the owner is the token holder, not a client-supplied string."""
     if not RECOMMENDER or not getattr(RECOMMENDER, 'reminder', None):
         return error_response("Progress tracking not ready.")
 
-    profile = get_profile(payload.user_id)
+    owner_id = str(user.id)
+    profile = get_profile(owner_id)
 
     if payload.book_id is not None and payload.progress is not None:
         b = BOOK_BY_ID.get(payload.book_id)
         if not b:
             return error_response("Book not found", status.HTTP_404_NOT_FOUND)
 
+        book_pk = store.resolve_book_pk(session, b)
+        if book_pk is None:
+            return error_response(
+                "Book is not in the persistent catalogue.", status.HTTP_404_NOT_FOUND
+            )
+
         try:
-            return RECOMMENDER.reminder.update_progress(
-                user_id=payload.user_id,
+            result = RECOMMENDER.reminder.update_progress(
+                user_id=owner_id,
                 book_id=payload.book_id,
                 progress=payload.progress,
                 total_pages=payload.total_pages or b.get("pages", 0),
@@ -972,13 +1104,69 @@ def progress(payload: ProgressRequest) -> Dict[str, Any]:
         except Exception as e:
             return error_response(f"Progress update error: {str(e)}")
 
-    items = RECOMMENDER.reminder.get_progress(payload.user_id)
-    return {"user_id": payload.user_id, "items": items, "total": len(items)}
+        store.save_progress(
+            session,
+            user_id=user.id,
+            book_pk=book_pk,
+            progress=payload.progress,
+            page=int(payload.total_pages or 0),
+        )
+        return result
+
+    return _progress_payload(session, user)
+
+
+def _reminder_payload(session, user) -> List[Dict[str, Any]]:
+    """Read reminders from Postgres, mapped back to positional book ids."""
+    out = []
+    for row in store.reminders_for_user(session, user.id):
+        book_idx = BOOK_IDX_BY_PK.get(row.book_id)
+        book = BOOKS[book_idx] if book_idx is not None and book_idx < len(BOOKS) else None
+        out.append(
+            {
+                "book_id": (book_idx + 1) if book_idx is not None else None,
+                "title": book["title"] if book else None,
+                "enabled": row.enabled,
+                "last_notified": row.last_notified,
+                "created_at": row.created_at.isoformat(),
+            }
+        )
+    return out
+
+
+def _progress_payload(session, user) -> Dict[str, Any]:
+    """Read progress from Postgres, mapped back to the API's positional ids."""
+    items = []
+    for row in store.progress_for_user(session, user.id):
+        book_idx = BOOK_IDX_BY_PK.get(row.book_id)
+        items.append(
+            {
+                # book_idx is the DataFrame row; the API exposes id = idx + 1.
+                "book_id": (book_idx + 1) if book_idx is not None else None,
+                "progress": row.progress,
+                "percent": int(row.progress * 100),
+                "page": row.page,
+                "updated_at": row.updated_at.isoformat(),
+            }
+        )
+    return {"user_id": str(user.id), "items": items, "total": len(items)}
 
 
 @app.get("/api/profile/{user_id}")
-def get_user_profile(user_id: str) -> Dict[str, Any]:
-    p = get_profile(user_id)
+def get_user_profile(user_id: str, user: CurrentUser) -> Dict[str, Any]:
+    """F-07 read-authz sweep: this exposed any user's taste profile, mood,
+    viewing history and keyword affinities to any anonymous caller who could
+    guess a user_id — and the default was the literal string "guest".
+
+    A user may now read only their own profile. 403 rather than 404 because
+    the caller has proven identity; the resource plainly exists.
+    """
+    if user_id != str(user.id):
+        return error_response(
+            "You can only view your own profile.", status.HTTP_403_FORBIDDEN
+        )
+
+    p = get_profile(str(user.id))
     return {
         "user_id": user_id,
         "mood": p.mood,
@@ -1046,13 +1234,13 @@ def audiobook_stream(book_id: int):
 
 
 @app.get("/api/progress")
-def get_progress_route(user_id: str = "guest"):
-    
+def get_progress_route(user: CurrentUser, session: SessionDep):
+    """F-07: user_id was a query parameter, so anyone could read anyone's
+    reading history. It is now the token holder, and unreadable otherwise."""
     if not RECOMMENDER or not getattr(RECOMMENDER, 'reminder', None):
         return error_response("Progress tracking not ready.")
-    
-    items = RECOMMENDER.reminder.get_progress(user_id)
-    return {"user_id": user_id, "items": items, "total": len(items)}
+
+    return _progress_payload(session, user)
 
 
 @app.get("/api/books/{book_id}/pages")
@@ -1096,13 +1284,17 @@ def get_book_comments_shortcut(book_id: int):
 
 
 @app.get("/api/reminders")
-def get_reminders_by_params(user_id: str = "guest", book_id: int = None):
-    
+def get_reminders_by_params(user: CurrentUser, session: SessionDep, book_id: Optional[int] = None):
+    """F-07 read-authz sweep: user_id was a query parameter defaulting to
+    "guest", so anyone could enumerate anyone's reminders. It is now the
+    token holder.
+    F-12: read from Postgres."""
     if not RECOMMENDER or not getattr(RECOMMENDER, 'reminder', None):
         return error_response("Reminder engine not ready.")
-    
-    reminders = RECOMMENDER.reminder.get_user_reminders(user_id)
-    
+
+    reminders = _reminder_payload(session, user)
+    user_id = str(user.id)
+
     if book_id is not None:
         reminders = [r for r in reminders if r.get("book_id") == book_id]
     
