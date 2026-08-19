@@ -19,6 +19,10 @@ for the full architecture audit and [PROGRESS.md](PROGRESS.md) for current statu
 ## Setup
 
 ```bash
+# 0a. Start Postgres + Redis (host ports 5433 / 6380, not the defaults —
+#     this project shares a machine with other work)
+docker compose up -d
+
 # 0. Use a virtualenv — installing the pins into a shared global Python
 #    downgraded click and broke an unrelated package once already (F-24).
 python -m venv .venv && source .venv/Scripts/activate   # Windows/Git Bash
@@ -33,7 +37,13 @@ npm install
 # 3. Configuration
 cp .env.example .env
 # then edit .env — GOOGLE_BOOKS_API_KEY is only needed from Phase 2 onward
+
+# 4. Database schema + catalogue
+cd backend && python -m alembic upgrade head && python -m ingest && cd ..
 ```
+
+`python -m ingest` is idempotent — re-run it any time to refresh metadata.
+It loads 28,399 unique books (29,975 records, minus 1,576 duplicate ids).
 
 ## Running
 
@@ -88,6 +98,13 @@ behaviour — see [tests/README.md](tests/README.md).
 ```
 backend/         FastAPI app
   main.py          routes, request models, startup
+  config.py        all runtime configuration, read from .env
+  db.py            engine, session factory
+  models.py        SQLAlchemy schema (Core + Observability)
+  auth.py          argon2id passwords, JWT, FastAPI dependencies
+  routes_auth.py   /api/auth/register, /login, /me
+  ingest.py        catalogue -> Postgres (idempotent)
+  alembic/         migrations
   engine.py        the ML system — recommender, chatbot, comments,
                    reminders, audiobook. The core asset.
   site_ready_books.json   the 29,975-book catalogue (JSONL)
@@ -103,9 +120,13 @@ docs/            architecture audit
 
 Carried deliberately, each tracked in [PROGRESS.md](PROGRESS.md):
 
-- **No authentication** (F-07). `user_id` is a client-supplied string. Anyone
-  can read any profile and delete any comment. **Run locally only** until
-  this is closed.
+- **Reads are public, writes require auth.** Register via
+  `POST /api/auth/register`, then send `Authorization: Bearer <token>`.
+  Posting and deleting comments is authenticated and ownership-checked
+  (F-07, closed in PR 2). `GET /api/profile/{user_id}` is **not** yet
+  protected — tracked for PR 3.
+- **Logout cannot revoke a token** before it expires. JWTs are stateless and
+  there is no denylist yet; revisit when Redis becomes load-bearing.
 - **Audiobook generation is synchronous and unauthenticated** (F-19). It is
   no longer destructive, but it is still a resource-exhaustion vector. A rate
   limit is required before any deployment (OI-5).
