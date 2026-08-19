@@ -10,7 +10,7 @@ import pandas as pd
 from fastapi import FastAPI, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # Local Imports
 from engine import (
@@ -51,6 +51,10 @@ DATA_FILE_CANDIDATES = [
     Path(__file__).parent / "data" / "site_ready_books.json",
 ]
 DATA_FILE = next((p for p in DATA_FILE_CANDIDATES if p.exists()), DATA_FILE_CANDIDATES[0])
+
+# Single source of truth for generated audio. Must match
+# AudiobookEngine.AUDIO_DIR in engine.py.
+AUDIO_DIR = Path(__file__).resolve().parent / "audio_outputs"
 
 CSV_FALLBACKS = [
     Path(__file__).parent / "merged_complete_dataset.csv",
@@ -349,9 +353,19 @@ class CommentRequest(BaseModel):
     rating: Optional[int] = Field(None, ge=1, le=5)
 
 class AudiobookRequest(BaseModel):
-    book_name: str = "Animal Farm"
-    output_file: str = "audiobook.mp3"
-    language: str = "en"
+    # F-04: `output_file` used to be accepted from the client and passed
+    # straight into os.remove() and open(..., "ab"), so a request carrying
+    # {"output_file": "../server.js"} deleted and overwrote the server.
+    #
+    # The field is gone. The destination is now derived server-side from
+    # book_id (see AudiobookEngine.generate). extra="forbid" makes a request
+    # that still sends output_file fail closed with 422 rather than have it
+    # silently ignored — an old client gets a clear error, not a false success.
+    model_config = ConfigDict(extra="forbid")
+
+    book_id: int = Field(..., ge=1)
+    book_name: str = Field("Animal Farm", min_length=1, max_length=300)
+    language: str = Field("en", min_length=2, max_length=5)
 
 class ReminderRequest(BaseModel):
     user_id: str = "guest"
@@ -676,7 +690,7 @@ def audiobook_generate(payload: AudiobookRequest):
     try:
         result = RECOMMENDER.audiobook.generate(
             book_name=payload.book_name,
-            output_file=payload.output_file,
+            book_id=payload.book_id,
             lang=payload.language,
         )
     except Exception as e:
@@ -903,11 +917,19 @@ def audiobook_stream(book_id: int):
     b = BOOK_BY_ID.get(book_id)
     if not b:
         return error_response("Book not found", status.HTTP_404_NOT_FOUND)
-    
-    audio_file = Path("audiobook.mp3")
-    if not audio_file.exists():
-        return error_response("Audiobook file not found", 404)
-    
+
+    # F-06: this used to serve a single global Path("audiobook.mp3") from the
+    # process CWD, ignoring book_id entirely — every book streamed whatever
+    # was generated last. It now reads the per-book file that
+    # AudiobookEngine.generate writes. book_id is a validated int, so it
+    # cannot escape the directory.
+    audio_file = AUDIO_DIR / f"{book_id}.mp3"
+    if not audio_file.exists() or audio_file.stat().st_size == 0:
+        return error_response(
+            "No audiobook generated for this book yet.",
+            status.HTTP_404_NOT_FOUND,
+        )
+
     return FileResponse(audio_file, media_type="audio/mpeg")
 
 
