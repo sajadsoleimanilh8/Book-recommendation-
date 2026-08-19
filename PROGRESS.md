@@ -122,9 +122,16 @@ rejected. 75 tests pass, 1 xfail.
 duplicates, each appearing precisely twice. Invisible before PR 2 because the
 old loader keyed on array position, so every duplicate became its own book —
 inflating the catalogue and letting the recommender surface the same title
-twice. De-duplicated at ingest (last wins). **Open question for the product
-owner:** are these true duplicates, or distinct editions that lost their
-distinguishing metadata?
+twice. De-duplicated at ingest (last wins).
+
+**Decision (2026-08-19): provisional.** Keep them de-duplicated for now.
+Revisit in Phase 2 once enrichment pulls real ISBNs from Google Books and
+Open Library — an ISBN is the evidence that distinguishes a genuinely
+separate edition from a true duplicate, and we do not have one today.
+Nothing is deleted from the source file, so the decision is reversible.
+
+**Phase 2 action:** after ISBN backfill, re-check the 1,576 collapsed pairs
+and split any that carry distinct ISBNs.
 
 ### OI-5 · Rate limit required before any deployment — **BLOCKING**
 **Status (2026-08-19):** product owner confirmed the app is **local-only until further notice**, so the rate limit was deliberately **excluded from PR 1**.
