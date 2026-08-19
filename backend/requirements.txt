@@ -37,6 +37,7 @@ redis==4.6.0
 # --- Auth (PR 2) ---
 argon2-cffi==25.1.0     # argon2id — no bcrypt 72-byte truncation footgun
 PyJWT==2.13.0
+email-validator==2.3.0   # pydantic EmailStr
 
 # --- Tests ---
 pytest==9.1.1

@@ -23,6 +23,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+import config
+from auth import CurrentUser, OptionalUser
+from routes_auth import router as auth_router
+
 # Local Imports
 from engine import (
     DataLoader,
@@ -47,13 +51,29 @@ app = FastAPI(
     version="6.0.0",
 )
 
+# F-07 follow-on: allow_origins=["*"] with allow_credentials=True is an
+# invalid combination that browsers reject outright once credentials are
+# actually sent — and now that Authorization headers exist, they are. The
+# wildcard was only ever needed because the frontend hardcoded a different
+# origin than the page it was served from; that is a deployment blocker in
+# its own right and is fixed properly when Express is retired.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        o.strip()
+        for o in os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:3000,http://127.0.0.1:3000,"
+            "http://localhost:8000,http://127.0.0.1:8000",
+        ).split(",")
+        if o.strip()
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth_router)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -378,7 +398,12 @@ class ProgressRequest(BaseModel):
     total_pages: Optional[int] = None
 
 class CommentRequest(BaseModel):
-    user_id: str = "guest"
+    # user_id removed: the author is the authenticated caller (F-07).
+    # extra="forbid" for the same reason as AudiobookRequest — a client that
+    # still sends user_id gets a clear 422 rather than silently having its
+    # value ignored while the server records someone else as the author.
+    model_config = ConfigDict(extra="forbid")
+
     book_id: int
     comment: str = Field(..., min_length=1, max_length=1000)
     rating: Optional[int] = Field(None, ge=1, le=5)
@@ -767,7 +792,10 @@ def audiobook_generate(payload: AudiobookRequest):
 
 @app.post("/comments")
 @app.post("/api/comments")
-def add_comment(payload: CommentRequest):
+def add_comment(payload: CommentRequest, user: CurrentUser):
+    """F-07: now authenticated. The comment's owner is the authenticated
+    user, not a client-supplied string — without that, the ownership check on
+    DELETE has nothing trustworthy to compare against."""
     if not RECOMMENDER or not getattr(RECOMMENDER, 'comment', None):
         return error_response("Comment engine not ready.")
 
@@ -780,12 +808,13 @@ def add_comment(payload: CommentRequest):
         return error_response("Book not in ML index.")
 
     book_idx = int(matches.index[0])
-    profile = get_profile(payload.user_id)
+    owner_id = str(user.id)
+    profile = get_profile(owner_id)
 
     try:
         comment = RECOMMENDER.comment.add(
             book_idx=book_idx,
-            user_id=payload.user_id,
+            user_id=owner_id,
             text=payload.comment,
             rating=payload.rating,
             profile=profile,
@@ -831,7 +860,11 @@ def get_comments(book_id: int):
 
 @app.delete("/comments/{book_id}/{comment_index}")
 @app.delete("/api/comments/{book_id}/{comment_index}")
-def delete_comment(book_id: int, comment_index: int):
+def delete_comment(book_id: int, comment_index: int, user: CurrentUser):
+    """F-07: this endpoint previously took no authentication and performed no
+    ownership check, so any caller could delete any comment on any book by
+    index. It now requires a valid token and refuses to delete a comment the
+    caller does not own."""
     if not RECOMMENDER or not getattr(RECOMMENDER, 'comment', None):
         return error_response("Comment engine not ready.")
 
@@ -843,8 +876,22 @@ def delete_comment(book_id: int, comment_index: int):
     if matches.empty:
         return error_response("Book not in ML index.")
 
+    book_idx = int(matches.index[0])
+
+    existing = RECOMMENDER.comment.get(book_idx)
+    if comment_index < 0 or comment_index >= len(existing):
+        return error_response("Invalid comment index.", status.HTTP_404_NOT_FOUND)
+
+    owner = str(existing[comment_index].get("user_id", ""))
+    if owner != str(user.id):
+        # 403, not 404: the caller has proven identity, and hiding the
+        # comment's existence buys nothing when it is readable via GET.
+        return error_response(
+            "You can only delete your own comments.", status.HTTP_403_FORBIDDEN
+        )
+
     try:
-        removed = RECOMMENDER.comment.delete(int(matches.index[0]), comment_index)
+        removed = RECOMMENDER.comment.delete(book_idx, comment_index)
     except Exception:
         return error_response("Invalid comment index.")
 

@@ -174,13 +174,45 @@ def test_env_is_gitignored():
     )
 
 
-def test_env_example_has_no_values():
+# Keys allowed to carry a value in .env.example: non-secret defaults, plus
+# the local docker-compose dev credentials, which must match compose's own
+# defaults to be useful and grant nothing beyond a throwaway container.
+ENV_EXAMPLE_MAY_HAVE_VALUES = {
+    "HOST", "PORT", "LOG_LEVEL", "ENV", "DEBUG",
+    "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_HOST",
+    "POSTGRES_PORT", "POSTGRES_DB", "REDIS_URL",
+    "CATALOGUE_LANGUAGES", "CATALOGUE_PATH", "AUDIO_DIR",
+    "BOOK_LOAD_LIMIT", "CORS_ORIGINS", "DB_ECHO",
+    "JWT_EXPIRE_MINUTES",
+}
+
+# These are real secrets. They must ALWAYS be blank in the committed example.
+ENV_EXAMPLE_MUST_BE_BLANK = {"JWT_SECRET", "GOOGLE_BOOKS_API_KEY", "DATABASE_URL"}
+
+
+def test_env_example_carries_no_real_secrets():
     root = Path(__file__).resolve().parents[1]
     for line in (root / ".env.example").read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        assert value.strip() == "" or key.strip() in {"HOST", "PORT", "LOG_LEVEL"}, (
-            f"{key} has a value in .env.example — it may be a real secret"
-        )
+        key, value = key.strip(), value.strip()
+
+        if key in ENV_EXAMPLE_MUST_BE_BLANK:
+            assert value == "", f"{key} must be blank in .env.example — it is a real secret"
+        else:
+            assert key in ENV_EXAMPLE_MAY_HAVE_VALUES, (
+                f"{key} is new in .env.example. Add it to "
+                "ENV_EXAMPLE_MAY_HAVE_VALUES if it is a non-secret default, "
+                "or to ENV_EXAMPLE_MUST_BE_BLANK if it is a secret."
+            )
+
+
+def test_production_refuses_a_generated_jwt_secret():
+    """A per-process secret in production would break tokens across workers
+    and log everyone out on every restart, silently."""
+    src = (BACKEND / "config.py").read_text(encoding="utf-8")
+    assert "IS_PRODUCTION" in src and "JWT_SECRET must be set" in src, (
+        "config.py no longer refuses to boot without JWT_SECRET in production"
+    )
