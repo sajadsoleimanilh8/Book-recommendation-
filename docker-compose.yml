@@ -1,0 +1,49 @@
+# Local development infrastructure for DigiKitab.
+#
+# Only the datastores live here. The app itself still runs on the host via
+# `npm start`, because F-24 (shared global Python) is the reason to isolate
+# dependencies, and a container for the app is Phase 11 work, not PR 2.
+#
+#   docker compose up -d
+#   docker compose down          # keeps data
+#   docker compose down -v       # destroys data
+
+services:
+  postgres:
+    # pgvector/pgvector ships Postgres with the vector extension already
+    # built, so Phase 2 embeddings need no image change. Using it now costs
+    # nothing and avoids a migration of the container itself later.
+    image: pgvector/pgvector:pg16
+    container_name: digikitab-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-digikitab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-digikitab_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-digikitab}
+    ports:
+      # 5433 on the host, not 5432 — this project shares a machine with
+      # other work (see F-24) and must not collide with an existing server.
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-digikitab} -d ${POSTGRES_DB:-digikitab}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: digikitab-redis
+    ports:
+      - "${REDIS_PORT:-6380}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  redis_data:
