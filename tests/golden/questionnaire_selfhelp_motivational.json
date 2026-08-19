@@ -1,0 +1,72 @@
+{
+  "meta": {
+    "answers": {
+      "genre": "self-help",
+      "mood": "motivational"
+    },
+    "n": 10,
+    "note": "audit H.4 — this flow is behaviour-frozen; any diff is a bug"
+  },
+  "results": [
+    {
+      "rank": 1,
+      "title": "El cuadrante del flujo del dinero",
+      "author": "Robert T. Kiyosaki",
+      "final_score": 0.9169
+    },
+    {
+      "rank": 2,
+      "title": "How to Stop Worrying and Start Living",
+      "author": "Dale Carnegie",
+      "final_score": 0.9046
+    },
+    {
+      "rank": 3,
+      "title": "Grow Rich! With Peace of Mind",
+      "author": "Napoleon Hill",
+      "final_score": 0.8934
+    },
+    {
+      "rank": 4,
+      "title": "Everyday Greatness",
+      "author": "Stephen R. Covey",
+      "final_score": 0.662
+    },
+    {
+      "rank": 5,
+      "title": "The Truth about Marriage",
+      "author": "Roger Nygard",
+      "final_score": 0.5741
+    },
+    {
+      "rank": 6,
+      "title": "Adapt and Overcome",
+      "author": "Barrett Williams, ChatGPT",
+      "final_score": 0.5711
+    },
+    {
+      "rank": 7,
+      "title": "Ultimate Off-Grid Survival Handbook: DIY Projects for Sustainable Living",
+      "author": "William Shepherd",
+      "final_score": 0.568
+    },
+    {
+      "rank": 8,
+      "title": "Simply Sustainable",
+      "author": "Lily Cameron",
+      "final_score": 0.5649
+    },
+    {
+      "rank": 9,
+      "title": "Live Green",
+      "author": "Jen Chillingsworth",
+      "final_score": 0.5618
+    },
+    {
+      "rank": 10,
+      "title": "Making the Good Life Last",
+      "author": "Michael Schuler",
+      "final_score": 0.5588
+    }
+  ]
+}

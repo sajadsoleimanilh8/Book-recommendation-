@@ -1,0 +1,68 @@
+{
+  "meta": {
+    "scenario": {
+      "preferred_authors": [
+        "Brandon Sanderson"
+      ]
+    },
+    "n": 10,
+    "deterministic_prefix": 9,
+    "note": "positions beyond the prefix are bandit exploration and are not pinned"
+  },
+  "results": [
+    {
+      "rank": 1,
+      "title": "Skyward",
+      "author": "Brandon Sanderson",
+      "final_score": 0.746
+    },
+    {
+      "rank": 2,
+      "title": "Words of Radiance (The Stormlight Archive, #2)",
+      "author": "Brandon Sanderson",
+      "final_score": 0.646
+    },
+    {
+      "rank": 3,
+      "title": "The Way of Kings (The Stormlight Archive, #1)",
+      "author": "Brandon Sanderson",
+      "final_score": 0.6455
+    },
+    {
+      "rank": 4,
+      "title": "The Hero of Ages (Mistborn, #3)",
+      "author": "Brandon Sanderson",
+      "final_score": 0.6141
+    },
+    {
+      "rank": 5,
+      "title": "Mistborn Trilogy Boxed Set (Mistborn, #1-3)",
+      "author": "Brandon Sanderson",
+      "final_score": 0.6119
+    },
+    {
+      "rank": 6,
+      "title": "The Way of Kings, Part 1 (The Stormlight Archive #1.1)",
+      "author": "Brandon Sanderson",
+      "final_score": 0.6101
+    },
+    {
+      "rank": 7,
+      "title": "The Final Empire (Mistborn, #1)",
+      "author": "Brandon Sanderson",
+      "final_score": 0.6098
+    },
+    {
+      "rank": 8,
+      "title": "A Memory of Light (Wheel of Time, #14)",
+      "author": "Robert Jordan, Brandon Sanderson",
+      "final_score": 0.6069
+    },
+    {
+      "rank": 9,
+      "title": "Towers of Midnight (Wheel of Time, #13)",
+      "author": "Robert Jordan, Brandon Sanderson",
+      "final_score": 0.5932
+    }
+  ]
+}

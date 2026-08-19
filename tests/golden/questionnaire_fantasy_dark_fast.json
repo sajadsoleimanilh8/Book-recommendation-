@@ -1,0 +1,73 @@
+{
+  "meta": {
+    "answers": {
+      "genre": "fantasy",
+      "mood": "dark",
+      "pace": "fast"
+    },
+    "n": 10,
+    "note": "audit H.4 — this flow is behaviour-frozen; any diff is a bug"
+  },
+  "results": [
+    {
+      "rank": 1,
+      "title": "The Watcher, and other weird stories",
+      "author": "Joseph Sheridan Le Fanu",
+      "final_score": 0.68
+    },
+    {
+      "rank": 2,
+      "title": "The Works of Edgar Allan Poe — Volume 4",
+      "author": "Edgar Allan Poe",
+      "final_score": 0.6635
+    },
+    {
+      "rank": 3,
+      "title": "The shadow over Innsmouth",
+      "author": "H. P. (Howard Phillips) Lovecraft",
+      "final_score": 0.6471
+    },
+    {
+      "rank": 4,
+      "title": "The Man Who Was Thursday: A Nightmare",
+      "author": "G. K. (Gilbert Keith) Chesterton",
+      "final_score": 0.6306
+    },
+    {
+      "rank": 5,
+      "title": "The man who was pale",
+      "author": "Jack Sharkey",
+      "final_score": 0.6141
+    },
+    {
+      "rank": 6,
+      "title": "The Works of Edgar Allan Poe — Volume 1",
+      "author": "Edgar Allan Poe",
+      "final_score": 0.5976
+    },
+    {
+      "rank": 7,
+      "title": "The last test",
+      "author": "Adolphe Danziger",
+      "final_score": 0.5812
+    },
+    {
+      "rank": 8,
+      "title": "Conjure wife",
+      "author": "Fritz Leiber",
+      "final_score": 0.5647
+    },
+    {
+      "rank": 9,
+      "title": "Tales of the Wonder Club, Volume II",
+      "author": "M. Y. Halidom",
+      "final_score": 0.5482
+    },
+    {
+      "rank": 10,
+      "title": "The Works of Edgar Allan Poe — Volume 3",
+      "author": "Edgar Allan Poe",
+      "final_score": 0.5318
+    }
+  ]
+}

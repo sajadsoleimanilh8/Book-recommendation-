@@ -1,0 +1,69 @@
+{
+  "meta": {
+    "scenario": {
+      "preferred_genres": [
+        "Fiction"
+      ],
+      "mood": "dark"
+    },
+    "n": 10,
+    "deterministic_prefix": 9,
+    "note": "positions beyond the prefix are bandit exploration and are not pinned"
+  },
+  "results": [
+    {
+      "rank": 1,
+      "title": "The Watcher, and other weird stories",
+      "author": "Joseph Sheridan Le Fanu",
+      "final_score": 0.68
+    },
+    {
+      "rank": 2,
+      "title": "The crystal claw",
+      "author": "William Le Queux",
+      "final_score": 0.6781
+    },
+    {
+      "rank": 3,
+      "title": "The House Opposite: A Mystery",
+      "author": "Elizabeth Kent",
+      "final_score": 0.6762
+    },
+    {
+      "rank": 4,
+      "title": "The Lock and Key Library: Classic Mystery and Detective Stories: Modern English",
+      "author": "Julian Hawthorne",
+      "final_score": 0.6744
+    },
+    {
+      "rank": 5,
+      "title": "Mr. Marx's Secret",
+      "author": "E. Phillips (Edward Phillips) Oppenheim",
+      "final_score": 0.6725
+    },
+    {
+      "rank": 6,
+      "title": "A Bullet for Cinderella",
+      "author": "John D. (John Dann) MacDonald",
+      "final_score": 0.6706
+    },
+    {
+      "rank": 7,
+      "title": "The Red Lady",
+      "author": "Katharine Newlin Burt",
+      "final_score": 0.6687
+    },
+    {
+      "rank": 8,
+      "title": "The Putnam Hall Cadets; or, Good Times in School and Out",
+      "author": "Edward Stratemeyer",
+      "final_score": 0.6668
+    },
+    {
+      "rank": 9,
+      "title": "The Great God Pan",
+      "author": "Arthur Machen",
+      "final_score": 0.665
+    }
+  ]
+}
