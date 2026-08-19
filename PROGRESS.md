@@ -11,7 +11,8 @@ Full evidence for every `F-` reference is in [docs/PHASE-0-AUDIT.md](docs/PHASE-
 |---|---|---|
 | 0 — Audit | **Complete** (2026-08-19) | 20 findings. No production code modified (§73). |
 | 1 — Foundation | **PR 1 merged** 2026-08-19 | Closes F-01…F-06, F-08, F-09, F-16, F-21, F-23. |
-| 1b — Persistence | **PR 2 open** on `pr/2-persistence` | Postgres, Alembic, auth. Closes F-07. |
+| 1b — Persistence | **PR 2 merged** 2026-08-19 | Postgres, Alembic, auth. Closes F-07 (write side). |
+| 1c — State migration | **PR 3 open** on `pr/3-state-migration` | Golden baselines, F-12, read-authz sweep. |
 | 2 — Content Enrichment | Not started | Google Books key received. Critical path — see F-15. |
 
 ### PR 1 — `pr/1-foundation` (awaiting review)
@@ -133,6 +134,39 @@ Nothing is deleted from the source file, so the decision is reversible.
 **Phase 2 action:** after ISBN backfill, re-check the 1,576 collapsed pairs
 and split any that carry distinct ISBNs.
 
+### PR 3 — `pr/3-state-migration` (in progress)
+
+| Commit | Scope | Closes |
+|---|---|---|
+| 1 | golden-output baselines, recorded first | found **F-26** |
+| 2 | F-26 logged in full | — |
+| 3 | persist comments/progress/reminders; read-authz sweep | **F-12**, F-07 (reads) |
+
+**98 passed, 3 xfailed.** The golden baselines are unchanged after the
+migration — that is the evidence it did not move ranking.
+
+**Verified by hard restart** (taskkill, port confirmed free, connection
+refused, new PID, zero bind errors): comments, progress, reminders, the
+session, and the derived `comment_score` all survive. Posting a second
+comment after restart returned 0.5, proving the pre-restart 0.25 was
+replayed rather than reset.
+
+> **Testing note worth keeping.** The first restart test was a false pass.
+> `pkill` does not kill uvicorn on Windows; the replacement process failed to
+> bind with `Errno 10048` and exited, and the *original* process answered the
+> queries. It was caught only because a 1-second boot is impossible for a
+> 6-second ML fit. When testing restart behaviour, assert the port is free
+> and the new PID differs — do not trust the kill.
+
+**API contract change:** `DELETE /api/comments/{book_id}/{comment_index}` is
+now `DELETE /api/comments/{comment_id}`. Positional indices are racy once
+comments are shared persistent rows — two concurrent deletes shift each
+other's target. Ids come back from POST and from GET.
+
+### OI-6 · Frontend needs a login UI — OPEN
+Comments, progress and reminders all require a token now, so the existing
+pages get 401. Expected and accepted; lands with the Express retirement.
+
 ### OI-5 · Rate limit required before any deployment — **BLOCKING**
 **Status (2026-08-19):** product owner confirmed the app is **local-only until further notice**, so the rate limit was deliberately **excluded from PR 1**.
 
@@ -140,11 +174,12 @@ and split any that carry distinct ISBNs.
 
 **Before the app becomes reachable from any network, ALL of:**
 - ~~authentication (F-07)~~ — **done in PR 2**
+- ~~read-authz sweep~~ — **done in PR 3**
 - per-IP rate limit on `/api/audiobook/generate` — still open
 - move generation to a background job (F-19) — still open
 - `JWT_SECRET` set in the environment (config refuses to boot without it
-  when `ENV=production`)
-- read-authz sweep on `GET /api/profile/{user_id}` — still open
+  when `ENV=production`; the `.dev-jwt-secret` fallback is development-only)
+- token revocation (still no denylist) — accepted risk, revisit with Redis
 
 Do not deploy, port-forward, expose via tunnel, or demo over a network until these land.
 
@@ -269,7 +304,7 @@ Carried deliberately, with the reason. Each has a closing phase.
 
 | ID | Item | Why deferred | Closes in |
 |---|---|---|---|
-| ~~F-07~~ | ~~No authentication anywhere~~ | **Closed in PR 2** | ✅ |
+| ~~F-07~~ | ~~No authentication anywhere~~ | **Closed** — writes in PR 2, reads in PR 3 | ✅ |
 | F-19 | Synchronous TTS blocks the request | Needs Redis + job queue | Phase 6 |
 | F-18 | Server-side desktop notifications (`plyer`) | Needs a real delivery channel + queue | Phase 6 |
 | F-13 | LTR trained on constant features, circular target | Needs `recommendation_log` data first | Phase 3 |
