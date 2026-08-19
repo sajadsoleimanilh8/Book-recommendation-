@@ -3,11 +3,14 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
+import tempfile
 import threading
 import time
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -294,10 +297,10 @@ class FeatureEngineer:
         genre_col = df["genre"]
         if isinstance(genre_col, pd.DataFrame):
             genre_col = genre_col.iloc[:, 0]
-        genre_values = genre_col.astype(str).values.flatten()
+        genre_values = genre_col.astype(str).to_numpy()
         
         df["genre_enc"] = self.le_genre.fit_transform(genre_values)
-        df["lang_enc"] = self.le_lang.fit_transform(df["language"].astype(str).values)
+        df["lang_enc"] = self.le_lang.fit_transform(df["language"].astype(str).to_numpy())
         df["rating_popularity"] = df["average_rating"].values * np.log1p(df["ratings_count"].values)
 
         yr_min = df["published_year"].min()
@@ -322,10 +325,10 @@ class FeatureEngineer:
         self.numeric_matrix = self.scaler.fit_transform(df[num_cols].fillna(0))
 
         # Create corpus
-        title_str = df["title"].fillna("").astype(str).values
-        author_str = df["author"].fillna("").astype(str).values
-        genre_str = df["genre"].fillna("Unknown").astype(str).values
-        description_str = df["description"].fillna("").astype(str).values
+        title_str = df["title"].fillna("").astype(str).to_numpy()
+        author_str = df["author"].fillna("").astype(str).to_numpy()
+        genre_str = df["genre"].fillna("Unknown").astype(str).to_numpy()
+        description_str = df["description"].fillna("").astype(str).to_numpy()
         
         corpus = [f"{t} {a} {g} {d}" for t, a, g, d in zip(title_str, author_str, genre_str, description_str)]
 
@@ -360,11 +363,41 @@ class FeatureEngineer:
         
         if len(cleaned_texts) < 2:
             return
-        
+
         mat = self.comment_tfidf.fit_transform(cleaned_texts)
+
+        # F-15: every catalogue description is the identical placeholder
+        # "No description available", so the TF-IDF vocabulary collapses to a
+        # handful of terms — far fewer than comment_svd's 16 components, which
+        # made TruncatedSVD raise and took the whole ML fit down with it.
+        #
+        # Clamp to the vocabulary actually present. This keeps the engine
+        # alive on today's data; it does not make the embeddings useful. Once
+        # Phase 2 enrichment lands, n_features rises and the requested
+        # component count is used as intended.
+        n_features = mat.shape[1]
+        if n_features < 2:
+            log.warning(
+                f"Comment embedder skipped: vocabulary has {n_features} term(s). "
+                "Descriptions carry no usable text (F-15)."
+            )
+            return
+
+        requested = self.comment_svd.n_components
+        n_components = max(1, min(requested, n_features - 1))
+        if n_components != requested:
+            log.warning(
+                f"Comment embedder: vocabulary has only {n_features} terms, "
+                f"reducing SVD components {requested} -> {n_components}. "
+                "Expected until Phase 2 enrichment fills in descriptions (F-15)."
+            )
+            self.comment_svd = TruncatedSVD(
+                n_components=n_components, random_state=42
+            )
+
         self.comment_svd.fit(mat)
         self._comment_fitted = True
-        log.info("Comment embedder fitted.")
+        log.info(f"Comment embedder fitted ({n_components} components).")
 
 
 class ClusteringModel:
@@ -424,7 +457,7 @@ class CollaborativeFilter:
     def fit(self, df: pd.DataFrame):
         signal = (df["average_rating"].values * np.log1p(df["ratings_count"].values))
         le = LabelEncoder()
-        gids = le.fit_transform(df["genre"].astype(str).values)
+        gids = le.fit_transform(df["genre"].astype(str).to_numpy())
         mat = csr_matrix((signal, (gids, np.arange(len(df)))),
                          shape=(len(le.classes_), len(df)))
         self.item_factors = self.svd.fit_transform(mat.T)
@@ -610,10 +643,16 @@ class AudiobookEngine:
     def __init__(self, recommender: "Recommender"):
         self.recommender = recommender
 
+    # F-04 / F-06: the audio destination is derived here, never supplied by
+    # the caller. book_id is a validated positive int, so f"{book_id}.mp3"
+    # cannot contain a separator or traversal sequence. The resolved-parent
+    # assertion below is defence in depth, not the primary control.
+    AUDIO_DIR = Path(__file__).resolve().parent / "audio_outputs"
+
     def generate(
         self,
         book_name: str,
-        output_file: str = "audiobook.mp3",
+        book_id: int,
         lang: str = "en",
         chunk_chars: int = 4_000,
     ) -> Dict[str, Any]:
@@ -622,6 +661,19 @@ class AudiobookEngine:
         except ImportError:
             log.error("gTTS library not found. Please install it: pip install gTTS")
             return {"ok": False, "error": "gTTS not installed"}
+
+        try:
+            book_id = int(book_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "book_id must be an integer"}
+        if book_id < 1:
+            return {"ok": False, "error": "book_id must be a positive integer"}
+
+        self.AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+        output_path = (self.AUDIO_DIR / f"{book_id}.mp3").resolve()
+        if output_path.parent != self.AUDIO_DIR:
+            log.error(f"Refusing to write outside audio_outputs: {output_path}")
+            return {"ok": False, "error": "Invalid output location"}
 
         log.info(f"Fetching '{book_name}' from Gutenberg…")
         try:
@@ -633,39 +685,43 @@ class AudiobookEngine:
         chunks = self._smart_chunks(text, chunk_chars)
         log.info(f"Converting {len(chunks)} chunks to audio…")
 
-        temp_files = []
+        # F-06: temp files used to be written to the process CWD as
+        # _tmp_{i}.mp3, so two concurrent generations overwrote each other's
+        # fragments and produced corrupt audio. Each run now gets its own
+        # private directory.
+        tmp_dir = Path(tempfile.mkdtemp(prefix="digikitab_tts_"))
         try:
+            parts: List[Path] = []
             for i, chunk in enumerate(chunks):
-                fname = f"_tmp_{i}.mp3"
-                gTTS(text=chunk, lang=lang).save(fname)
-                temp_files.append(fname)
+                part = tmp_dir / f"{i:05d}.mp3"
+                gTTS(text=chunk, lang=lang).save(str(part))
+                parts.append(part)
 
-            if os.path.exists(output_file):
-                os.remove(output_file)
+            # Assemble into the temp dir first, then move into place, so an
+            # interrupted run cannot leave a truncated file where a previous
+            # good recording was.
+            staged = tmp_dir / "assembled.mp3"
+            with staged.open("wb") as out:
+                for part in parts:
+                    if part.exists():
+                        out.write(part.read_bytes())
 
-            with open(output_file, "ab") as out:
-                for fname in temp_files:
-                    if os.path.exists(fname):
-                        with open(fname, "rb") as f:
-                            out.write(f.read())
+            os.replace(staged, output_path)
 
             self._boost_book(book_name, boost=0.3)
-            log.info(f"Audiobook saved: {output_file}")
+            log.info(f"Audiobook saved: {output_path.name}")
 
             return {
                 "ok": True,
-                "output_file": output_file,
+                # Relative name only — never leak absolute server paths.
+                "output_file": output_path.name,
+                "book_id": book_id,
                 "chunks": len(chunks),
                 "characters": len(text),
-                "message": f"Audiobook saved to {output_file}",
+                "message": f"Audiobook saved for book {book_id}",
             }
         finally:
-            for fname in temp_files:
-                try:
-                    if os.path.exists(fname):
-                        os.remove(fname)
-                except Exception:
-                    pass
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     @staticmethod
     def _smart_chunks(text: str, max_chars: int) -> List[str]:

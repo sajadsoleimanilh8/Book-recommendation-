@@ -58,13 +58,16 @@ app.get('/questionnair.html', (req, res) => {
     res.sendFile(path.join(__dirname, 'frontend', 'questionnair.html'));
 });
 
-app.get('/css/:file', (req, res) => {
-    res.sendFile(path.join(__dirname, 'frontend', 'css', req.params.file));
-});
-
-app.get('/js/:file', (req, res) => {
-    res.sendFile(path.join(__dirname, 'frontend', 'js', req.params.file));
-});
+// F-05: routes for /css/:file and /js/:file were removed here.
+//
+// They passed req.params.file straight into path.join(). Express decodes
+// route params, so GET /js/..%2f..%2fserver.js decoded to '../../server.js'
+// and path.join normalised it outside the intended directory — source
+// disclosure for any file the process could read.
+//
+// They were also entirely redundant: express.static above already serves
+// frontend/, including frontend/css and frontend/js. Deleting them removes
+// the vulnerability with no loss of function.
 
 function startBackend() {
     console.log('🐍 Starting Python Backend (FastAPI)...');
