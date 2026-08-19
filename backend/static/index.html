@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BookMatch AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700;800&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <nav class="nav">
+        <div class="brand">
+          <span class="brand-mark">BM</span>
+          <div>
+            <strong>BookMatch AI</strong>
+            <p>Machine learning book discovery</p>
+          </div>
+        </div>
+        <a class="ghost-link" href="#results">Browse picks</a>
+      </nav>
+      <div class="hero-grid">
+        <section class="hero-copy">
+          <p class="eyebrow">ML-powered recommendations</p>
+          <h1>Find books that feel like they were picked for you.</h1>
+          <p class="hero-text">
+            Search by title, genre, or mood. The recommender combines text similarity with ratings, popularity, and affordability from your merged book dataset.
+          </p>
+          <form id="discover-form" class="discover-panel">
+            <label for="prompt">Describe what you want to read</label>
+            <div class="discover-row">
+              <input id="prompt" name="prompt" type="text" placeholder="Something adventurous but not too expensive" />
+              <button type="submit">Discover</button>
+            </div>
+            <p id="discover-reply" class="muted">Try fantasy, romance, mystery, psychology, or budget-friendly reads.</p>
+          </form>
+        </section>
+        <aside class="hero-card">
+          <h2>Smart filters</h2>
+          <form id="filters-form" class="filters">
+            <input id="query" name="query" type="text" placeholder="Search title, author, description" />
+            <div class="filter-grid">
+              <select id="genre" name="genre">
+                <option value="">All genres</option>
+              </select>
+              <select id="language" name="language">
+                <option value="">All languages</option>
+              </select>
+              <select id="mood" name="mood">
+                <option value="">Any mood</option>
+              </select>
+              <input id="max_price" name="max_price" type="number" min="0" step="0.01" placeholder="Max price" />
+              <input id="min_rating" name="min_rating" type="number" min="0" max="5" step="0.1" value="3.5" />
+            </div>
+            <button type="submit" class="secondary">Update Results</button>
+          </form>
+        </aside>
+      </div>
+    </header>
+
+    <main>
+      <section class="section-head">
+        <div>
+          <p class="eyebrow">Recommendations</p>
+          <h2 id="results">Top matches</h2>
+        </div>
+        <p id="status" class="muted">Loading books...</p>
+      </section>
+
+      <section id="books-grid" class="books-grid"></section>
+
+      <section id="detail-panel" class="detail-panel hidden">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Book detail</p>
+            <h2 id="detail-title">Selected book</h2>
+          </div>
+        </div>
+        <div id="detail-content" class="detail-content"></div>
+        <div>
+          <h3>Similar books</h3>
+          <div id="related-grid" class="books-grid compact"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <template id="book-card-template">
+    <article class="book-card">
+      <div class="cover-wrap">
+        <img class="cover" alt="Book cover" />
+      </div>
+      <div class="book-body">
+        <div class="badge-row">
+          <span class="pill genre-pill"></span>
+          <span class="pill mood-pill"></span>
+        </div>
+        <h3 class="book-title"></h3>
+        <p class="book-author"></p>
+        <p class="book-description"></p>
+        <div class="meta-row">
+          <span class="rating"></span>
+          <span class="price"></span>
+          <span class="pages"></span>
+        </div>
+        <button class="open-book">View details</button>
+      </div>
+    </article>
+  </template>
+
+  <script src="/app.js"></script>
+</body>
+</html>

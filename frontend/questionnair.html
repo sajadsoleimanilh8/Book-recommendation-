@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DigiKitaBook - AI Book Recommender</title>
+    <!-- استایل‌های شما -->
+    <style>
+        :root {
+            --bg: #08111f;
+            --bg-2: #0f1c31;
+            --panel: rgba(14, 26, 48, 0.88);
+            --panel-soft: rgba(255, 255, 255, 0.05);
+            --text: #edf4ff;
+            --muted: #9cb1d1;
+            --line: rgba(255, 255, 255, 0.08);
+            --primary: #5fc2ff;
+            --primary-2: #7af0bf;
+            --accent: #ffd36b;
+            --danger: #ff7f7f;
+            --shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+            --radius: 22px;
+        }
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0;
+            padding: 0;
+            color: var(--text);
+            background:
+                radial-gradient(circle at top right, rgba(95, 194, 255, 0.18), transparent 26%),
+                radial-gradient(circle at bottom left, rgba(122, 240, 191, 0.16), transparent 22%),
+                linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            min-height: 100vh;
+        }
+        a { color: inherit; text-decoration: none; }
+        img { display: block; max-width: 100%; }
+        button, input, select, textarea { font: inherit; }
+        textarea { resize: vertical; }
+        .container { width: min(1180px, calc(100% - 32px)); margin: 0 auto; }
+        .muted { color: var(--muted); }
+        .no-top { margin-top: 0; }
+        .top-gap { margin-top: 16px; }
+        .stack-gap { display: grid; gap: 14px; }
+        .align-center { align-items: center; }
+        .tight { margin-bottom: 0; }
+        .border-bottom { border-bottom: 1px solid var(--line); }
+        
+        /* Topbar */
+        .topbar {
+            position: sticky;
+            top: 0;
+            z-index: 20;
+            background: rgba(8, 17, 31, 0.78);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--line);
+        }
+        .topbar-inner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 16px 0;
+        }
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-weight: 800;
+            letter-spacing: 0.02em;
+        }
+        .brand-badge {
+            width: 42px;
+            height: 42px;
+            border-radius: 14px;
+            display: grid;
+            place-items: center;
+            color: #072132;
+            background: linear-gradient(135deg, var(--primary), var(--primary-2));
+        }
+        .nav { display: flex; gap: 10px; flex-wrap: wrap; }
+        .nav a {
+            padding: 10px 14px;
+            border-radius: 999px;
+            color: var(--muted);
+            border: 1px solid var(--line);
+        }
+        .nav a:hover, .nav a.active {
+            color: var(--text);
+            background: rgba(95, 194, 255, 0.12);
+            border-color: rgba(95, 194, 255, 0.35);
+        }
+
+        /* Hero */
+        .hero { padding: 42px 0 24px; }
+        .hero-grid { display: grid; gap: 22px; grid-template-columns: 1.15fr 0.85fr; }
+        .hero-copy { padding: 34px; }
+        .kicker {
+            display: inline-flex;
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: rgba(122, 240, 191, 0.12);
+            color: #c9ffee;
+            font-size: 13px;
+            margin-bottom: 16px;
+        }
+        .hero h1 {
+            margin: 0 0 14px;
+            font-size: clamp(34px, 5vw, 58px);
+            line-height: 1.02;
+        }
+        .hero p { color: var(--muted); font-size: 17px; line-height: 1.8; }
+        .hero-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+        
+        /* Stats */
+        .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+        .stat {
+            padding: 16px;
+            border-radius: 18px;
+            border: 1px solid var(--line);
+            background: var(--panel-soft);
+        }
+        .stat small { color: var(--muted); }
+        .stat strong { display: block; margin-top: 8px; font-size: 22px; }
+
+        /* Quiz Section */
+        .quiz { grid-template-columns: 1fr 320px; display: grid; gap: 22px; margin-top: 40px; }
+        .panel { padding: 24px; border-radius: var(--radius); border: 1px solid var(--line); background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)); box-shadow: var(--shadow); }
+        
+        /* Progress Bar */
+        .progress-container { background-color: var(--panel-soft); border-radius: 10px; height: 8px; margin-bottom: 20px; overflow: hidden; border: 1px solid var(--line); }
+        #progressBar { background: linear-gradient(90deg, var(--primary), var(--primary-2)); height: 100%; width: 0%; transition: width 0.4s ease; }
+        #progressLabel { text-align: center; font-size: 0.9em; color: var(--muted); margin-bottom: 20px; }
+
+        /* Form Steps */
+        .question-step { display: none; animation: fadeIn 0.5s; }
+        .question-step.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        .question-label { font-size: 1.4em; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+        .question-subtitle { font-size: 0.9em; color: var(--muted); margin-bottom: 20px; display: block; }
+        
+        .input, .select {
+            width: 100%;
+            padding: 14px 16px;
+            border-radius: 14px;
+            border: 1px solid var(--line);
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.04);
+            transition: border-color 0.3s, box-shadow 0.3s;
+        }
+        .input:focus, .select:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(95, 194, 255, 0.15);
+            outline: none;
+        }
+        
+        /* Buttons */
+        .btn {
+            padding: 12px 24px;
+            border-radius: 14px;
+            border: 1px solid transparent;
+            cursor: pointer;
+            font-weight: 700;
+            transition: transform 0.2s, opacity 0.2s;
+        }
+        .btn:active { transform: scale(0.98); }
+        .btn-primary {
+            color: #072132;
+            background: linear-gradient(135deg, var(--primary), var(--primary-2));
+        }
+        .btn-secondary {
+            color: var(--text);
+            border-color: var(--line);
+            background: rgba(255, 255, 255, 0.05);
+        }
+        .btn-secondary:hover { background: rgba(255, 255, 255, 0.1); }
+        
+        .nav-buttons { display: flex; justify-content: space-between; margin-top: 30px; }
+        .btn-prev:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* Summary Sidebar */
+        .summary { padding: 24px; }
+        .summary h3 { margin-top: 0; margin-bottom: 16px; font-size: 1.2em; }
+        .summary-list { display: grid; gap: 10px; }
+        .summary-item {
+            padding: 12px;
+            border-radius: 12px;
+            border: 1px solid var(--line);
+            background: var(--panel-soft);
+            font-size: 0.9em;
+        }
+        .summary-item strong { color: var(--primary); display: block; margin-bottom: 4px; }
+        .summary-empty { color: var(--muted); text-align: center; padding: 20px; font-style: italic; }
+
+        /* Results */
+        .section { padding: 18px 0 32px; }
+        .book-grid { display: grid; gap: 18px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .book-card { overflow: hidden; display: flex; flex-direction: column; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel); }
+        
+        .cover {
+            min-height: 170px;
+            padding: 18px;
+            display: flex;
+            align-items: end;
+            background:
+                radial-gradient(circle at top right, rgba(255, 255, 255, 0.24), transparent 34%),
+                linear-gradient(135deg, rgba(95, 194, 255, 0.28), rgba(122, 240, 191, 0.15));
+            position: relative;
+        }
+        .cover img {
+            width: 100px;
+            border-radius: 6px;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+            position: absolute;
+            bottom: -20px;
+            right: 20px;
+        }
+        .cover-tag {
+            display: inline-flex;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: rgba(0, 0, 0, 0.4);
+            font-size: 11px;
+            backdrop-filter: blur(4px);
+            margin-bottom: 10px;
+        }
+        
+        .book-info { padding: 30px 20px 20px; flex: 1; display: flex; flex-direction: column; }
+        .book-title { margin: 0 0 8px; font-size: 1.2em; color: var(--text); }
+        .book-meta { font-size: 0.85em; color: var(--muted); margin: 4px 0; }
+        .book-desc { font-size: 0.9em; color: #b0c4de; margin: 10px 0; line-height: 1.5; flex: 1; }
+        
+        .badges { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+        .badge {
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 0.75em;
+            font-weight: 600;
+        }
+        .badge-ml { background: rgba(255, 211, 107, 0.2); color: #ffd36b; }
+        .badge-gutenberg { background: rgba(122, 240, 191, 0.2); color: #7af0bf; }
+        .badge-local { background: rgba(95, 194, 255, 0.2); color: #5fc2ff; }
+        .badge-audio { background: rgba(128, 128, 255, 0.2); color: #a6a6ff; }
+        .badge-mood { background: rgba(255, 127, 127, 0.2); color: #ff7f7f; }
+
+        .actions { display: flex; gap: 8px; margin-top: 15px; }
+        .btn-sm { padding: 8px 12px; font-size: 0.85em; border-radius: 10px; }
+
+        /* Loading & Error */
+        #loadingSpinner { text-align: center; padding: 40px; color: var(--primary); font-size: 1.2em; }
+        #errorBox { color: var(--danger); padding: 15px; background: rgba(255, 127, 127, 0.1); border-radius: 12px; margin-top: 20px; border: 1px solid rgba(255, 127, 127, 0.3); display: none; }
+        
+        /* Responsive */
+        @media (max-width: 1100px) {
+            .hero-grid, .quiz, .book-grid { grid-template-columns: 1fr; }
+            .hero { text-align: center; }
+            .hero-actions { justify-content: center; }
+        }
+        @media (max-width: 760px) {
+            .stats { grid-template-columns: 1fr; }
+            .nav { display: none; }
+            .hero-copy, .panel { padding: 18px; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Topbar -->
+    <div class="topbar">
+        <div class="container topbar-inner">
+            <div class="brand">
+                <div class="brand-badge">DK</div>
+                <span>DigiKitaBook</span>
+            </div>
+            <nav class="nav">
+                <a href="#" class="active">Discover</a>
+                <a href="#">Library</a>
+                <a href="#">Audio</a>
+                <a href="#">Settings</a>
+            </nav>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Hero Section -->
+        <section class="hero">
+            <div class="hero-grid">
+                <div class="hero-copy">
+                    <div class="kicker">✨ AI-Powered Reading</div>
+                    <h1>Find your next<br>favorite book.</h1>
+                    <p class="muted no-top">Answer a few quick questions about your mood and preferences, and let our AI match you with the perfect read.</p>
+                    <div class="hero-actions top-gap">
+                        <button class="btn btn-primary" onclick="scrollToQuiz()">Start Quiz</button>
+                        <button class="btn btn-secondary">Browse Random</button>
+                    </div>
+                </div>
+                <div class="stats">
+                    <div class="stat">
+                        <small>Books</small>
+                        <strong>12k+</strong>
+                    </div>
+                    <div class="stat">
+                        <small>Users</small>
+                        <strong>5.4k</strong>
+                    </div>
+                    <div class="stat">
+                        <small>Matches</small>
+                        <strong>98%</strong>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Quiz Section -->
+        <section id="quizSection" class="quiz">
+            <!-- Main Form Area -->
+            <div class="panel">
+                <div class="progress-container">
+                    <div id="progressBar"></div>
+                </div>
+                <div id="progressLabel">Question 1 of 6</div>
+
+                <form id="quizForm">
+                    <div id="options">
+                        <!-- Questions injected via JS -->
+                    </div>
+
+                    <div class="nav-buttons">
+                        <button type="button" id="btnPrev" class="btn btn-secondary" disabled>Previous</button>
+                        <button type="button" id="btnNext" class="btn btn-primary">Next</button>
+                        <button type="submit" id="btnSubmit" class="btn btn-primary" style="display: none;">Find My Books</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Summary Sidebar -->
+            <div class="panel summary">
+                <h3>Your Preferences</h3>
+                <div id="summaryList" class="summary-list">
+                    <div class="summary-item summary-empty">No filters selected yet.</div>
+                </div>
+                <button class="btn btn-secondary btn-sm top-gap" style="width:100%" onclick="resetQuiz()">Reset Quiz</button>
+            </div>
+        </section>
+
+        <!-- Results Section -->
+        <section id="resultsSection" class="section" style="display: none;">
+            <div class="section-title">
+                <h2>Recommended For You</h2>
+                <button class="btn btn-secondary btn-sm" onclick="resetQuiz()">Start Over</button>
+            </div>
+            
+            <div id="loadingSpinner" style="display: none;">
+                <div style="font-size: 2em; margin-bottom: 10px;">🔍</div>
+                Analyzing your taste...
+            </div>
+            
+            <div id="errorBox"></div>
+
+            <div id="resultsHeader" style="margin-bottom: 14px; color: var(--muted);"></div>
+            <div id="results" class="book-grid"></div>
+        </section>
+    </div>
+
+    <!-- JavaScript Logic -->
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        const quizData = [
+            {
+                key: 'genre',
+                title: 'What genre are you in the mood for?',
+                subtitle: 'Leave blank to include all genres',
+                type: 'select',
+                options: [
+                    { value: '', label: 'Any genre' },
+                    { value: 'fantasy', label: ' Fantasy' },
+                    { value: 'romance', label: ' Romance' },
+                    { value: 'thriller', label: ' Thriller' },
+                    { value: 'mystery', label: ' Mystery' },
+                    { value: 'science', label: ' Science' },
+                    { value: 'history', label: ' History' },
+                    { value: 'horror', label: ' Horror' },
+                    { value: 'biography', label: ' Biography' },
+                    { value: 'self-help', label: ' Self-Help' },
+                    { value: 'psychology', label: ' Psychology' },
+                    { value: 'philosophy', label: ' Philosophy' },
+                    { value: 'travel', label: ' Travel' },
+                    { value: 'poetry', label: ' Poetry' },
+                    { value: 'fiction', label: ' Fiction' },
+                ]
+            },
+            {
+                key: 'mood',
+                title: "What's your reading mood?",
+                subtitle: 'We match your mood to the right genre',
+                type: 'select',
+                options: [
+                    { value: '', label: 'Any mood' },
+                    { value: 'happy', label: ' Happy — Fun & light-hearted' },
+                    { value: 'adventurous', label: ' Adventurous — Action-packed' },
+                    { value: 'dark', label: ' Dark — Gripping & intense' },
+                    { value: 'romantic', label: ' Romantic — Love stories' },
+                    { value: 'motivational', label: ' Motivational — Inspiring reads' },
+                    { value: 'relaxing', label: ' Relaxing — Calm & thoughtful' },
+                    { value: 'curious', label: ' Curious — Science & discovery' },
+                    { value: 'thoughtful', label: ' Thoughtful — Deep & reflective' },
+                    { value: 'nostalgic', label: ' Nostalgic — Classics & memoirs' },
+                    { value: 'sad', label: ' Emotional — Drama & poetry' },
+                ]
+            },
+            {
+                key: 'pace',
+                title: 'Preferred reading pace?',
+                subtitle: 'Fast = under 350 pages • Slow = 350+ pages',
+                type: 'select',
+                options: [
+                    { value: 'any', label: ' No preference' },
+                    { value: 'fast', label: ' Fast — Quick reads (under 350 pages)' },
+                    { value: 'slow', label: ' Slow — Long, immersive books (350+ pages)' },
+                ]
+            },
+            {
+                key: 'language',
+                title: 'Preferred language?',
+                subtitle: 'Leave blank for any language',
+                type: 'select',
+                options: [
+                    { value: 'any', label: 'Any language' },
+                    { value: 'en', label: ' English' },
+                    { value: 'fa', label: ' Persian'},
+                    { value: 'fr', label: ' French' },
+                    { value: 'de', label: ' German' },
+                    { value: 'es', label: ' Spanish' },
+                    { value: 'ar', label: ' Arabic' },
+                ]
+            },
+            {
+                key: 'popularity',
+                title: 'Bestseller or hidden gem?',
+                subtitle: 'How popular do you want the book to be?',
+                type: 'select',
+                options: [
+                    { value: 'any', label: ' No preference' },
+                    { value: 'popular', label: ' Popular — Bestsellers with many reviews' },
+                    { value: 'underrated', label: ' Hidden gem — Lesser-known books' },
+                ]
+            },
+            {
+                key: 'favorite_author',
+                title: 'Who is your favourite author?',
+                subtitle: 'Partial name works — leave blank to skip',
+                type: 'text',
+                placeholder: 'e.g. James Clear, Dostoevsky, Agatha Christie',
+            },
+        ];
+
+        const answers = {
+            user_id: _getUserId(),
+            genre: '',
+            mood: '',
+            pace: 'any',
+            language: 'any',
+            popularity: 'any',
+            favorite_author: '',
+            top_k: 12,
+        };
+        let currentStep = 0;
+        let isSubmitting = false;
+
+        function _getUserId() {
+            let uid = localStorage.getItem('digikitab_user_id');
+            if (!uid) {
+                uid = 'user_' + Math.random().toString(36).slice(2, 10);
+                localStorage.setItem('digikitab_user_id', uid);
+            }
+            return uid;
+        }
+
+        function scrollToQuiz() {
+            document.getElementById('quizSection').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function buildForm() {
+            const wrap = document.getElementById('options');
+            if (!wrap) return;
+            wrap.innerHTML = quizData.map((q, i) => {
+                let inputHtml;
+                if (q.type === 'text') {
+                    inputHtml = `<input
+                        class="input"
+                        type="text"
+                        data-key="${q.key}"
+                        id="q_${q.key}"
+                        placeholder="${q.placeholder || ''}"
+                        autocomplete="off"
+                    />`;
+                } else {
+                    const optionsHtml = (q.options || []).map(op =>
+                        `<option value="${op.value}">${op.label}</option>`
+                    ).join('');
+                    inputHtml = `<select class="select" data-key="${q.key}" id="q_${q.key}">
+                        ${optionsHtml}
+                    </select>`;
+                }
+                return `
+                <div class="form-group question-step ${i === 0 ? 'active' : ''}" data-step="${i}">
+                    <label class="question-label">
+                        ${q.title}
+                        ${q.subtitle ? `<span class="question-subtitle">${q.subtitle}</span>` : ''}
+                    </label>
+                    ${inputHtml}
+                </div>`;
+            }).join('');
+
+            wrap.querySelectorAll('[data-key]').forEach(el => {
+                el.addEventListener('change', () => {
+                    answers[el.dataset.key] = el.value;
+                    renderSummary();
+                });
+            });
+            renderProgressBar();
+            renderSummary();
+            _updateNavButtons();
+        }
+
+        function renderProgressBar() {
+            const bar = document.getElementById('progressBar');
+            if (!bar) return;
+            const pct = Math.round(((currentStep + 1) / quizData.length) * 100);
+            bar.style.width = pct + '%';
+            bar.setAttribute('aria-valuenow', pct);
+            const label = document.getElementById('progressLabel');
+            if (label) label.textContent = `Question ${currentStep + 1} of ${quizData.length}`;
+        }
+
+        function showStep(step) {
+            document.querySelectorAll('.question-step').forEach((el, i) => {
+                el.classList.toggle('active', i === step);
+            });
+            currentStep = step;
+            renderProgressBar();
+            _updateNavButtons();
+        }
+
+        function nextStep() {
+            if (currentStep < quizData.length - 1) showStep(currentStep + 1);
+        }
+
+        function prevStep() {
+            if (currentStep > 0) showStep(currentStep - 1);
+        }
+
+        function _updateNavButtons() {
+            const btnPrev = document.getElementById('btnPrev');
+            const btnNext = document.getElementById('btnNext');
+            const btnSubmit = document.getElementById('btnSubmit');
+            if (btnPrev) btnPrev.disabled = currentStep === 0;
+            if (btnNext) btnNext.style.display = currentStep < quizData.length - 1 ? 'inline-flex' : 'none';
+            if (btnSubmit) btnSubmit.style.display = currentStep === quizData.length - 1 ? 'inline-flex' : 'none';
+        }
+
+        function renderSummary() {
+            const box = document.getElementById('summaryList');
+            if (!box) return;
+            const filled = quizData.filter(q => answers[q.key] && answers[q.key] !== 'any');
+            if (!filled.length) {
+                box.innerHTML = '<div class="summary-item summary-empty">No filters selected yet.</div>';
+                return;
+            }
+            box.innerHTML = filled.map(q => {
+                const opt = q.options.find(o => o.value === answers[q.key]);
+                const label = opt ? opt.label : answers[q.key];
+                return `<div class="summary-item">
+                    <strong>${q.title.replace(/^[^\s]+\s/, '')}</strong>
+                    <span>${label}</span>
+                </div>`;
+            }).join('');
+        }
+
+        function buildPayload() {
+            return {
+                user_id: answers.user_id,
+                genre: answers.genre || null,
+                mood: answers.mood || null,
+                pace: answers.pace || 'any',
+                language: answers.language || 'any',
+                popularity: answers.popularity || 'any',
+                favorite_author: answers.favorite_author || null,
+                top_k: answers.top_k,
+            };
+        }
+
+        function bookCard(book) {
+            const stars = _stars(book.rating);
+            const price = book.price === 0 || book.price == null ? 'Free' : `$${Number(book.price).toFixed(2)}`;
+            const mlScore = book.ml_score != null ? `<span class="badge badge-ml">ML ${(book.ml_score * 100).toFixed(0)}%</span>` : '';
+            const sourceBadge = book.source === 'gutenberg'
+                ? `<span class="badge badge-gutenberg">Free · Gutenberg</span>`
+                : `<span class="badge badge-local">Local</span>`;
+            const audioBadge = book.audiobook
+                ? `<span class="badge badge-audio"> Audiobook</span>`
+                : '';
+            const moodBadge = book.mood
+                ? `<span class="badge badge-mood">${book.mood}</span>`
+                : '';
+            const thumbnail = book.thumbnail
+                ? `<img src="${book.thumbnail}" alt="${book.title}" loading="lazy" />`
+                : `<div style="width:100px; height:140px; background:var(--panel-soft); border-radius:6px;"></div>`;
+            const desc = book.description
+                ? `<p class="book-desc">${book.description.slice(0, 160)}${book.description.length > 160 ? '...' : ''}</p>`
+                : '';
+            const commentScore = book.comment_score
+                ? `<p class="book-meta"> Community: ${book.comment_score > 0 ? '+' : ''}${book.comment_score}</p>`
+                : '';
+            return `
+            <article class="book-card" data-book-id="${book.id}">
+                <div class="cover">
+                    ${thumbnail}
+                    <div class="badges" style="position:absolute; top:10px; left:10px; width:calc(100% - 110px);">
+                        ${mlScore}${sourceBadge}
+                    </div>
+                </div>
+                <div class="book-info">
+                    <h3 class="book-title">${book.title}</h3>
+                    <div class="book-meta"><strong>Author:</strong> ${book.author}</div>
+                    <div class="book-meta"><strong>Genre:</strong> ${book.genre}</div>
+                    <div class="book-meta"><strong>Rating:</strong> ${stars} ${book.rating ?? 'N/A'}</div>
+                    ${commentScore}
+                    ${desc}
+                    <div class="actions">
+                        <button class="btn btn-secondary btn-sm" onclick="saveBook(${book.id}, '${_esc(book.title)}')">Save</button>
+                        ${book.audiobook ? `<a class="btn btn-primary btn-sm" href="./audiobook.html?book=${book.id}">Listen</a>` : ''}
+                        ${book.url ? `<a class="btn btn-secondary btn-sm" href="${book.url}" target="_blank">Link</a>` : ''}
+                    </div>
+                </div>
+            </article>`;
+        }
+
+        function _stars(rating) {
+            if (!rating) return '☆☆☆☆☆';
+            const full = Math.round(rating);
+            const empty = 5 - full;
+            return ' '.repeat(Math.max(0, full)) + '☆'.repeat(Math.max(0, empty));
+        }
+
+        function _esc(str) {
+            return String(str).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        }
+
+        async function submitQuiz(e) {
+            if (e) e.preventDefault();
+            if (isSubmitting) return;
+            
+            document.querySelectorAll('[data-key]').forEach(el => {
+                answers[el.dataset.key] = el.value;
+            });
+            
+            const payload = buildPayload();
+            _setLoading(true);
+            
+            try {
+                const res = await fetch(`${API_BASE}/questionnaire`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err?.error?.message || `Server error ${res.status}`);
+                }
+                
+                const data = await res.json();
+                _renderResults(data);
+            } catch (err) {
+                console.error('Questionnaire error:', err);
+                _showError(err.message || 'Could not load recommendations. Is the backend running?');
+            } finally {
+                _setLoading(false);
+            }
+        }
+
+        function _renderResults(data) {
+            const resultsSection = document.getElementById('resultsSection');
+            const results = document.getElementById('results');
+            if (!results) return;
+            
+            const items = data.items || [];
+            const mlPowered = data.ml_powered;
+            const answersData = data.answers || {};
+            
+            const headerEl = document.getElementById('resultsHeader');
+            if (headerEl) {
+                const filterParts = Object.entries(answersData)
+                    .filter(([, v]) => v && v !== 'any')
+                    .map(([k, v]) => `<strong>${k}</strong>: ${v}`)
+                    .join(' · ');
+                headerEl.innerHTML = `
+                <span>${items.length} book${items.length !== 1 ? 's' : ''} found</span>
+                ${mlPowered ? '<span class="badge badge-ml" style="margin-right:10px;">ML-powered</span>' : ''}
+                ${filterParts ? `<span style="margin-left:10px;">${filterParts}</span>` : ''}`;
+            }
+            
+            results.innerHTML = items.length
+                ? items.map(bookCard).join('')
+                : `<div class="panel" style="grid-column: 1/-1; text-align:center;">
+                    <p class="muted">No books matched your preferences.</p>
+                    <p>Try selecting fewer filters or changing your genre/mood.</p>
+                    <button class="btn btn-secondary" onclick="resetQuiz()">Try Again</button>
+                  </div>`;
+                  
+            resultsSection.style.display = 'block';
+            resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function _setLoading(on) {
+            isSubmitting = on;
+            const btnSubmit = document.getElementById('btnSubmit');
+            const spinner = document.getElementById('loadingSpinner');
+            const results = document.getElementById('results');
+            const errorBox = document.getElementById('errorBox');
+            
+            if (btnSubmit) {
+                btnSubmit.disabled = on;
+                btnSubmit.textContent = on ? 'Finding...' : 'Find My Books';
+            }
+            if (spinner) spinner.style.display = on ? 'block' : 'none';
+            if (on && results) results.innerHTML = '';
+            if (errorBox) errorBox.style.display = 'none';
+        }
+
+        function _showError(msg) {
+            const errorBox = document.getElementById('errorBox');
+            if (errorBox) {
+                errorBox.textContent = `Error: ${msg}`;
+                errorBox.style.display = 'block';
+            } else {
+                alert(msg);
+            }
+        }
+
+        function saveBook(id, title) {
+            if (!id) return;
+            const saved = JSON.parse(localStorage.getItem('savedBooks') || '[]');
+            if (saved.some(b => b.id === id)) {
+                alert(`"${title}" is already saved.`);
+                return;
+            }
+            saved.push({ id, title, savedAt: new Date().toISOString() });
+            localStorage.setItem('savedBooks', JSON.stringify(saved));
+            
+            const card = document.querySelector(`[data-book-id="${id}"] .btn-secondary`);
+            if (card) {
+                card.textContent = ' Saved';
+                card.disabled = true;
+                card.style.opacity = '0.7';
+            }
+        }
+
+        function resetQuiz() {
+            Object.assign(answers, {
+                genre: '', mood: '', pace: 'any', language: 'any',
+                popularity: 'any', favorite_author: '',
+            });
+            document.querySelectorAll('[data-key]').forEach(el => {
+                el.value = answers[el.dataset.key] ?? '';
+            });
+            const resultsSection = document.getElementById('resultsSection');
+            if (resultsSection) resultsSection.style.display = 'none';
+            showStep(0);
+            renderSummary();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            buildForm();
+            const form = document.getElementById('quizForm');
+            if (form) form.addEventListener('submit', submitQuiz);
+            
+            const btnNext = document.getElementById('btnNext');
+            const btnPrev = document.getElementById('btnPrev');
+            
+            if (btnNext) btnNext.addEventListener('click', nextStep);
+            if (btnPrev) btnPrev.addEventListener('click', prevStep);
+            
+            document.addEventListener('keydown', e => {
+                if (e.target.tagName === 'SELECT') return;
+                if (e.key === 'ArrowRight' || e.key === 'Enter') nextStep();
+                if (e.key === 'ArrowLeft') prevStep();
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Book Filter - BookVerse</title>
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="container topbar-inner">
+    <div class="brand">
+      <div class="brand-badge">📚</div>
+      <span>BookVerse</span>
+    </div>
+    <nav class="nav">
+      <a href="index.html">Home</a>
+      <a href="filter.html" class="active">Search</a>
+      <a href="user.html?book=1">My Book</a>
+      <a href="chatbot.html">Chatbot</a>
+      <a href="Audiobook.html">Audiobook</a>
+      <a href="questionnair.html">Questionnaire</a>
+    </nav>
+  </div>
+</div>
+
+<div class="container section">
+  
+  <div class="section-title">
+    <div>
+      <h2>Find Your Next Read</h2>
+      <p>Search through our collection using advanced filters.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="panel">
+      <form class="form-grid" id="filterForm">
+        <div>
+          <label>Genre</label>
+          <input type="text" class="input" id="genre" placeholder="e.g. Sci-Fi, History">
+        </div>
+        <div>
+          <label>Mood</label>
+          <input type="text" class="input" id="mood" placeholder="e.g. Happy, Dark">
+        </div>
+        <div>
+          <label>Language</label>
+          <input type="text" class="input" id="language" placeholder="e.g. English, Persian">
+        </div>
+        <div>
+          <label>Author</label>
+          <input type="text" class="input" id="author" placeholder="e.g. Orwell, Tolkien">
+        </div>
+        <div>
+          <label>Min Rating</label>
+          <input type="number" class="input" id="minRating" placeholder="0" step="0.5" min="0" max="5">
+        </div>
+        <div>
+          <label>Min Pages</label>
+          <input type="number" class="input" id="minPages" placeholder="0">
+        </div>
+        <div class="actions">
+          <button type="button" class="btn btn-secondary" onclick="resetFilters()">Reset</button>
+          <button type="submit" class="btn btn-primary">Search Books</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div style="margin-top: 40px;">
+    <div class="results-head">
+      <h3 style="margin:0; font-size:20px;" id="resultsCount">Found 0 Books</h3>
+    </div>
+    <div id="booksContainer" class="book-grid">
+      <div class="loading">Search for books...</div>
+    </div>
+  </div>
+
+</div>
+
+<script src="/js/filter.js"></script>
+</body>
+</html>
