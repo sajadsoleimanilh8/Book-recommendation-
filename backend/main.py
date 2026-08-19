@@ -465,7 +465,15 @@ def startup():
 @app.get("/api/health")
 def health():
     return {
-        "ok": DATA_SOURCE in ("json", "csv_fallback") and len(BOOKS) > 0,
+        # ok means "safe to serve real traffic": real catalogue AND a fitted
+        # ML engine. Reporting ok:True with ml_ready:False would hide a dead
+        # recommender behind a green check — the same blind spot as F-03.
+        "ok": (
+            DATA_SOURCE in ("json", "csv_fallback")
+            and len(BOOKS) > 0
+            and RECOMMENDER is not None
+            and getattr(RECOMMENDER, "_fitted", False)
+        ),
         "books_loaded": len(BOOKS),
         "ml_ready": RECOMMENDER is not None and getattr(RECOMMENDER, '_fitted', False),
         "audiobook_ready": RECOMMENDER is not None and getattr(RECOMMENDER, 'audiobook', None) is not None,
@@ -479,7 +487,12 @@ def health():
         # both — serving fabricated books is not a healthy state.
         "data_source": DATA_SOURCE,
         "using_real_data": DATA_SOURCE in ("json", "csv_fallback"),
-        "clusters": int(getattr(RECOMMENDER, 'cluster', None)) if RECOMMENDER and getattr(RECOMMENDER, 'cluster', None) else None,
+        # F-21: this was int(RECOMMENDER.cluster), but `cluster` is the
+        # ClusteringModel object, not a number — so /health raised a 500
+        # TypeError on every call where the ML engine had actually fitted.
+        # The endpoint only ever returned 200 while the engine was broken,
+        # which is a large part of why F-03 went unnoticed. best_k is the int.
+        "clusters": getattr(getattr(RECOMMENDER, "cluster", None), "best_k", None),
     }
 
 @app.get("/books")

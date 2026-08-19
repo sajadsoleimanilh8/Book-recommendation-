@@ -19,6 +19,11 @@ for the full architecture audit and [PROGRESS.md](PROGRESS.md) for current statu
 ## Setup
 
 ```bash
+# 0. Use a virtualenv — installing the pins into a shared global Python
+#    downgraded click and broke an unrelated package once already (F-24).
+python -m venv .venv && source .venv/Scripts/activate   # Windows/Git Bash
+# python -m venv .venv && source .venv/bin/activate     # macOS/Linux
+
 # 1. Python backend
 pip install -r backend/requirements.txt
 
@@ -112,7 +117,12 @@ Carried deliberately, each tracked in [PROGRESS.md](PROGRESS.md):
   the recommender is effectively title + author + genre only. Fixing this is
   the Phase 2 critical path.
 - **The learning-to-rank model is trained on constant features against a
-  circular target** (F-13). Its reported R² is meaningless. Do not cite it.
+  circular target** (F-13). It logs `val R2: 1.0000` on every boot. That
+  number is an artefact of the target being a function of its own inputs.
+  Do not cite it.
+- **The chatbot never returns book recommendations** (F-22). It classifies
+  intent correctly, then returns a canned string — `respond()` never
+  populates its `books` list. Tracked for PR 2.
 
 ## Contributing
 

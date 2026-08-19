@@ -28,11 +28,36 @@ Verified: 30 tests pass; the catalogue resolves to 29,975 real records;
 `{"output_file": "../server.js"}` is rejected at both the schema and the
 path-derivation layer.
 
-**Not verified:** the app has never been booted end to end. `scikit-learn`,
-`gtts` and `plyer` are absent from the validation environment, so
-`import engine` fails there. **First task on review: install
-`backend/requirements.txt` and confirm the app starts.** Note that pandas 3.x
-and numpy 2.x are newer majors than this code was written against.
+### Boot verification — 2026-08-19, PASSED
+
+Dependencies installed and the app booted end to end. Two blocking defects
+found and fixed in the process (commit 6).
+
+| Check | Result |
+|---|---|
+| `import engine` | OK (4.8s) |
+| ML engine fits | OK — 29,975 × 57 feature matrix, k=9, all 6 sub-engines ready |
+| `/health` | `ok:true`, `books_loaded:29975`, `data_source:"json"`, `ml_ready:true` |
+| 14 live endpoints | all 200 |
+| `/api/books/filter-options` | 200 — F-16 confirmed fixed live |
+| F-04 exploit over HTTP | 4/4 rejected 422, `server.js` md5 unchanged |
+| Recommendations | real titles (Le Queux, Hawthorne, MacDonald) — no synthetic |
+| Questionnaire (dark/fantasy) | Le Fanu, Poe, Lovecraft — coherent |
+| Test suite | **51 passed, 1 xfailed** |
+
+Installed: scikit-learn 1.9.0, pandas 3.0.5, numpy 2.4.6, gtts 2.5.4, plyer 2.1.0.
+
+> **Install side effect, repaired.** The `uvicorn==0.51.0` pin caused pip to
+> downgrade `click` 8.4.2 → 8.1.8, breaking an unrelated `huggingface-hub` in
+> the global interpreter. `click` was restored to 8.4.2; uvicorn and the app
+> are unaffected. **Recommend a virtualenv** before further installs — this
+> project shares a global Python with other work.
+
+Two audit predictions confirmed empirically:
+- **F-13** — the LTR model logs `val R2: 1.0000`. Exactly the circular-target
+  artefact predicted. The metric is meaningless.
+- **F-15** — the 0% description rate is not merely a quality problem; it
+  crashed the ML fit (see F-23 below).
 
 ---
 
@@ -78,6 +103,56 @@ Confirm in-app reading is restricted to public-domain (Gutenberg) text.
 - move generation to a background job (F-19)
 
 Do not deploy, port-forward, expose via tunnel, or demo over a network until these land.
+
+---
+
+## Findings discovered during boot verification
+
+These were not visible to static analysis. All four are pre-existing — none
+was introduced by PR 1.
+
+### F-21 · `/health` raised a 500 whenever the ML engine was ready — FIXED
+`int(getattr(RECOMMENDER, 'cluster', None))` — but `cluster` is the
+`ClusteringModel` object, not a number, so `/health` threw
+`TypeError: int() argument must be... not 'ClusteringModel'` on **every call
+where the engine had actually fitted**. The endpoint only ever returned 200
+while the app was broken.
+
+This is very likely why F-03 survived so long: the one diagnostic that would
+have shown `books_loaded: 3000` was itself unusable in the healthy case.
+Fixed to read `.best_k`.
+
+### F-22 · The chatbot never returns recommendations — OPEN, PR 2
+`ChatbotEngine.respond()` initialises `response["books"] = []` and never
+populates it, for any intent. It classifies intent correctly
+(`"recommend me a dark thriller"` → `recommend`, confidently) then returns a
+canned string and an `action` label. **The "AI chatbot" is an intent
+classifier with hardcoded replies and no connection to the recommender.**
+
+Covered by `test_chatbot_returns_recommendations`, marked `xfail(strict=True)`
+so it will fail loudly the moment it starts working and the marker can be
+removed. Wiring it to `recommend_by_profile` is small — deferred only to keep
+PR 1 to verified-safe changes.
+
+### F-23 · pandas 3 / Arrow broke the entire ML engine — FIXED
+Under pandas 3, `df["genre"].astype(str).values` returns an
+`ArrowStringArray`, not a numpy array. It has no `.flatten()`, so
+`FeatureEngineer.fit_transform` raised immediately and `startup()` swallowed
+it — leaving every ML feature dead behind what was then a green `/health`.
+Fixed at all 7 sites by using `.to_numpy()`.
+
+Follow-on: with the fit progressing further, `fit_comment_embedder` then
+crashed on `n_components(16) must be <= n_features(3)` — because all 29,975
+descriptions are the same placeholder string, so the TF-IDF vocabulary
+collapses to 3 terms (**F-15**). The component count is now clamped to the
+available vocabulary, with a warning naming F-15. This keeps the engine alive
+on today's data; it does not make those embeddings useful.
+
+### F-24 · The global Python is shared — RECOMMEND A VIRTUALENV
+Installing the pinned requirements downgraded `click` and broke an unrelated
+`huggingface-hub`. Repaired, but the project should not be installing into a
+shared interpreter. A `.venv` and a note in the README is a five-minute fix
+worth doing in PR 2.
 
 ---
 

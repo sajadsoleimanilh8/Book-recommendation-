@@ -297,10 +297,10 @@ class FeatureEngineer:
         genre_col = df["genre"]
         if isinstance(genre_col, pd.DataFrame):
             genre_col = genre_col.iloc[:, 0]
-        genre_values = genre_col.astype(str).values.flatten()
+        genre_values = genre_col.astype(str).to_numpy()
         
         df["genre_enc"] = self.le_genre.fit_transform(genre_values)
-        df["lang_enc"] = self.le_lang.fit_transform(df["language"].astype(str).values)
+        df["lang_enc"] = self.le_lang.fit_transform(df["language"].astype(str).to_numpy())
         df["rating_popularity"] = df["average_rating"].values * np.log1p(df["ratings_count"].values)
 
         yr_min = df["published_year"].min()
@@ -325,10 +325,10 @@ class FeatureEngineer:
         self.numeric_matrix = self.scaler.fit_transform(df[num_cols].fillna(0))
 
         # Create corpus
-        title_str = df["title"].fillna("").astype(str).values
-        author_str = df["author"].fillna("").astype(str).values
-        genre_str = df["genre"].fillna("Unknown").astype(str).values
-        description_str = df["description"].fillna("").astype(str).values
+        title_str = df["title"].fillna("").astype(str).to_numpy()
+        author_str = df["author"].fillna("").astype(str).to_numpy()
+        genre_str = df["genre"].fillna("Unknown").astype(str).to_numpy()
+        description_str = df["description"].fillna("").astype(str).to_numpy()
         
         corpus = [f"{t} {a} {g} {d}" for t, a, g, d in zip(title_str, author_str, genre_str, description_str)]
 
@@ -363,11 +363,41 @@ class FeatureEngineer:
         
         if len(cleaned_texts) < 2:
             return
-        
+
         mat = self.comment_tfidf.fit_transform(cleaned_texts)
+
+        # F-15: every catalogue description is the identical placeholder
+        # "No description available", so the TF-IDF vocabulary collapses to a
+        # handful of terms — far fewer than comment_svd's 16 components, which
+        # made TruncatedSVD raise and took the whole ML fit down with it.
+        #
+        # Clamp to the vocabulary actually present. This keeps the engine
+        # alive on today's data; it does not make the embeddings useful. Once
+        # Phase 2 enrichment lands, n_features rises and the requested
+        # component count is used as intended.
+        n_features = mat.shape[1]
+        if n_features < 2:
+            log.warning(
+                f"Comment embedder skipped: vocabulary has {n_features} term(s). "
+                "Descriptions carry no usable text (F-15)."
+            )
+            return
+
+        requested = self.comment_svd.n_components
+        n_components = max(1, min(requested, n_features - 1))
+        if n_components != requested:
+            log.warning(
+                f"Comment embedder: vocabulary has only {n_features} terms, "
+                f"reducing SVD components {requested} -> {n_components}. "
+                "Expected until Phase 2 enrichment fills in descriptions (F-15)."
+            )
+            self.comment_svd = TruncatedSVD(
+                n_components=n_components, random_state=42
+            )
+
         self.comment_svd.fit(mat)
         self._comment_fitted = True
-        log.info("Comment embedder fitted.")
+        log.info(f"Comment embedder fitted ({n_components} components).")
 
 
 class ClusteringModel:
@@ -427,7 +457,7 @@ class CollaborativeFilter:
     def fit(self, df: pd.DataFrame):
         signal = (df["average_rating"].values * np.log1p(df["ratings_count"].values))
         le = LabelEncoder()
-        gids = le.fit_transform(df["genre"].astype(str).values)
+        gids = le.fit_transform(df["genre"].astype(str).to_numpy())
         mat = csr_matrix((signal, (gids, np.arange(len(df)))),
                          shape=(len(le.classes_), len(df)))
         self.item_factors = self.svd.fit_transform(mat.T)
