@@ -3,9 +3,20 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import pandas as pd
+
+# Loads .env from the project root if present. Optional at runtime so a
+# missing python-dotenv degrades to plain environment variables rather than
+# refusing to boot. GOOGLE_BOOKS_API_KEY is read from here in Phase 2.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+except ImportError:  # pragma: no cover
+    pass
 
 from fastapi import FastAPI, Query, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,11 +57,30 @@ app.add_middleware(
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_DIR = Path(__file__).resolve().parent
+
+# F-03: the dataset lives at backend/site_ready_books.json, but only
+# data/ and backend/data/ were searched - neither directory exists. So
+# DATA_FILE.exists() was always False, load_books_raw() fell through to the
+# CSV fallbacks, and once those were removed the app booted on 3000
+# synthetic books ("Book 00000" by "Author 42") with no visible error.
+# The real location is now first in the list; the old paths are retained so
+# a future move into data/ keeps working.
 DATA_FILE_CANDIDATES = [
+    BACKEND_DIR / "site_ready_books.json",
     PROJECT_ROOT / "data" / "site_ready_books.json",
-    Path(__file__).parent / "data" / "site_ready_books.json",
+    BACKEND_DIR / "data" / "site_ready_books.json",
 ]
 DATA_FILE = next((p for p in DATA_FILE_CANDIDATES if p.exists()), DATA_FILE_CANDIDATES[0])
+
+# Set by startup() so /health can distinguish "loaded the real catalogue"
+# from "silently fell back to synthetic data" - the blind spot that let F-03
+# go unnoticed.
+DATA_SOURCE: str = "uninitialised"
+
+# 0 or unset means "load everything". Kept configurable so a constrained
+# demo machine can cap it deliberately rather than by accident.
+BOOK_LOAD_LIMIT = int(os.getenv("BOOK_LOAD_LIMIT", "0")) or None
 
 # Single source of truth for generated audio. Must match
 # AudiobookEngine.AUDIO_DIR in engine.py.
@@ -153,7 +183,8 @@ def _row_to_book(i: int, row: Dict[str, Any]) -> Dict[str, Any]:
         "cluster": -1,
     }
 
-def load_books_raw(limit: int = 5000) -> List[Dict[str, Any]]:
+def load_books_raw(limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Load the catalogue. limit=None means the whole file (F-20)."""
     if DATA_FILE.exists():
         with DATA_FILE.open("r", encoding="utf-8") as f:
             first = f.read(1)
@@ -181,7 +212,7 @@ def load_books_raw(limit: int = 5000) -> List[Dict[str, Any]]:
     books = []
     with csv_path.open("r", encoding="utf-8", newline="") as f:
         for i, row in enumerate(csv.DictReader(f)):
-            if i >= limit:
+            if limit is not None and i >= limit:
                 break
             books.append(_row_to_book(i, row))
     return books
@@ -385,13 +416,24 @@ class QuestionnaireRequest(BaseModel):
 
 @app.on_event("startup")
 def startup():
-    global BOOKS, BOOK_BY_ID, RECOMMENDER, QUESTIONER, DF
+    global BOOKS, BOOK_BY_ID, RECOMMENDER, QUESTIONER, DF, DATA_SOURCE
 
-    log.info("Loading books…")
-    BOOKS = load_books_raw(limit=5000)
+    log.info(f"Loading books from {DATA_FILE}…")
+    # F-20 (partial): the limit=5000 cap silently truncated the catalogue to
+    # 5000 of 29975 books. Configurable now, and unbounded by default.
+    BOOKS = load_books_raw(limit=BOOK_LOAD_LIMIT)
+    DATA_SOURCE = "json" if DATA_FILE.exists() else ("csv_fallback" if BOOKS else "none")
 
     if not BOOKS:
-        log.warning("No books from files — using synthetic data.")
+        # F-03: this path used to be reached silently and reported as
+        # "csv_fallback" by /health. It is now loud, and /health says
+        # "synthetic" so nobody demos fabricated data by accident.
+        log.error(
+            "NO REAL BOOK DATA FOUND — falling back to SYNTHETIC data. "
+            f"Expected the catalogue at {DATA_FILE_CANDIDATES[0]}. "
+            "Recommendations will be meaningless."
+        )
+        DATA_SOURCE = "synthetic"
         try:
             raw_df = DataLoader.load([])
             BOOKS = raw_df.to_dict("records")
@@ -400,6 +442,7 @@ def startup():
         except Exception as e:
             log.error(f"Failed to load synthetic data: {e}")
             BOOKS = []
+            DATA_SOURCE = "none"
 
     BOOK_BY_ID = {b["id"]: b for b in BOOKS}
     log.info(f"Loaded {len(BOOKS)} books.")
@@ -422,7 +465,7 @@ def startup():
 @app.get("/api/health")
 def health():
     return {
-        "ok": True,
+        "ok": DATA_SOURCE in ("json", "csv_fallback") and len(BOOKS) > 0,
         "books_loaded": len(BOOKS),
         "ml_ready": RECOMMENDER is not None and getattr(RECOMMENDER, '_fitted', False),
         "audiobook_ready": RECOMMENDER is not None and getattr(RECOMMENDER, 'audiobook', None) is not None,
@@ -430,7 +473,12 @@ def health():
         "chatbot_ready": RECOMMENDER is not None and getattr(RECOMMENDER, 'chatbot', None) is not None,
         "reminder_ready": RECOMMENDER is not None and getattr(RECOMMENDER, 'reminder', None) is not None,
         "questioner_ready": QUESTIONER is not None,
-        "data_source": "json" if DATA_FILE.exists() else "csv_fallback",
+        # F-03: this used to report only "json" or "csv_fallback", so a boot
+        # onto synthetic data was indistinguishable from a healthy one.
+        # "synthetic" and "none" are now reportable, and `ok` is False for
+        # both — serving fabricated books is not a healthy state.
+        "data_source": DATA_SOURCE,
+        "using_real_data": DATA_SOURCE in ("json", "csv_fallback"),
         "clusters": int(getattr(RECOMMENDER, 'cluster', None)) if RECOMMENDER and getattr(RECOMMENDER, 'cluster', None) else None,
     }
 
