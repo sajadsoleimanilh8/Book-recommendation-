@@ -13,7 +13,43 @@ Full evidence for every `F-` reference is in [docs/PHASE-0-AUDIT.md](docs/PHASE-
 | 1 — Foundation | **PR 1 merged** 2026-08-19 | Closes F-01…F-06, F-08, F-09, F-16, F-21, F-23. |
 | 1b — Persistence | **PR 2 merged** 2026-08-19 | Postgres, Alembic, auth. Closes F-07 (write side). |
 | 1c — State migration | **PR 3 merged** 2026-08-19 | Golden baselines, F-12, read-authz sweep. |
-| 2 — Enrichment | **In progress** on `phase-2-enrichment` | Providers live. Found F-27, F-28. |
+| 2 — Enrichment | **In progress** on `phase-2-enrichment` | Three passes running. Found F-27, F-28. Closed F-17. |
+
+### Phase 2 — measured provider yields
+
+The plan changed twice because measurement contradicted my predictions. Both
+corrections are recorded because the reasoning generalises.
+
+| Pass | Target | Description yield | Quota |
+|---|---|---|---|
+| Google + Open Library | modern (Goodreads/Google) | **98.3%** | Google |
+| Open Library alone | Gutenberg | **15%** | none |
+| **Gutenberg full text** | Gutenberg | **97.5%** | none |
+
+**Correction 1.** I recommended Open Library for the Gutenberg subset on the
+grounds that it "shines for older public-domain works". True of edition
+coverage and identifiers; **false of descriptions** — it finds those books and
+holds no blurb. Normalising titles and authors lifted the match rate (40% →
+30% not-found) and did not move descriptions.
+
+**Correction 2.** The right source for Gutenberg books is Gutenberg itself.
+The opening prose of the book is better embedding material than a blurb would
+have been — the work's own voice rather than ad copy. 97.5% yield, zero quota.
+
+The Open Library pass is still worth running for what it *does* deliver on
+that subset: **100% genre** (6,307 books read `Unknown`, and genre is a live
+recommender feature), 100% year and page count, 67% ISBN-13.
+
+### F-17 · Fabricated page content — **CLOSED for books we hold text for**
+`/api/books/{id}/pages` returned the literal string `"page{n} از {title}"` for
+every page of every book. It now paginates real text on paragraph boundaries,
+and reports `text_available: false` with a reason where we hold nothing —
+an honest empty state rather than invented prose.
+
+`is_complete` is exposed and currently `false` everywhere: the stored text is
+the opening chapters (~20 KB/book), not the whole work, and a client must
+never present a partial book as complete. Whole-book reading needs a storage
+decision (~3 GB), RAG chunking and a paging design — **Phase 5**.
 
 ### PR 1 — `pr/1-foundation` (merged)
 
