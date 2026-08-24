@@ -55,7 +55,9 @@ def resolve_book_pk(session: Session, book: dict[str, Any]) -> int | None:
     if not external_id:
         return None
 
-    key = (infer_source(book.get("book_id")), external_id)
+    # F-27: the thumbnail disambiguates Goodreads from Gutenberg, which
+    # share an integer id space. Passing it is required for correctness.
+    key = (infer_source(book.get("book_id"), book.get("thumbnail")), external_id)
     if key in _pk_cache:
         return _pk_cache[key]
 

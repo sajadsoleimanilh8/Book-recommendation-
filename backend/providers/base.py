@@ -119,6 +119,21 @@ class QuotaExceeded(RuntimeError):
     """
 
 
+class ProviderThrottled(RuntimeError):
+    """Raised when a provider is refusing sustained traffic.
+
+    Google Books does not answer 429 when you push too hard — it answers
+    **503 "Service temporarily unavailable"**, indistinguishable at a glance
+    from a genuine outage. Observed live: the first ~285 books enriched fine,
+    then every request returned 503 within a second.
+
+    Treating that as an ordinary retryable error is actively harmful. Each
+    book then burns its full retry ladder (4 attempts with backoff, across up
+    to 3 requests) and the run appears to hang while achieving nothing. The
+    caller must trip a circuit breaker instead.
+    """
+
+
 def fetch_json(
     url: str,
     *,
@@ -153,9 +168,18 @@ def fetch_json(
             if exc.code == 404:
                 return None
 
-            if exc.code not in RETRY_STATUS or attempt == max_attempts:
+            if exc.code not in RETRY_STATUS:
                 log.warning(f"HTTP {exc.code} for {url.split('?')[0]}: {body[:120]}")
                 return None
+
+            if attempt == max_attempts:
+                # Retries exhausted on a throttling-shaped status. Signal it
+                # rather than returning None, so the caller can stop the run
+                # instead of grinding through thousands more books that will
+                # each waste the same four attempts.
+                raise ProviderThrottled(
+                    f"HTTP {exc.code} after {attempt} attempts: {body[:120]}"
+                ) from exc
 
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             if attempt == max_attempts:

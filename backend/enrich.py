@@ -39,6 +39,7 @@ import config
 from db import SessionLocal
 from models import Book
 from providers import GoogleBooksProvider, OpenLibraryProvider, QuotaExceeded, reconcile
+from providers.base import ProviderThrottled
 from providers.reconcile import MIN_DESCRIPTION_CHARS, _usable_description
 
 log = logging.getLogger("enrich")
@@ -48,6 +49,13 @@ STATUS_OK = "ok"
 STATUS_PARTIAL = "partial"      # found the book, but no usable description
 STATUS_NOT_FOUND = "not_found"
 STATUS_FAILED = "failed"
+
+# Circuit breaker. Google Books answers 503 rather than 429 when it is
+# refusing sustained traffic, so "throttled" and "briefly unwell" look
+# identical. A handful of consecutive throttles is the signal to stop: past
+# that point every further book costs its full retry ladder and returns
+# nothing. Observed live at ~285 books into a run.
+THROTTLE_LIMIT = 3
 
 
 def priority_order():
@@ -131,6 +139,8 @@ def run(limit: int, dry_run: bool = False, languages: list[str] | None = None) -
     counts: dict[str, int] = {}
     processed = 0
     quota_hit = False
+    throttled = False
+    consecutive_throttles = 0
 
     with SessionLocal() as session:
         books = list(session.scalars(pending_query(limit, languages)))
@@ -143,6 +153,19 @@ def run(limit: int, dry_run: bool = False, languages: list[str] | None = None) -
                 log.error(f"Daily quota exhausted after {processed} book(s): {exc}")
                 quota_hit = True
                 break
+            except ProviderThrottled as exc:
+                consecutive_throttles += 1
+                log.warning(
+                    f"provider throttled ({consecutive_throttles}/{THROTTLE_LIMIT}): {exc}"
+                )
+                if consecutive_throttles >= THROTTLE_LIMIT:
+                    log.error(
+                        f"Provider is refusing traffic after {processed} book(s). "
+                        "Stopping; progress is saved. Resume later."
+                    )
+                    throttled = True
+                    break
+                continue  # leave this book pending; do not mark it failed
             except Exception as exc:  # a single bad record must not end the run
                 log.warning(f"book {book.id} ({book.title[:40]!r}) failed: {exc}")
                 status, source = STATUS_FAILED, None
@@ -152,6 +175,7 @@ def run(limit: int, dry_run: bool = False, languages: list[str] | None = None) -
                 book.enrichment_source = source
                 book.enriched_at = datetime.now(timezone.utc)
 
+            consecutive_throttles = 0
             counts[status] = counts.get(status, 0) + 1
             processed += 1
 
@@ -166,6 +190,7 @@ def run(limit: int, dry_run: bool = False, languages: list[str] | None = None) -
     return {
         "processed": processed,
         "quota_exhausted": quota_hit,
+        "throttled": throttled,
         "dry_run": dry_run,
         **counts,
     }

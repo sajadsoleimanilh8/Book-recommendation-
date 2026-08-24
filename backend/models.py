@@ -146,7 +146,7 @@ class Book(Base):
     # Without it a run that dies at book 9,000 has to start from zero, and
     # with a 1,000/day quota that is not a recoverable mistake.
     enrichment_status: Mapped[str] = mapped_column(
-        String(16), default="pending", nullable=False
+        String(16), default="pending", server_default="pending", nullable=False
     )
     enrichment_source: Mapped[str | None] = mapped_column(String(32))
     enriched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
