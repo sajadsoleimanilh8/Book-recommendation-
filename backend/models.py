@@ -38,6 +38,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -94,6 +95,16 @@ class Book(Base):
         Index("ix_books_genre", "genre"),
         Index("ix_books_language", "language"),
         Index("ix_books_rating", "average_rating"),
+        # Phase 2: the reconciliation join key, and the F-25 duplicate check.
+        Index("ix_books_isbn_13", "isbn_13"),
+        Index("ix_books_isbn_10", "isbn_10"),
+        # Drives the backfill queue: "what still needs enriching, in priority
+        # order". A partial index keeps it small as the backlog drains.
+        Index(
+            "ix_books_enrichment_pending",
+            "enrichment_status",
+            postgresql_where=text("enrichment_status = 'pending'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -120,6 +131,25 @@ class Book(Base):
     list_price: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     published_year: Mapped[int | None] = mapped_column(Integer)
     thumbnail: Mapped[str | None] = mapped_column(Text)
+
+    # Phase 2. ISBNs are the only reliable cross-provider join key: Google
+    # volume ids and Goodreads ids do not interoperate, and title+author
+    # matching is ambiguous across editions and translations.
+    #
+    # They are also the evidence F-25 needs. 1,576 records were collapsed as
+    # duplicates on (source, external_id) alone; two records with *different*
+    # ISBNs are distinct editions, not duplicates, and must be split back out.
+    isbn_10: Mapped[str | None] = mapped_column(String(10))
+    isbn_13: Mapped[str | None] = mapped_column(String(13))
+
+    # Enrichment bookkeeping — makes the backfill resumable and idempotent.
+    # Without it a run that dies at book 9,000 has to start from zero, and
+    # with a 1,000/day quota that is not a recoverable mistake.
+    enrichment_status: Mapped[str] = mapped_column(
+        String(16), default="pending", nullable=False
+    )
+    enrichment_source: Mapped[str | None] = mapped_column(String(32))
+    enriched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     created_at: Mapped[datetime] = TimestampCol()
 
