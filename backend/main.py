@@ -1243,30 +1243,72 @@ def get_progress_route(user: CurrentUser, session: SessionDep):
     return _progress_payload(session, user)
 
 
+# Characters per rendered page. ~1,800 is a mass-market paperback page.
+PAGE_CHARS = 1800
+
+
 @app.get("/api/books/{book_id}/pages")
-def book_pages_route(book_id: int, page: int = Query(1, ge=1), page_size: int = Query(24, ge=1, le=100)):
-    
+def book_pages_route(
+    book_id: int,
+    session: SessionDep,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(24, ge=1, le=100),
+):
+    """F-17: this returned fabricated content for every page of every book —
+    the literal string "page{n} از {title}". It now serves real text where we
+    hold it, and says so honestly where we do not.
+
+    Text is currently public-domain Gutenberg only (§11), and bounded to the
+    opening chapters. Whole-book reading is Phase 5.
+    """
     b = BOOK_BY_ID.get(book_id)
     if not b:
         return error_response("Book not found", status.HTTP_404_NOT_FOUND)
-    
-    total_pages = b.get("pages", 100)
+
+    book_pk = store.resolve_book_pk(session, b)
+    record = session.get(models.BookText, book_pk) if book_pk is not None else None
+
+    if record is None:
+        # Honest empty state rather than invented prose. Section 18's
+        # principle applied to content: unknown is reported, never fabricated.
+        return {
+            "items": [],
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
+            "text_available": False,
+            "reason": "No readable text is available for this book yet.",
+        }
+
+    paragraphs = record.content.split("\n\n")
+    pages: List[str] = []
+    buffer = ""
+    for para in paragraphs:
+        # Break on paragraph boundaries so a page never splits mid-sentence.
+        if buffer and len(buffer) + len(para) + 2 > PAGE_CHARS:
+            pages.append(buffer.strip())
+            buffer = para
+        else:
+            buffer = f"{buffer}\n\n{para}" if buffer else para
+    if buffer.strip():
+        pages.append(buffer.strip())
+
     start = (page - 1) * page_size
-    end = min(start + page_size, total_pages)
-    
-    items = []
-    for i in range(start, end):
-        items.append({
-            "page_number": i + 1,
-            "content": f"page{i+1} از {b.get('title', 'book')}",
-            "book_id": book_id
-        })
-    
+    window = pages[start : start + page_size]
+
     return {
-        "items": items,
-        "total": total_pages,
+        "items": [
+            {"page_number": start + i + 1, "content": text, "book_id": book_id}
+            for i, text in enumerate(window)
+        ],
+        "total": len(pages),
         "page": page,
-        "page_size": page_size
+        "page_size": page_size,
+        "text_available": True,
+        "text_source": record.source,
+        # The stored text is the opening chapters, not the whole book. Say so,
+        # so a client never presents a partial work as complete.
+        "is_complete": record.is_complete,
     }
 
 

@@ -156,6 +156,37 @@ class Book(Base):
     comments: Mapped[list["Comment"]] = relationship(back_populates="book")
 
 
+class BookText(Base):
+    """Real book text, for books whose text we may lawfully hold.
+
+    A separate table rather than a column on `books` on purpose: `books` is
+    scanned constantly for filtering and ranking, and hanging a ~20 KB TEXT
+    column off every row would make those scans carry content no query needs.
+
+    Bounded to the opening chapters (see providers.gutenberg_text). That is
+    enough to close the *fabricated content* half of F-17 — `/api/books/{id}/
+    pages` currently returns the literal string "page1 از <title>" for every
+    page of every book. Whole-book reading needs a storage decision (6,307
+    full texts is ~3 GB), RAG chunking and a paging design: Phase 5.
+
+    Section 11: only public-domain sources. Gutenberg only, recorded in
+    `source`, so the licensing basis of every row is explicit.
+    """
+
+    __tablename__ = "book_texts"
+
+    book_id: Mapped[int] = mapped_column(
+        ForeignKey("books.id", ondelete="CASCADE"), primary_key=True
+    )
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_complete: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+    fetched_at: Mapped[datetime] = TimestampCol()
+
+
 class UserBook(Base):
     """Ownership — section 21 book/user isolation."""
 
