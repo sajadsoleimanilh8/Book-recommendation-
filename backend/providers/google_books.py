@@ -25,6 +25,8 @@ from .base import (
     clean_isbn,
     fetch_json,
     isbn_10_to_13,
+    normalise_author,
+    normalise_title,
 )
 
 log = logging.getLogger(__name__)
@@ -95,13 +97,13 @@ class GoogleBooksProvider:
         if not title:
             return None
 
+        # Normalised: librarian-style metadata ("W. B. (William Butler)
+        # Yeats", "Title : being a narrative...") defeats phrase matching.
+        title = normalise_title(title) or title
         terms = [f'intitle:"{title[:120]}"']
-        if author and author.lower() not in {"unknown", "unknown author", ""}:
-            # Only the first credited author — Google matches poorly on a
-            # comma-joined list of five.
-            first = author.split(",")[0].strip()
-            if first:
-                terms.append(f'inauthor:"{first[:60]}"')
+        first = normalise_author(author)
+        if first:
+            terms.append(f'inauthor:"{first[:60]}"')
 
         results = self.search_books(" ".join(terms), {"limit": 3})
         if not results:

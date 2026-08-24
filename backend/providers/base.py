@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 import time
 import urllib.error
 import urllib.request
@@ -191,6 +192,52 @@ def fetch_json(
         time.sleep(min(2 ** attempt, 16) * (0.5 + random.random()))
 
     return None
+
+
+# --------------------------------------------------------------------------
+# Query normalisation
+# --------------------------------------------------------------------------
+#
+# Gutenberg records carry librarian-style metadata that defeats exact-phrase
+# provider search:
+#
+#     author  "W. B. (William Butler) Yeats"   parenthetical expansion
+#     author  "Mrs. Rowson"                    honorific
+#     title   "Love-at-arms :  being a narrative excerpted from the chron"
+#                                              truncated subtitle, stray colon
+#
+# Measured effect on an Open Library sample: 0/6 matched raw, 3/6 matched
+# normalised. It does not conjure descriptions that a provider does not hold
+# — but a book that is never matched cannot yield an ISBN or a year either.
+
+_INITIALS_EXPANSION = re.compile(r"^\s*(?:[A-Z]\.\s*)+\((.+?)\)\s*(.+)$")
+_HONORIFIC = re.compile(r"^(Mrs?\.|Dr\.|Sir|Lady|Rev\.)\s+", re.IGNORECASE)
+_SUBTITLE = re.compile(r"\s+[:\-—]\s+")
+_VOLUME_TAIL = re.compile(r"\s*volume\s+\w+.*$", re.IGNORECASE)
+
+
+def normalise_author(author: str | None) -> str | None:
+    """First credited author, in a form providers can match."""
+    if not author:
+        return None
+    first = author.split(",")[0].strip()
+    if not first or first.lower() in {"unknown", "unknown author", "anonymous"}:
+        return None
+    expanded = _INITIALS_EXPANSION.match(first)
+    if expanded:
+        # "W. B. (William Butler) Yeats" -> "William Butler Yeats"
+        first = f"{expanded.group(1)} {expanded.group(2)}".strip()
+    return _HONORIFIC.sub("", first).strip() or None
+
+
+def normalise_title(title: str | None) -> str | None:
+    """Drop subtitles and volume tails, which providers rarely index."""
+    if not title:
+        return None
+    main = _SUBTITLE.split(title)[0]
+    main = _VOLUME_TAIL.sub("", main)
+    main = re.sub(r"[^\w\s',.]", " ", main)
+    return " ".join(main.split()).strip(" .,:;-") or None
 
 
 # --------------------------------------------------------------------------

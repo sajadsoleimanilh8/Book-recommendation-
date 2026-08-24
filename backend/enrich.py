@@ -69,10 +69,16 @@ def priority_order():
     return language_rank, Book.ratings_count.desc(), Book.id
 
 
-def pending_query(limit: int, languages: list[str] | None = None):
+def pending_query(
+    limit: int,
+    languages: list[str] | None = None,
+    sources: list[str] | None = None,
+):
     stmt = select(Book).where(Book.enrichment_status == STATUS_PENDING)
     if languages:
         stmt = stmt.where(Book.language.in_(languages))
+    if sources:
+        stmt = stmt.where(Book.source.in_(sources))
     return stmt.order_by(*priority_order()).limit(limit)
 
 
@@ -126,11 +132,21 @@ def enrich_one(book: Book, google, openlib) -> tuple[str, str | None]:
     return (STATUS_OK if description else STATUS_PARTIAL), provenance
 
 
-def run(limit: int, dry_run: bool = False, languages: list[str] | None = None) -> dict:
-    google = GoogleBooksProvider()
+def run(
+    limit: int,
+    dry_run: bool = False,
+    languages: list[str] | None = None,
+    sources: list[str] | None = None,
+    use_google: bool = True,
+) -> dict:
+    # use_google=False spends no Google quota at all. Open Library is
+    # strongest on older public-domain titles, which is exactly the Gutenberg
+    # subset, so that pass is free and the Google budget stays intact for the
+    # modern Goodreads/Google records where Open Library is weak.
+    google = GoogleBooksProvider(api_key="" if not use_google else None)
     openlib = OpenLibraryProvider()
 
-    if not google.configured:
+    if use_google and not google.configured:
         log.warning(
             "GOOGLE_BOOKS_API_KEY is not set — running on Open Library only. "
             "Anonymous Google Books requests are quota-exhausted in practice."
@@ -143,8 +159,12 @@ def run(limit: int, dry_run: bool = False, languages: list[str] | None = None) -
     consecutive_throttles = 0
 
     with SessionLocal() as session:
-        books = list(session.scalars(pending_query(limit, languages)))
-        log.info(f"{len(books)} book(s) queued")
+        books = list(session.scalars(pending_query(limit, languages, sources)))
+        log.info(
+            f"{len(books)} book(s) queued "
+            f"(google={'on' if google.configured else 'OFF'}, "
+            f"sources={sources or 'all'}, languages={languages or 'all'})"
+        )
 
         for book in books:
             try:
@@ -235,6 +255,14 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="fetch but do not write")
     parser.add_argument("--stats", action="store_true", help="report only, no requests")
     parser.add_argument("--language", action="append", help="restrict to a language code")
+    parser.add_argument(
+        "--source", action="append",
+        help="restrict to a catalogue source (gutenberg | goodreads | google_books)",
+    )
+    parser.add_argument(
+        "--no-google", action="store_true",
+        help="Open Library only — spends no Google Books quota",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -244,7 +272,13 @@ def main() -> int:
     )
 
     if not args.stats:
-        result = run(args.limit, dry_run=args.dry_run, languages=args.language)
+        result = run(
+            args.limit,
+            dry_run=args.dry_run,
+            languages=args.language,
+            sources=args.source,
+            use_google=not args.no_google,
+        )
         print("run:")
         for k, v in sorted(result.items()):
             print(f"  {k:22} {v}")

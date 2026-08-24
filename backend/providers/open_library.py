@@ -23,7 +23,15 @@ import logging
 import urllib.parse
 from typing import Any
 
-from .base import NormalizedBook, RateLimiter, clean_isbn, fetch_json, isbn_10_to_13
+from .base import (
+    NormalizedBook,
+    RateLimiter,
+    clean_isbn,
+    fetch_json,
+    isbn_10_to_13,
+    normalise_author,
+    normalise_title,
+)
 
 log = logging.getLogger(__name__)
 
@@ -120,11 +128,11 @@ class OpenLibraryProvider:
     def find_for_book(self, title: str, author: str | None) -> NormalizedBook | None:
         if not title:
             return None
+        title = normalise_title(title) or title
         query = f'title:"{title[:120]}"'
-        if author and author.lower() not in {"unknown", "unknown author", ""}:
-            first = author.split(",")[0].strip()
-            if first:
-                query += f' author:"{first[:60]}"'
+        first = normalise_author(author)
+        if first:
+            query += f' author:"{first[:60]}"'
 
         results = self.search_books(query, {"limit": 3})
         if not results:
