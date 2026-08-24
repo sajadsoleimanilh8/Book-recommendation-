@@ -13,10 +13,9 @@ Full evidence for every `F-` reference is in [docs/PHASE-0-AUDIT.md](docs/PHASE-
 | 1 — Foundation | **PR 1 merged** 2026-08-19 | Closes F-01…F-06, F-08, F-09, F-16, F-21, F-23. |
 | 1b — Persistence | **PR 2 merged** 2026-08-19 | Postgres, Alembic, auth. Closes F-07 (write side). |
 | 1c — State migration | **PR 3 merged** 2026-08-19 | Golden baselines, F-12, read-authz sweep. |
-| 2 — Enrichment | **In progress** on `phase-2-enrichment` | Providers built. Found F-27, F-28. |
-| 2 — Content Enrichment | Not started | Google Books key received. Critical path — see F-15. |
+| 2 — Enrichment | **In progress** on `phase-2-enrichment` | Providers live. Found F-27, F-28. |
 
-### PR 1 — `pr/1-foundation` (awaiting review)
+### PR 1 — `pr/1-foundation` (merged)
 
 | Commit | Scope | Closes |
 |---|---|---|
@@ -95,7 +94,7 @@ Undecided. Determines Postgres, Redis, and object-storage choices. Needed before
 ### OI-4 · Copyright posture (§11)
 Confirm in-app reading is restricted to public-domain (Gutenberg) text.
 
-### PR 2 — `pr/2-persistence` (in progress)
+### PR 2 — `pr/2-persistence` (merged)
 
 | Commit | Scope | Closes |
 |---|---|---|
@@ -119,23 +118,7 @@ rejected. 75 tests pass, 1 xfail.
 - **Token revocation.** JWTs are stateless with no denylist, so logout cannot
   invalidate a live token. Acceptable now; revisit when Redis is load-bearing.
 
-### F-25 · 1,576 duplicate ids in the catalogue file — MITIGATED
-29,975 records collapse to 28,399 unique books; 5.3% are exact-id
-duplicates, each appearing precisely twice. Invisible before PR 2 because the
-old loader keyed on array position, so every duplicate became its own book —
-inflating the catalogue and letting the recommender surface the same title
-twice. De-duplicated at ingest (last wins).
-
-**Decision (2026-08-19): provisional.** Keep them de-duplicated for now.
-Revisit in Phase 2 once enrichment pulls real ISBNs from Google Books and
-Open Library — an ISBN is the evidence that distinguishes a genuinely
-separate edition from a true duplicate, and we do not have one today.
-Nothing is deleted from the source file, so the decision is reversible.
-
-**Phase 2 action:** after ISBN backfill, re-check the 1,576 collapsed pairs
-and split any that carry distinct ISBNs.
-
-### PR 3 — `pr/3-state-migration` (in progress)
+### PR 3 — `pr/3-state-migration` (merged)
 
 | Commit | Scope | Closes |
 |---|---|---|
