@@ -12,7 +12,8 @@ Full evidence for every `F-` reference is in [docs/PHASE-0-AUDIT.md](docs/PHASE-
 | 0 — Audit | **Complete** (2026-08-19) | 20 findings. No production code modified (§73). |
 | 1 — Foundation | **PR 1 merged** 2026-08-19 | Closes F-01…F-06, F-08, F-09, F-16, F-21, F-23. |
 | 1b — Persistence | **PR 2 merged** 2026-08-19 | Postgres, Alembic, auth. Closes F-07 (write side). |
-| 1c — State migration | **PR 3 open** on `pr/3-state-migration` | Golden baselines, F-12, read-authz sweep. |
+| 1c — State migration | **PR 3 merged** 2026-08-19 | Golden baselines, F-12, read-authz sweep. |
+| 2 — Enrichment | **In progress** on `phase-2-enrichment` | Providers built. Found F-27, F-28. |
 | 2 — Content Enrichment | Not started | Google Books key received. Critical path — see F-15. |
 
 ### PR 1 — `pr/1-foundation` (awaiting review)
@@ -226,6 +227,60 @@ descriptions are the same placeholder string, so the TF-IDF vocabulary
 collapses to 3 terms (**F-15**). The component count is now clamped to the
 available vocabulary, with a warning naming F-15. This keeps the engine alive
 on today's data; it does not make those embeddings useful.
+
+### F-27 · Three catalogue sources, not two — 1,576 books were being deleted — **FIXED**
+
+**F-25 was diagnosed wrong, and the real bug was mine.**
+
+Of the 1,576 duplicate-id groups, **zero** are identical records. All 1,576
+are entirely different books sharing an id:
+
+| id | Record A | Record B |
+|---|---|---|
+| 2149 | A Song of Ice and Fire (#1–4) | The Works of Edgar Allan Poe, Vol. 3 |
+| 7947 | ESV Study Bible | The Diary of a U-boat Commander |
+| 9806 | One Piece, Volume 38 | Mr. Justice Raffles |
+
+The catalogue merges **three** sources, two of which use plain integer ids
+whose spaces overlap:
+
+```
+google_books  13,219   alphanumeric volume ids
+goodreads     10,449   integer ids
+gutenberg      6,307   integer ids
+```
+
+`infer_source` (added by me in PR 2) keyed on id shape alone and called every
+integer id `goodreads`. Goodreads #2149 and Gutenberg #2149 collapsed onto one
+key, and the ingest's own de-duplication **silently discarded one book from
+each of the 1,576 colliding pairs on every run.**
+
+**Fix:** the thumbnail URL is the reliable discriminator (`gutenberg.org`,
+`books.google.com`, or the local placeholder cover); id shape is now only the
+fallback. Plus `ingest --prune`, because an upsert only converges rows it
+touches and the correction stranded 4,731 rows under keys nothing maps to.
+
+**Result:** 29,975 books, 0 dropped. Guarded by
+`test_goodreads_and_gutenberg_ids_do_not_collide`.
+
+### F-25 · "1,576 duplicate books" — **RESOLVED, was not a data problem**
+Superseded by F-27. No ISBN evidence was needed; the titles settle it. The
+source file is fine. Nothing should be de-duplicated, and the earlier
+"provisional pending ISBN enrichment" decision is moot.
+
+### F-28 · A migration that would have failed in production — **FIXED**
+`ALTER TABLE books ADD COLUMN enrichment_status VARCHAR(16) NOT NULL` raised
+`NotNullViolation` against the 28,399-row test database. It passed on the dev
+database **only because that database happened to be empty at that moment** —
+so the failure would have surfaced first in production, the one database
+guaranteed not to be empty.
+
+Fixed with `server_default` in both the migration and the model, verified by
+upgrading a populated table. `test_not_null_columns_carry_a_server_default`
+now scans every migration for the same mistake.
+
+*Generalisable lesson: a migration verified only against an empty database is
+not verified.*
 
 ### F-26 · 7 of 10 LTR features have zero importance — OPEN, **PHASE 3**
 
