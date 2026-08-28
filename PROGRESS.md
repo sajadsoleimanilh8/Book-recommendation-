@@ -13,7 +13,7 @@ Full evidence for every `F-` reference is in [docs/PHASE-0-AUDIT.md](docs/PHASE-
 | 1 — Foundation | **PR 1 merged** 2026-08-19 | Closes F-01…F-06, F-08, F-09, F-16, F-21, F-23. |
 | 1b — Persistence | **PR 2 merged** 2026-08-19 | Postgres, Alembic, auth. Closes F-07 (write side). |
 | 1c — State migration | **PR 3 merged** 2026-08-19 | Golden baselines, F-12, read-authz sweep. |
-| 2 — Enrichment | **In progress** on `phase-2-enrichment` | Three passes running. Found F-27, F-28. Closed F-17. |
+| 2 — Enrichment | **In progress** on `phase-2-enrichment` | Passes died on a Docker stop at 00:18; found F-29, F-30. Found F-27, F-28. Closed F-17. |
 
 ### Phase 2 — measured provider yields
 
@@ -300,6 +300,66 @@ now scans every migration for the same mistake.
 
 *Generalisable lesson: a migration verified only against an empty database is
 not verified.*
+
+### F-30 · One dropped DB connection voided the rest of a 6,000-book run — **FIXED**
+
+At 00:18, ~35 minutes into the three unattended passes, **Docker Desktop
+stopped** and took Postgres with it. The passes did not stop. They kept going
+with a session stuck in a failed transaction:
+
+```
+[WARNING] book 47758: (psycopg.OperationalError) consuming input failed:
+          could not receive data from server ... (0x00002745/10053)
+[WARNING] book 47760: Can't reconnect until invalid transaction is rolled
+          back. Please rollback() fully before proceeding
+```
+
+`except Exception: ... continue` caught the error but never called
+`session.rollback()`, so every subsequent book failed identically. One
+transient blip silently converted the remaining ~5,700 books into failures.
+
+Fixed two ways: roll back before continuing, and treat `OperationalError` as
+fatal for the run — if the database is gone, every remaining book will fail
+the same way, so stop and say so rather than logging 5,700 copies of one
+error. Committed batches are untouched; a re-run resumes from them.
+
+*Generalisable lesson: `except Exception: continue` around a database session
+is not resilience. Without a rollback it converts one error into all of them.*
+
+### F-29 · Unreachable was being recorded as "book does not exist" — **FIXED**
+
+`fetch_json` returned `None` both when a provider answered "no match" and when
+we never reached the provider at all (DNS failure, socket error, timeout).
+`enrich_one` cannot tell those apart, so it wrote
+`enrichment_status = 'not_found'` — and `pending_query` only ever selects
+`pending`, so **the row is permanently excluded from every future pass.**
+
+Two triggers, both observed live in these logs:
+
+```
+[WARNING] request failed after 4 attempts: <urlopen error [Errno 11001] getaddrinfo failed>
+[WARNING] HTTP 403 for .../books/v1/volumes: <!DOCTYPE html> ... unusual traffic
+```
+
+The 403 is the dangerous one. It is how Google blocks traffic, it is not in
+`RETRY_STATUS`, and it fell straight through to `return None` — so a block
+during the quota-funded Goodreads pass would have marked **thousands of books
+permanently missing, at full speed, in a run nobody was watching.** Worse, the
+quota to look them up again is the scarce resource: a false `not_found` means
+paying for the same book twice.
+
+Fixed with `ProviderUnreachable`, raised instead of returning `None`. It
+subclasses `ProviderThrottled`, so `enrich.py`'s existing circuit breaker
+already does the right thing with zero changes there: leave the row `pending`,
+and stop the run if it keeps happening.
+
+Guarded by four tests, **validated by sabotage** — reverting the fix fails
+exactly the two new tests and nothing else. `test_404_is_still_a_real_miss`
+holds the other side of the line, so `not_found` keeps its meaning.
+
+Blast radius while the bug was live: 133 `not_found` rows, against only 5
+network warnings in that log. So at most ~5 are false. Left alone; re-running
+them costs no quota if it ever matters.
 
 ### F-26 · 7 of 10 LTR features have zero importance — OPEN, **PHASE 3**
 

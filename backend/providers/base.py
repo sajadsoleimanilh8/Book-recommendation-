@@ -135,6 +135,18 @@ class ProviderThrottled(RuntimeError):
     """
 
 
+class ProviderUnreachable(ProviderThrottled):
+    """We never reached the provider — DNS, socket, or timeout failure.
+
+    Distinct from "the provider answered and does not have this book". That
+    distinction is the whole point: `fetch_json` used to return None for both,
+    so a DNS blip made `enrich_one` see "no match" and write
+    `enrichment_status = 'not_found'`, permanently excluding a book that the
+    provider may well have. Subclassing ProviderThrottled means the caller
+    already does the right thing — leave the row pending and retry later.
+    """
+
+
 def fetch_json(
     url: str,
     *,
@@ -169,6 +181,11 @@ def fetch_json(
             if exc.code == 404:
                 return None
 
+            if exc.code == 403:
+                raise ProviderUnreachable(
+                    f"HTTP 403 (blocked, not a miss): {body[:120]}"
+                ) from exc
+
             if exc.code not in RETRY_STATUS:
                 log.warning(f"HTTP {exc.code} for {url.split('?')[0]}: {body[:120]}")
                 return None
@@ -184,8 +201,9 @@ def fetch_json(
 
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             if attempt == max_attempts:
-                log.warning(f"request failed after {attempt} attempts: {exc}")
-                return None
+                raise ProviderUnreachable(
+                    f"unreachable after {attempt} attempts: {exc}"
+                ) from exc
 
         # Exponential backoff with jitter, so a provider hiccup does not turn
         # into a synchronised retry storm across a long run.

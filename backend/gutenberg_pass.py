@@ -29,6 +29,7 @@ import sys
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.dialects.postgresql import insert
 
 from db import SessionLocal
@@ -106,6 +107,7 @@ def run(limit: int, redo: bool = False) -> dict:
     limiter = RateLimiter(0.4)
     counts: dict[str, int] = {}
     processed = 0
+    db_lost = False
 
     with SessionLocal() as session:
         books = list(session.scalars(pending_query(limit, redo)))
@@ -115,7 +117,21 @@ def run(limit: int, redo: bool = False) -> dict:
             limiter.wait()
             try:
                 status = process_one(session, book)
+            except OperationalError as exc:
+                # The database itself went away (container stopped, machine
+                # slept). Every remaining book would fail identically, so stop
+                # and say so rather than logging 5,000 copies of one error.
+                # Committed batches are unaffected; --limit resumes from here.
+                session.rollback()
+                log.error(f"database unreachable after {processed} book(s): {exc}")
+                db_lost = True
+                break
             except Exception as exc:
+                # Roll back before continuing. Without this the session stays
+                # in a failed transaction and every subsequent book dies with
+                # "Can't reconnect until invalid transaction is rolled back" —
+                # one transient error would silently void the rest of the run.
+                session.rollback()
                 log.warning(f"book {book.id} ({book.title[:40]!r}): {exc}")
                 status = "failed"
 
@@ -128,7 +144,7 @@ def run(limit: int, redo: bool = False) -> dict:
 
         session.commit()
 
-    return {"processed": processed, **counts}
+    return {"processed": processed, "db_lost": db_lost, **counts}
 
 
 def report() -> dict:

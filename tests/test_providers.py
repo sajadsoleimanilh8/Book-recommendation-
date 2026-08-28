@@ -259,3 +259,84 @@ def test_not_null_columns_carry_a_server_default():
         "add_column(nullable=False) without server_default will fail on a "
         "populated table:\n  " + "\n  ".join(offenders)
     )
+
+
+# ---------------------------------------------------------------------------
+# F-29 — "we could not reach the provider" must never look like "the provider
+# does not have this book". The first is transient and retryable; the second
+# writes enrichment_status='not_found', which permanently excludes the row
+# from every later pass. fetch_json used to return None for both.
+# ---------------------------------------------------------------------------
+
+
+def _urlopen_raising(exc):
+    def fake(*_args, **_kwargs):
+        raise exc
+
+    return fake
+
+
+def test_network_failure_raises_rather_than_looking_like_a_miss(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    from providers.base import ProviderUnreachable, fetch_json
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        _urlopen_raising(urllib.error.URLError("getaddrinfo failed")),
+    )
+    # No backoff sleeping in tests.
+    monkeypatch.setattr("providers.base.time.sleep", lambda *_: None)
+
+    with pytest.raises(ProviderUnreachable):
+        fetch_json("https://example.invalid/x", max_attempts=2)
+
+
+def test_http_403_block_raises_rather_than_looking_like_a_miss(monkeypatch):
+    """Google answers 403 with an HTML abuse page when it blocks traffic.
+
+    403 is not in RETRY_STATUS, so it used to fall through to `return None`
+    and mark the book not_found — at full speed, for every remaining book.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+
+    from providers.base import ProviderUnreachable, fetch_json
+
+    blocked = urllib.error.HTTPError(
+        "https://www.googleapis.com/books/v1/volumes",
+        403,
+        "Forbidden",
+        {},
+        io.BytesIO(b"<!DOCTYPE html><html lang=en>unusual traffic"),
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen_raising(blocked))
+    monkeypatch.setattr("providers.base.time.sleep", lambda *_: None)
+
+    with pytest.raises(ProviderUnreachable):
+        fetch_json("https://www.googleapis.com/books/v1/volumes", max_attempts=2)
+
+
+def test_404_is_still_a_real_miss(monkeypatch):
+    """The distinction has to cut both ways, or not_found becomes useless."""
+    import io
+    import urllib.error
+    import urllib.request
+
+    from providers.base import fetch_json
+
+    missing = urllib.error.HTTPError("https://x/y", 404, "Not Found", {}, io.BytesIO(b""))
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen_raising(missing))
+    monkeypatch.setattr("providers.base.time.sleep", lambda *_: None)
+
+    assert fetch_json("https://x/y", max_attempts=2) is None
+
+
+def test_unreachable_is_handled_by_the_existing_circuit_breaker():
+    """Subclassing is the mechanism that makes enrich.py need no change."""
+    from providers.base import ProviderThrottled, ProviderUnreachable
+
+    assert issubclass(ProviderUnreachable, ProviderThrottled)
