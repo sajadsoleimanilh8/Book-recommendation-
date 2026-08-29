@@ -593,7 +593,14 @@
 
         function bookCard(book) {
             const stars = _stars(book.rating);
-            const price = book.price === 0 || book.price == null ? 'Free' : `$${Number(book.price).toFixed(2)}`;
+            // Section 18: with no availability provider configured we do not
+            // know what a book costs. Rendering an unknown price as "Free"
+            // told readers that copyrighted titles were free (F-36). Only
+            // public-domain sources are stated as free; everything else is
+            // reported honestly as unknown.
+            const price = book.availability === 'free_public_domain' ? 'Free'
+                : (book.price != null && book.price > 0) ? `$${Number(book.price).toFixed(2)}`
+                : 'Price unknown';
             const mlScore = book.ml_score != null ? `<span class="badge badge-ml">ML ${(book.ml_score * 100).toFixed(0)}%</span>` : '';
             const sourceBadge = book.source === 'gutenberg'
                 ? `<span class="badge badge-gutenberg">Free · Gutenberg</span>`

@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import config
 import models
 import store
+from ingest import infer_source
 from auth import CurrentUser, OptionalUser, SessionDep
 from db import SessionLocal
 from routes_auth import router as auth_router
@@ -177,13 +178,38 @@ def get_profile(user_id: str) -> UserProfile:
         USER_PROFILES[user_id] = UserProfile()
     return USER_PROFILES[user_id]
 
+def price_and_availability(row: Dict[str, Any]) -> tuple[Optional[float], str, str]:
+    """Return (price, availability, source) for a catalogue row — section 18.
+
+    F-36: every row in the dataset carries list_price = 0.00 (all 29,975 of
+    them), and both the API and the UI rendered 0 as "Free". That told readers
+    that copyrighted Goodreads and Google Books titles were free, which is a
+    claim this platform cannot make and section 18 forbids outright.
+
+    With no availability provider configured the honest answer is "unknown".
+    Gutenberg is the one real exception: public domain, verifiably free.
+
+    Shared by both serialisers on purpose. When this lived inline, the
+    recommendation path and the catalogue path could disagree about what a
+    book costs, and only one of them would ever get fixed.
+    """
+    source = infer_source(row.get("book_id"), row.get("thumbnail"))
+    raw = _safe_float(row.get("list_price") or row.get("price"))
+    if source == "gutenberg":
+        return 0.0, "free_public_domain", source
+    if raw > 0:
+        # A real figure, rather than the 0.0 placeholder every row carries.
+        return raw, "listed", source
+    return None, "unknown", source
+
+
 def _row_to_book(i: int, row: Dict[str, Any]) -> Dict[str, Any]:
     title = str(row.get("title") or "Unknown Title").strip()
     author = str(row.get("author") or "Unknown Author").strip()
     genre = str(row.get("genre") or row.get("search_category") or "General").strip()
     desc = str(row.get("description") or "No description available.").strip()
     pages = _safe_int(row.get("page_count") or row.get("pages"))
-    price = _safe_float(row.get("list_price") or row.get("price"))
+    price, availability, source = price_and_availability(row)
     rating = _safe_float(row.get("average_rating") or row.get("rating"))
     rc = _safe_int(row.get("ratings_count"))
     lang = normalize_language(row.get("language"))
@@ -201,6 +227,8 @@ def _row_to_book(i: int, row: Dict[str, Any]) -> Dict[str, Any]:
         "rating": rating,
         "ratings_count": rc,
         "price": price,
+        "availability": availability,
+        "source": source,
         "pages": pages,
         "audiobook": pages > 350,
         "description": desc,
@@ -252,7 +280,17 @@ def _books_to_df(books: List[Dict[str, Any]]) -> pd.DataFrame:
         "average_rating": b["rating"],
         "ratings_count": b["ratings_count"],
         "page_count": b["pages"],
-        "list_price": b["price"],
+        # 0.0 rather than None where the price is unknown (F-36). This is a
+        # feature column, not a claim: `None` becomes NaN and
+        # GradientBoostingRegressor refuses to fit, which silently disabled
+        # the whole recommender the first time this was changed.
+        #
+        # 0.0 also keeps the ranking numerically identical to before, because
+        # the engine's only use of it is `1/(1+list_price)` — which was
+        # already a constant 1.0 for all 29,975 books, since every row carries
+        # a 0.00 placeholder. That dead feature is more evidence for F-26 and
+        # belongs to Phase 3's ranking work, not to a presentation fix.
+        "list_price": b["price"] if b["price"] is not None else 0.0,
         "language": b["language"],
         "published_year": _safe_int(b.get("published_year"), 2000),
     } for b in books])
@@ -300,6 +338,9 @@ def apply_filters(
     return out
 
 def _ml_to_api(b: Dict[str, Any], rank: int) -> Dict[str, Any]:
+    # Same rule as the catalogue path. Two serialisers disagreeing about what
+    # a book costs is how F-36 would come back.
+    price, availability, inferred_source = price_and_availability(b)
     return {
         "id": b.get("id", rank),
         "title": b.get("title", "Unknown"),
@@ -310,7 +351,8 @@ def _ml_to_api(b: Dict[str, Any], rank: int) -> Dict[str, Any]:
         "format": infer_format(_safe_int(b.get("page_count"))),
         "rating": _safe_float(b.get("average_rating")),
         "ratings_count": _safe_int(b.get("ratings_count")),
-        "price": _safe_float(b.get("list_price")),
+        "price": price,
+        "availability": availability,
         "pages": _safe_int(b.get("page_count")),
         "audiobook": _safe_int(b.get("page_count")) > 350,
         "description": b.get("description", ""),
@@ -321,7 +363,7 @@ def _ml_to_api(b: Dict[str, Any], rank: int) -> Dict[str, Any]:
         "ml_score": round(_safe_float(b.get("final_score")), 4),
         "content_sim": round(_safe_float(b.get("content_sim")), 3),
         "cf_sim": round(_safe_float(b.get("cf_sim")), 3),
-        "source": b.get("source", "local"),
+        "source": b.get("source") or inferred_source,
         "url": b.get("url", ""),
         "rank": rank,
     }

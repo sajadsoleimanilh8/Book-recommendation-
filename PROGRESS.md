@@ -183,6 +183,13 @@ now `DELETE /api/comments/{comment_id}`. Positional indices are racy once
 comments are shared persistent rows — two concurrent deletes shift each
 other's target. Ids come back from POST and from GET.
 
+### OI-11 · What should a price filter do when no price is known? — **NEEDS DECISION**
+See F-36. `max_price` currently treats unknown as 0, so "under $5" returns
+everything. Excluding unknown-price books is accurate but returns an empty
+list until an availability provider exists. My recommendation: hide the price
+filter in the UI while `availability` is unknown for the whole catalogue,
+rather than offering a control that cannot work.
+
 ### OI-10 · Should an invalid token 401, or degrade to anonymous? — **NEEDS DECISION**
 See F-34. Current behaviour is silent degradation on every `OptionalUser`
 route. The security-correct answer is 401, but it changes behaviour across the
@@ -373,6 +380,60 @@ bug: distinct hosts must never be conflated, and failures must never be cached
 *Generalisable lesson: "the provider is blocking us" and "we cannot resolve
 the provider" produce identical-looking failure counts. Breaking errors down
 by class before acting on them took two minutes and reversed the diagnosis.*
+
+### F-36 · The app told users every book was free — **FIXED**
+
+Section 18: *"Do not fake price or availability. If no provider is configured:
+availability = unknown, not fabricated."*
+
+Measured against the live database:
+
+```
+total 29,975   list_price > 0: 0   list_price = 0.00: 29,975
+```
+
+**Every book in the catalogue carries a 0.00 placeholder.** Both serialisers
+passed it through as a price, and both frontends render it the same way:
+
+```js
+const price = book.price === 0 || book.price == null ? 'Free' : ...
+```
+
+So the product displayed **"Free"** on cards for 9,842 Goodreads titles and
+13,826 Google Books titles — copyrighted works this platform has no right to
+give away and no basis for pricing. Not a hypothetical: it is on the
+recommendation cards users see.
+
+Fixed by making the rule explicit and shared:
+
+```
+gutenberg            -> 0.0,  "free_public_domain"   (public domain,genuinely free)
+list_price > 0       -> price, "listed"              (a real figure, kept)
+anything else        -> None,  "unknown"             (section 18's default)
+```
+
+`price_and_availability()` is used by both the catalogue and recommendation
+paths. It was inline in each before, which is how they could have disagreed
+about what a book costs while only one got fixed. Both frontends now say
+"Price unknown" rather than "Free".
+
+**The fix broke the ML fit, and the tests caught it.** `_books_to_df` feeds
+`b["price"]` back in as the `list_price` feature; `None` becomes NaN and
+`GradientBoostingRegressor` refuses to fit, which silently disabled the entire
+recommender. The boot tests failed immediately with "ML engine did not fit".
+The feature column now takes 0.0 for unknown prices — a number, not a claim —
+which also keeps ranking numerically identical.
+
+**Bonus evidence for F-26.** The engine's only use of this column is
+`1/(1 + list_price)`, and every row is 0.00, so that feature has been a
+constant 1.0 for all 29,975 books. One of the seven dead LTR features now has
+a measured root cause. Left for Phase 3, where the ranking work belongs.
+
+**Open question for the product owner (OI-11):** `max_price` filtering treats
+an unknown price as 0, so "books under $5" currently returns the whole
+catalogue. Honest alternatives are to exclude unknown-price books from a price
+filter (accurate, returns nothing today) or to keep including them with a
+caveat in the response. That is a product call, not a code one.
 
 ### F-35 · Two embedding models in one column rank noise confidently — **FIXED**
 
