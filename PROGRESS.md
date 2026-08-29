@@ -431,6 +431,28 @@ tuning. The seam is already in place: `EMBEDDING_BACKEND=minilm` plus
 ANN index yet (§8). Worth revisiting past ~150k chunks, where the same scan
 would cost roughly 380 ms.
 
+### Boot verified against a real server, not the test client
+
+A green suite is not a booted app, and TestClient has diverged from a real
+ASGI server in this project before. Booted uvicorn against the dev database:
+
+```
+/api/health           ok:true, 29,975 books, ml_ready:true, clusters:9
+/api/search/semantic  backend lsa:501a37e8, real passages from real books
+/api/books            200/200 -> availability=unknown, price=null
+/api/recommend        12 results, all availability=unknown
+```
+
+No non-Gutenberg book reports a price of 0 on either path (F-36).
+
+Search results carry no `availability` field — they are passages, not book
+records — and the frontend's new logic falls through to "Price unknown"
+rather than "Free" when it is absent. The fix fails safe, now confirmed
+rather than assumed.
+
+Server stopped and the port confirmed released afterwards. That is asserted
+rather than trusted because of the earlier false-pass restart test.
+
 ### F-37 · The guard against mixed vector spaces had a hole — **FIXED**
 
 F-35 stops a query encoded by one backend being ranked against vectors from
