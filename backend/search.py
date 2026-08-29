@@ -115,8 +115,17 @@ def search_chunks(
     min_year: int | None = None,
     max_year: int | None = None,
     min_similarity: float = MIN_SIMILARITY,
+    embedding_model: str | None = None,
 ) -> list[SearchHit]:
-    """Nearest chunks the caller is allowed to see, most similar first."""
+    """Nearest chunks the caller is allowed to see, most similar first.
+
+    `embedding_model` restricts the search to chunks embedded by the same
+    model as the query vector. Cosine similarity between two different vector
+    spaces is a number, not a measurement: it produces confident-looking
+    rankings from noise. Caught in testing, where a query encoded with one
+    backend against chunks embedded with another returned an empty list
+    instead of the exact-match passage.
+    """
     limit = max(1, min(int(limit), MAX_LIMIT))
 
     # pgvector's `<=>` is cosine *distance*; similarity is 1 - distance. The
@@ -139,6 +148,8 @@ def search_chunks(
         .where(visible_chunks(user_id))
         .where(BookChunk.embedding.isnot(None))
     )
+    if embedding_model:
+        stmt = stmt.where(BookChunk.embedding_model == embedding_model)
     stmt = _apply_filters(
         stmt, language=language, genre=genre, min_year=min_year, max_year=max_year
     )

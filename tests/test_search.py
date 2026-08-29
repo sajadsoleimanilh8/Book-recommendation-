@@ -51,9 +51,9 @@ def corpus():
 
         users = {}
         for name in ("alice", "bob"):
-            user = session.scalar(select(User).where(User.email == f"{name}@search.test"))
+            user = session.scalar(select(User).where(User.email == f"{name}.chunks@example.com"))
             if user is None:
-                user = User(email=f"{name}@search.test", password_hash="x")
+                user = User(email=f"{name}.chunks@example.com", password_hash="x")
                 session.add(user)
                 session.flush()
             users[name] = user.id

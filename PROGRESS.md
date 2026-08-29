@@ -183,6 +183,22 @@ now `DELETE /api/comments/{comment_id}`. Positional indices are racy once
 comments are shared persistent rows — two concurrent deletes shift each
 other's target. Ids come back from POST and from GET.
 
+### OI-10 · Should an invalid token 401, or degrade to anonymous? — **NEEDS DECISION**
+See F-34. Current behaviour is silent degradation on every `OptionalUser`
+route. The security-correct answer is 401, but it changes behaviour across the
+API and the frontend must then handle expiry. My recommendation: 401 for a
+*malformed or forged* token, and a distinct, explicit response for an
+*expired* one so the frontend can refresh rather than log the user out.
+
+### OI-9 · Install sentence-transformers for real embeddings? — **NEEDS DECISION**
+`torch` is already present, so the install is small, but it resolves
+dependencies inside a shared global Python (F-24) while an unrelated training
+job is running (F-33) and could move `numpy` or `torch` underneath it. Search
+currently runs on TF-IDF+SVD, which works and cost nothing. Switching later is
+`EMBEDDING_BACKEND=minilm` plus `embed_pass --redo` — the seam is already
+there. **Recommendation:** wait until that training run finishes, then install
+into a virtualenv rather than the global interpreter.
+
 ### OI-8 · Windows sleep is the root cause of the lost runs — **HOST SETTING, NOT MINE TO CHANGE**
 The containers now restart with the daemon and a supervisor relaunches dead
 passes, but neither prevents the host from sleeping mid-run. Long unattended
@@ -357,6 +373,48 @@ bug: distinct hosts must never be conflated, and failures must never be cached
 *Generalisable lesson: "the provider is blocking us" and "we cannot resolve
 the provider" produce identical-looking failure counts. Breaking errors down
 by class before acting on them took two minutes and reversed the diagnosis.*
+
+### F-35 · Two embedding models in one column rank noise confidently — **FIXED**
+
+Found by a test failing for the wrong reason. An endpoint test seeded chunks
+with the deterministic `hashing` backend, the route encoded the query with
+`lsa`, and searching for a passage *verbatim* returned nothing. The passage
+was right there.
+
+Cosine similarity between two different vector spaces is a number, not a
+measurement. It does not error and it does not return zero — it returns
+plausible-looking rankings computed from noise. In production the trigger is
+ordinary: switch `EMBEDDING_BACKEND`, run `embed_pass` over the new chunks,
+and now the column holds two spaces and every search silently mixes them.
+
+`search_chunks` now takes `embedding_model` and the route passes the active
+backend's name, so only comparable vectors are ever ranked together. The
+column was recording the model already (that was deliberate); nothing was
+*using* it, which made it documentation rather than a safeguard.
+
+*Generalisable lesson: a test failing for an unexpected reason is worth more
+than a test passing. This one was written to check authorization and found a
+correctness bug in ranking.*
+
+### F-34 · An invalid token silently becomes an anonymous request — OPEN, **NEEDS DECISION**
+
+`get_current_user_optional` returns `None` for a forged or expired token in
+exactly the same way it does for no token at all. So a caller with a bad token
+gets **200 with anonymous results** rather than 401.
+
+For semantic search this is more than cosmetic: a user whose token expired
+silently stops seeing their own private passages, and nothing tells them why.
+The search looks like it worked and quietly returned less.
+
+Not fixed here, deliberately. `OptionalUser` is shared by every read endpoint,
+so changing it means expired tokens start returning 401 across the API and the
+frontend has to handle that — a product decision about session expiry
+behaviour, not a patch to make inside a search PR (§2, one deliberate change
+at a time).
+
+Logged as an `xfail(strict=True)` in `test_search_endpoint.py`, the same
+pattern used for F-22 and F-26: the moment somebody fixes it, the suite says
+so loudly. Logged as OI-10.
 
 ### F-33 · This machine is running a second heavy ML workload — **CONTEXT, NEEDS AWARENESS**
 

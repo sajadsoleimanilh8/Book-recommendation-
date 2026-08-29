@@ -647,6 +647,108 @@ def search(q: str = Query(..., min_length=1, max_length=200)) -> Dict[str, Any]:
     items = apply_filters(BOOKS, q=q)
     return {"items": items, "total": len(items)}
 
+# ==========================================================================
+# Semantic search — section 27
+# ==========================================================================
+# Kept separate from /api/search, which is the existing keyword filter over
+# the in-memory catalogue. They answer different questions: that one finds a
+# title you can already name, this one finds a book from a description of
+# what you want. Replacing it would break every caller for no gain.
+
+_SEARCH_ENCODER = None
+_SEARCH_ENCODER_ERROR: Optional[str] = None
+
+
+def _get_search_encoder():
+    """Load the embedding backend once, on first use.
+
+    Lazily, not at import: the fitted LSA artefact is ~48 MB, boot is already
+    dominated by the ML fit, and an app that cannot start because search is
+    unconfigured is worse than one where search alone reports unavailable
+    (section 12 — a missing capability degrades, it does not cascade).
+    """
+    global _SEARCH_ENCODER, _SEARCH_ENCODER_ERROR
+    if _SEARCH_ENCODER is not None or _SEARCH_ENCODER_ERROR is not None:
+        return _SEARCH_ENCODER
+
+    try:
+        from embeddings import get_backend
+
+        backend = get_backend()
+        if hasattr(backend, "load") and backend.name == "lsa":
+            backend.load()
+        _SEARCH_ENCODER = backend
+        log.info(f"semantic search ready (backend={backend.name})")
+    except Exception as exc:
+        _SEARCH_ENCODER_ERROR = f"{type(exc).__name__}: {exc}"
+        log.warning(f"semantic search unavailable: {_SEARCH_ENCODER_ERROR}")
+    return _SEARCH_ENCODER
+
+
+@app.get("/api/search/semantic")
+def semantic_search_route(
+    user: OptionalUser,
+    session: SessionDep,
+    q: str = Query(..., min_length=2, max_length=400),
+    limit: int = Query(10, ge=1, le=50),
+    language: Optional[str] = Query(None, max_length=8),
+    genre: Optional[str] = Query(None, max_length=64),
+    min_year: Optional[int] = Query(None, ge=0, le=2100),
+    max_year: Optional[int] = Query(None, ge=0, le=2100),
+    by_passage: bool = Query(False, description="one row per passage, not per book"),
+):
+    # No return annotation on purpose: this returns a plain dict on success
+    # and a JSONResponse when search is unconfigured, matching how the other
+    # routes in this module report a degraded capability.
+    """Find books from a description of what the reader wants.
+
+    Authorization is not decided here. `user` is optional — anonymous callers
+    are a supported case — and the visibility rule lives in one place,
+    `search.visible_chunks`, which every retrieval path goes through. An
+    endpoint cannot opt out of it by forgetting a filter.
+    """
+    encoder = _get_search_encoder()
+    if encoder is None:
+        # 503 rather than 500: this is a configuration state with a known
+        # remedy, not a crash, and the message says what the remedy is.
+        return error_response(
+            "Semantic search is not configured on this instance. "
+            "Run `python -m embed_pass --fit` to build the model.",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    from search import search_books, search_chunks
+
+    vector = encoder.encode([q])[0]
+    filters = dict(
+        language=language,
+        genre=genre,
+        min_year=min_year,
+        max_year=max_year,
+        # Never rank the query against vectors from a different model.
+        embedding_model=encoder.name,
+    )
+    user_id = user.id if user else None
+
+    if by_passage:
+        hits = search_chunks(session, vector, user_id=user_id, limit=limit, **filters)
+        items = [h.as_dict() for h in hits]
+    else:
+        items = search_books(session, vector, user_id=user_id, limit=limit, **filters)
+
+    return {
+        "query": q,
+        "items": items,
+        "total": len(items),
+        # Named so a caller can tell which vector space produced the ranking;
+        # comparing scores across backends is meaningless.
+        "backend": encoder.name,
+        # Honest about scope: an empty list means nothing matched, not that
+        # the book does not exist. Only part of the catalogue is embedded.
+        "scope": "embedded passages only",
+    }
+
+
 @app.post("/filter")
 @app.post("/api/filter")
 def filter_books(payload: FilterRequest) -> Dict[str, Any]:
