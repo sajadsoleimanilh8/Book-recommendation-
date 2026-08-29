@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -40,6 +41,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -185,6 +187,101 @@ class BookText(Base):
         Boolean, default=False, server_default="false", nullable=False
     )
     fetched_at: Mapped[datetime] = TimestampCol()
+
+
+# Dimension of the embedding column. 384 is all-MiniLM-L6-v2, the smallest
+# model that handles §27's query style ("a short philosophical book that makes
+# me question my life") — those need semantics, not the lexical matching the
+# existing TF-IDF/LSA engine does. Changing this is a migration, so it is a
+# named constant rather than a literal buried in the column definition.
+EMBEDDING_DIM = 384
+
+
+class BookChunk(Base):
+    """Retrievable pieces of a book, public catalogue or private upload (§22).
+
+    One table, two populations, because a user searching their own library
+    expects one result list rather than two — and because the alternative
+    (separate public/private tables) means every retrieval path is written
+    twice and only one of them gets the authorization right.
+
+    The safety property that matters: **a user's private chunks must never
+    appear in another user's search.** It is expressed here structurally
+    rather than left to each query to remember:
+
+        public   ->  visibility='public'  AND user_id IS NULL
+        private  ->  visibility='private' AND user_id = <owner>
+
+    A CHECK constraint makes the illegal states unrepresentable, so a private
+    chunk cannot exist without an owner, and a public chunk cannot carry one.
+    Without it, a single NULL user_id on a private row would silently publish
+    somebody's uploaded book to every search on the platform.
+
+    Section 11 still governs content: public rows only ever hold text we may
+    lawfully redistribute. Private rows hold the user's own upload and are
+    never served to anyone else.
+    """
+
+    __tablename__ = "book_chunks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    book_id: Mapped[int] = mapped_column(
+        ForeignKey("books.id", ondelete="CASCADE"), nullable=False
+    )
+    # NULL for catalogue chunks. Deliberately nullable: "no owner" is what
+    # makes a chunk public, and it is checked against `visibility` below.
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    visibility: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="public"
+    )
+    # Position within the source text, so retrieved chunks can be shown in
+    # order and neighbouring context can be fetched without a second scan.
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Nullable because chunking and embedding are separate passes: text is
+    # cheap and local, embeddings are not. A NULL embedding means "chunked,
+    # not yet embedded", which is exactly the work queue for the embed pass.
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(EMBEDDING_DIM), nullable=True
+    )
+    # Which model produced the vector. Without it, a model change silently
+    # mixes incompatible vector spaces in one column and retrieval quietly
+    # degrades instead of failing.
+    embedding_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = TimestampCol()
+
+    __table_args__ = (
+        # Makes the illegal states unrepresentable rather than trusting every
+        # future INSERT to remember the rule. A private chunk without an owner
+        # would be visible to every search on the platform.
+        CheckConstraint(
+            "(visibility = 'public'  AND user_id IS NULL) OR "
+            "(visibility = 'private' AND user_id IS NOT NULL)",
+            name="ck_book_chunks_visibility_owner",
+        ),
+        # Postgres treats NULLs as distinct in unique constraints, so the
+        # plain form would not stop duplicate *public* chunks — the common
+        # case. NULLS NOT DISTINCT (PG15+, and the image is PG16) fixes that.
+        Index(
+            "uq_book_chunks_identity",
+            "book_id",
+            "user_id",
+            "ordinal",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+        ),
+        # The authorization filter is (visibility, user_id) on every search.
+        Index("ix_book_chunks_visibility_user", "visibility", "user_id"),
+        # Finds the embed pass's work queue without scanning content.
+        Index(
+            "ix_book_chunks_unembedded",
+            "id",
+            postgresql_where=text("embedding IS NULL"),
+        ),
+    )
 
 
 class UserBook(Base):
