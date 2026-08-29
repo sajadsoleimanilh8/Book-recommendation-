@@ -198,3 +198,37 @@ def test_chatbot_returns_recommendations(client):
         "/api/chat", json={"user_id": "t", "message": "recommend me a dark thriller"}
     )
     assert r.json()["recommendations"], "chatbot returned no books"
+
+
+def test_health_reports_search_readiness_without_gating_on_it(client):
+    """F-03 and F-21's lesson applied to a new capability.
+
+    A capability whose state nobody can see is one that fails silently. But
+    semantic search degrades cleanly to a 503 on its own endpoint, so folding
+    it into `ok` would take the whole service red over one optional feature.
+    `search_ready: false` beside `ok: true` is the honest shape.
+    """
+    body = client.get("/api/health").json()
+
+    assert "search_ready" in body, "search state is invisible in /health"
+    assert isinstance(body["search_ready"], bool)
+    assert "search_backend" in body and "search_error" in body
+
+    if body["search_ready"]:
+        assert body["search_backend"], "ready but nameless"
+        assert body["search_error"] is None
+    else:
+        # Not ready is allowed; silently not ready is not.
+        assert body["search_error"], "search is unavailable and says nothing"
+
+
+def test_search_readiness_is_known_before_the_first_search(client):
+    """It is warmed at startup. If it only loaded on first use, /health would
+    report `false` until somebody searched — a health check that lies until
+    traffic arrives is worse than one that says nothing.
+    """
+    import main
+
+    assert (main._SEARCH_ENCODER is not None) or (main._SEARCH_ENCODER_ERROR is not None), (
+        "startup neither loaded the encoder nor recorded why not"
+    )

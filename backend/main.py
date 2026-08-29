@@ -538,6 +538,11 @@ def startup():
         _build_pk_index()
         _rehydrate_comments()
 
+    # Outside the block above on purpose: semantic search reads from Postgres
+    # and does not depend on the recommender, so a failed ML fit must not also
+    # take search down. Failure here is recorded, never fatal.
+    _get_search_encoder()
+
 
 def _build_pk_index() -> None:
     """Map books.id -> DataFrame row index, once, at startup.
@@ -631,6 +636,18 @@ def health():
         # The endpoint only ever returned 200 while the engine was broken,
         # which is a large part of why F-03 went unnoticed. best_k is the int.
         "clusters": getattr(getattr(RECOMMENDER, "cluster", None), "best_k", None),
+        # Semantic search reports separately and does NOT gate `ok`. It
+        # degrades cleanly to 503 on its own endpoint while the rest of the
+        # app serves normally (section 12), so folding it into `ok` would
+        # take the whole service red over one optional capability.
+        #
+        # But it is reported, because the F-03 and F-21 lesson is that a
+        # capability nobody can see the state of is a capability that fails
+        # silently. `search_ready:false` next to `ok:true` is the honest
+        # shape: the app is healthy, this feature is not configured.
+        "search_ready": _SEARCH_ENCODER is not None,
+        "search_backend": getattr(_SEARCH_ENCODER, "name", None),
+        "search_error": _SEARCH_ENCODER_ERROR,
     }
 
 @app.get("/books")
@@ -703,12 +720,16 @@ _SEARCH_ENCODER_ERROR: Optional[str] = None
 
 
 def _get_search_encoder():
-    """Load the embedding backend once, on first use.
+    """Load the embedding backend once. Idempotent.
 
-    Lazily, not at import: the fitted LSA artefact is ~48 MB, boot is already
-    dominated by the ML fit, and an app that cannot start because search is
-    unconfigured is worse than one where search alone reports unavailable
-    (section 12 — a missing capability degrades, it does not cascade).
+    Called at startup so `/health` can tell the truth about search without a
+    request having happened first, and kept lazy-safe so a caller that arrives
+    before or instead of that still works.
+
+    Never at import: the fitted artefact is ~48 MB, and an app that cannot
+    start because search is unconfigured is worse than one where search alone
+    reports unavailable (section 12 — a missing capability degrades, it does
+    not cascade). Failure here is recorded, not raised.
     """
     global _SEARCH_ENCODER, _SEARCH_ENCODER_ERROR
     if _SEARCH_ENCODER is not None or _SEARCH_ENCODER_ERROR is not None:
