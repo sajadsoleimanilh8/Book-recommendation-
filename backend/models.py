@@ -239,6 +239,16 @@ class BookChunk(Base):
     # Position within the source text, so retrieved chunks can be shown in
     # order and neighbouring context can be fetched without a second scan.
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Where the text came from. Section 11 requires the licensing basis of
+    # every stored passage to be explicit and auditable, and these differ:
+    # "text" is public-domain prose from Project Gutenberg, "description" is a
+    # third-party blurb from a metadata provider. Serving them is the same
+    # operation; being able to tell them apart afterwards is not optional.
+    # It also matters for retrieval — a blurb and a chapter are different
+    # kinds of evidence that a book matches a query.
+    origin: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="text"
+    )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     char_count: Mapped[int] = mapped_column(Integer, nullable=False)
     # Nullable because chunking and embedding are separate passes: text is

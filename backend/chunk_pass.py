@@ -18,14 +18,22 @@ import argparse
 import logging
 import sys
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import OperationalError
 
 from chunking import chunk_text
 from db import SessionLocal
-from models import BookChunk, BookText
+from models import Book, BookChunk, BookText
 
 log = logging.getLogger("chunk_pass")
+
+# Descriptions are chunked into the same table as full text, so their ordinals
+# are offset past any realistic chapter count to keep the identity index
+# (book_id, user_id, ordinal) collision-free.
+DESCRIPTION_ORDINAL_BASE = 1_000_000
+# Below this a "description" is a stub — "No description available." and its
+# kin — and embedding it produces a confident vector for nothing.
+MIN_DESCRIPTION_CHARS = 120
 
 
 def pending_query(limit: int, redo: bool):
@@ -37,8 +45,13 @@ def pending_query(limit: int, redo: bool):
     return stmt.order_by(BookText.book_id).limit(limit)
 
 
-def chunk_one(session, book_id: int, content: str) -> int:
-    """Replace this book's public chunks. Returns the number written."""
+def chunk_one(session, book_id: int, content: str, origin: str = "text") -> int:
+    """Replace this book's public chunks of one origin. Returns how many.
+
+    Scoped to a single `origin` so the two passes do not clobber each other:
+    a book can hold Gutenberg prose *and* a provider blurb, and chunking one
+    must not delete the other.
+    """
     pieces = chunk_text(content)
     if not pieces:
         return 0
@@ -48,15 +61,23 @@ def chunk_one(session, book_id: int, content: str) -> int:
     # meaningless. Private chunks are untouched — this filters on visibility.
     session.execute(
         delete(BookChunk).where(
-            BookChunk.book_id == book_id, BookChunk.visibility == "public"
+            BookChunk.book_id == book_id,
+            BookChunk.visibility == "public",
+            BookChunk.origin == origin,
         )
     )
+    # Ordinals restart per origin, so the unique index needs them not to
+    # collide with the other origin's rows. Descriptions are short and few;
+    # offsetting them well past any realistic chapter count is simpler and
+    # more legible than a composite key.
+    offset = DESCRIPTION_ORDINAL_BASE if origin == "description" else 0
     session.add_all(
         BookChunk(
             book_id=book_id,
             user_id=None,
             visibility="public",
-            ordinal=i,
+            origin=origin,
+            ordinal=offset + i,
             content=piece,
             char_count=len(piece),
         )
@@ -65,17 +86,36 @@ def chunk_one(session, book_id: int, content: str) -> int:
     return len(pieces)
 
 
-def run(limit: int, redo: bool = False) -> dict:
+def description_query(limit: int, redo: bool):
+    """Enriched books whose description is not yet chunked.
+
+    Section 27 can only retrieve what is indexed, and full text exists for
+    Gutenberg alone. Descriptions are what every other enriched book has, so
+    indexing them is the difference between semantic search covering ~1,000
+    books and covering the enriched catalogue.
+    """
+    already = select(BookChunk.book_id).where(BookChunk.origin == "description")
+    stmt = select(Book.id, Book.description).where(
+        Book.description.isnot(None),
+        func.length(Book.description) >= MIN_DESCRIPTION_CHARS,
+    )
+    if not redo:
+        stmt = stmt.where(Book.id.notin_(already))
+    return stmt.order_by(Book.ratings_count.desc(), Book.id).limit(limit)
+
+
+def run(limit: int, redo: bool = False, origin: str = "text") -> dict:
     written = books = 0
     empty = 0
+    query = pending_query if origin == "text" else description_query
 
     with SessionLocal() as session:
-        rows = session.execute(pending_query(limit, redo)).all()
-        log.info(f"{len(rows)} book text(s) queued")
+        rows = session.execute(query(limit, redo)).all()
+        log.info(f"{len(rows)} {origin} source(s) queued")
 
         for book_id, content in rows:
             try:
-                n = chunk_one(session, book_id, content)
+                n = chunk_one(session, book_id, content, origin=origin)
             except OperationalError as exc:
                 # F-30: the database went away. Every remaining book fails the
                 # same way, so stop rather than logging thousands of copies.
@@ -99,7 +139,12 @@ def run(limit: int, redo: bool = False) -> dict:
 
         session.commit()
 
-    return {"books_chunked": books, "chunks_written": written, "no_content": empty}
+    return {
+        "origin": origin,
+        "books_chunked": books,
+        "chunks_written": written,
+        "no_content": empty,
+    }
 
 
 def report() -> dict:
@@ -115,8 +160,14 @@ def report() -> dict:
         chars = session.scalar(
             select(func.coalesce(func.sum(BookChunk.char_count), 0))
         ) or 0
+        by_origin = dict(
+            session.execute(
+                select(BookChunk.origin, func.count()).group_by(BookChunk.origin)
+            ).all()
+        )
         return {
             "book_texts": texts,
+            "chunks_by_origin": by_origin or "none",
             "books_chunked": chunked_books,
             "books_pending": max(0, texts - chunked_books),
             "chunks_total": chunks,
@@ -130,13 +181,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Chunk stored book text.")
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--redo", action="store_true", help="rechunk books already done")
+    parser.add_argument(
+        "--origin",
+        default="text",
+        choices=["text", "description"],
+        help="chunk stored full text, or provider descriptions",
+    )
     parser.add_argument("--stats", action="store_true", help="report only")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
     if not args.stats:
-        for k, v in sorted(run(args.limit, redo=args.redo).items()):
+        for k, v in sorted(run(args.limit, redo=args.redo, origin=args.origin).items()):
             print(f"  {k:22} {v}")
 
     print("chunks:")

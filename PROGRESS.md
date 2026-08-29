@@ -381,6 +381,56 @@ bug: distinct hosts must never be conflated, and failures must never be cached
 the provider" produce identical-looking failure counts. Breaking errors down
 by class before acting on them took two minutes and reversed the diagnosis.*
 
+### Phase 2 — semantic search shipped, with a measured quality number
+
+`GET /api/search/semantic` is live. Coverage as of this run:
+
+```
+chunks       29,257   (25,898 book text + 3,359 descriptions)
+embedded     29,257   100%, backend=lsa
+books                 2,462 searchable, from 1,081 an hour earlier
+query latency    66 ms over 25,898 vectors, full scan
+```
+
+Descriptions were added because full text exists for Gutenberg alone, so
+indexing only text meant semantic search covered ~3% of the catalogue.
+Descriptions are what every other enriched book has.
+
+The chunks carry an `origin` column (`text` | `description`). Section 11
+requires the licensing basis of every stored passage to be explicit, and these
+differ: one is public-domain prose, the other a third-party blurb. It also
+matters for retrieval — a chapter and a blurb are different kinds of evidence
+that a book matches — so `origin` is returned with every search result.
+
+**Retrieval quality, measured rather than eyeballed** (`python -m eval_search`):
+
+```
+origin=text          73.3%   same-book-in-top-10, 150 probes
+origin=description   56.5%
+```
+
+Descriptions score lower and should: a blurb and a chapter of the same book
+share far less vocabulary than two chapters do.
+
+The harness earned itself immediately. Dropping the first SVD component is
+standard advice for LSA — every vector shares that direction, which inflates
+similarity uniformly, and 100% of the corpus has the same sign there. Measured:
+**68.0% → 67.3%**. No improvement. Without the number it would have shipped on
+the strength of the reasoning.
+
+**Honest limitation.** LSA produces confidently wrong answers on queries whose
+concepts are not lexical. "A book about grief and losing someone" returns
+*Thinking In C++* at 0.89 similarity. The distribution is healthy (corpus mean
+0.044, p99 0.53, and a nonsense query scores 0.000 across the board), so this
+is not noise being ranked — it is genuinely what LSA thinks is closest. The
+fix is a transformer backend, which is OI-9 and needs a decision, not more
+tuning. The seam is already in place: `EMBEDDING_BACKEND=minilm` plus
+`embed_pass --redo`.
+
+**Deferred with a measurement:** at 29k vectors a full scan costs 66 ms, so no
+ANN index yet (§8). Worth revisiting past ~150k chunks, where the same scan
+would cost roughly 380 ms.
+
 ### F-36 · The app told users every book was free — **FIXED**
 
 Section 18: *"Do not fake price or availability. If no provider is configured:

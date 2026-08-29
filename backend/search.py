@@ -57,6 +57,7 @@ class SearchHit:
     passage: str
     similarity: float
     visibility: str
+    origin: str
 
     def as_dict(self) -> dict:
         return {
@@ -68,6 +69,11 @@ class SearchHit:
             "passage": self.passage,
             "similarity": round(self.similarity, 4),
             "visibility": self.visibility,
+            # Section 11: a caller must be able to tell public-domain prose
+            # from a third-party blurb. They are also different evidence that
+            # a book matches — a chapter shows the writing, a blurb describes
+            # it — so a reader deserves to know which they are looking at.
+            "origin": self.origin,
         }
 
 
@@ -140,6 +146,7 @@ def search_chunks(
             BookChunk.ordinal,
             BookChunk.content,
             BookChunk.visibility,
+            BookChunk.origin,
             Book.title,
             Book.author,
             distance.label("distance"),
@@ -170,6 +177,7 @@ def search_chunks(
                 passage=row.content,
                 similarity=similarity,
                 visibility=row.visibility,
+                origin=row.origin,
             )
         )
     return hits

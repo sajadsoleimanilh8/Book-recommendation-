@@ -140,3 +140,73 @@ def test_text_with_no_usable_content_writes_nothing(sample_book):
         assert chunk_one(session, sample_book, "   \n\n  ") == 0
         session.commit()
         assert _count(session, sample_book, "public") == 0
+
+
+# ---------------------------------------------------------------------------
+# Origin — section 11 auditability, and the two passes coexisting.
+# ---------------------------------------------------------------------------
+
+DESCRIPTION = (
+    "A sweeping account of a coastal village and the families who fished "
+    "there for four generations, told through the letters they left behind."
+)
+
+
+def test_chunking_a_description_does_not_delete_the_full_text_chunks(sample_book):
+    """The two passes write to one table. If either delete were scoped to
+    book_id and visibility alone, running one pass would wipe the other's
+    work — and the symptom would be a book quietly falling out of search.
+    """
+    with SessionLocal() as session:
+        text_chunks = chunk_one(session, sample_book, PROSE, origin="text")
+        session.commit()
+        desc_chunks = chunk_one(session, sample_book, DESCRIPTION, origin="description")
+        session.commit()
+
+        assert text_chunks > 1
+        assert desc_chunks >= 1
+
+        rows = session.scalars(
+            select(BookChunk).where(BookChunk.book_id == sample_book)
+        ).all()
+        origins = [r.origin for r in rows]
+        assert origins.count("text") == text_chunks
+        assert origins.count("description") == desc_chunks
+
+
+def test_rechunking_text_leaves_the_description_alone(sample_book):
+    with SessionLocal() as session:
+        chunk_one(session, sample_book, DESCRIPTION, origin="description")
+        session.commit()
+        chunk_one(session, sample_book, PROSE, origin="text")
+        session.commit()
+        chunk_one(session, sample_book, PROSE, origin="text")  # again
+        session.commit()
+
+        assert _count_origin(session, sample_book, "description") == 1
+
+
+def test_ordinals_from_the_two_origins_do_not_collide(sample_book):
+    """Both origins number from zero. Without the offset the unique index
+    (book_id, user_id, ordinal) rejects the second pass outright.
+    """
+    with SessionLocal() as session:
+        chunk_one(session, sample_book, PROSE, origin="text")
+        chunk_one(session, sample_book, DESCRIPTION, origin="description")
+        session.commit()
+
+        ordinals = [
+            r.ordinal
+            for r in session.scalars(
+                select(BookChunk).where(BookChunk.book_id == sample_book)
+            )
+        ]
+        assert len(ordinals) == len(set(ordinals)), "ordinal collision across origins"
+
+
+def _count_origin(session, book_id, origin):
+    return session.scalar(
+        select(func.count())
+        .select_from(BookChunk)
+        .where(BookChunk.book_id == book_id, BookChunk.origin == origin)
+    )
