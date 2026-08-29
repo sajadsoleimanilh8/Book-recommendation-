@@ -15,6 +15,12 @@ services:
     # nothing and avoids a migration of the container itself later.
     image: pgvector/pgvector:pg16
     container_name: digikitab-postgres
+    # Docker Desktop stopping mid-run has cost this project ~14 hours of
+    # unattended enrichment twice (F-30). `unless-stopped` brings the
+    # datastore back with the daemon, so a host sleep costs a resume rather
+    # than a lost night. It does not restart the daemon itself — that is
+    # still a host-level concern.
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-digikitab}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-digikitab_dev}
@@ -34,6 +40,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: digikitab-redis
+    restart: unless-stopped
     ports:
       - "${REDIS_PORT:-6380}:6379"
     volumes:

@@ -183,6 +183,20 @@ now `DELETE /api/comments/{comment_id}`. Positional indices are racy once
 comments are shared persistent rows — two concurrent deletes shift each
 other's target. Ids come back from POST and from GET.
 
+### OI-8 · Windows sleep is the root cause of the lost runs — **HOST SETTING, NOT MINE TO CHANGE**
+The containers now restart with the daemon and a supervisor relaunches dead
+passes, but neither prevents the host from sleeping mid-run. Long unattended
+passes will keep being interrupted until the power plan is changed
+(`powercfg /change standby-timeout-ac 0`) or the runs move to a machine that
+stays awake. Flagged rather than changed: altering a developer's power
+settings is not a repository decision.
+
+### OI-7 · Google Books quota is the binding constraint — **NEEDS DECISION**
+Measured: ~1,000 queries/day against 12,786 remaining English records, one to
+two queries each. That is two to four weeks of wall-clock at the current
+allowance. See F-31. If the increase does not land, the choice is between
+Open Library-only coverage for the English set or a standing ~800/day job.
+
 ### OI-6 · Frontend needs a login UI — OPEN
 Comments, progress and reminders all require a token now, so the existing
 pages get 401. Expected and accepted; lands with the Express retirement.
@@ -300,6 +314,65 @@ now scans every migration for the same mistake.
 
 *Generalisable lesson: a migration verified only against an empty database is
 not verified.*
+
+### F-31 · The Google pass is quota-bound, not code-bound — **NEEDS PRODUCT DECISION**
+
+Probed the API directly rather than inferring from the failure logs:
+
+```
+with key : HTTP 503  "Service temporarily unavailable"  reason=backendFailed
+no key   : HTTP 429  "Quota exceeded for quota metric 'Queries' and limit
+                      'Queries per day' of service books.googleapis.com"
+```
+
+The keyed project is being throttled after a burst, and the anonymous path is
+fully exhausted. The default Books API allowance is **~1,000 queries/day**, and
+each book costs one to two queries. So the 12,786 remaining English records
+need **roughly two to four weeks** at the current allowance, no matter how the
+code is written.
+
+This is not something more engineering can fix. Both circuit breakers now stop
+cleanly and save progress, which is the correct behaviour — but the ceiling is
+the quota, and the quota increase request is the only thing that moves it.
+
+**Decision needed:** if the increase is declined or slow, the fallback is to
+accept Open Library-only coverage for the English set (weaker on modern
+titles) or to pace Google at ~800 books/day as a standing background job.
+Logged as OI-7.
+
+### Both new guards proved themselves within 9 minutes of shipping
+
+Not a finding — a note, because it is the sort of thing that is easy to claim
+and hard to evidence. F-29 and F-30 were fixed at 14:30 and both fired in
+production almost immediately:
+
+```
+[ERROR] database unreachable after 106 book(s): (psycopg.errors.AdminShutdown)
+        terminating connection due to administrator command
+[ERROR] Provider is refusing traffic after 96 book(s). Stopping; progress is
+        saved. Resume later.
+```
+
+The first is F-30: Docker Desktop stopped again and the pass stopped **once**,
+cleanly, instead of converting the remaining 5,600 books into failures. The
+second is F-29: Google blocked, and the run stopped instead of marking 12,786
+books permanently `not_found`. Before that morning both would have been silent
+data loss.
+
+### Docker Desktop stopping is now the top operational risk — **MITIGATED**
+
+Three stops in three unattended runs. Two mitigations, and the split matters:
+
+* `restart: unless-stopped` on both containers — brings the datastores back
+  **with the daemon**, verified via `docker inspect`.
+* A supervisor loop watching log staleness, because the restart policy cannot
+  help when the *daemon itself* is gone. It starts Docker Desktop, waits for
+  `pg_isready`, and relaunches only passes whose log has been silent past
+  several times its normal logging interval — so it can never run two copies
+  of the same pass.
+
+Neither stops Windows from sleeping, which is the actual root cause and is a
+host setting, not a repository one. Logged as OI-8.
 
 ### F-30 · One dropped DB connection voided the rest of a 6,000-book run — **FIXED**
 
