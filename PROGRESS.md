@@ -13,7 +13,28 @@ Full evidence for every `F-` reference is in [docs/PHASE-0-AUDIT.md](docs/PHASE-
 | 1 — Foundation | **PR 1 merged** 2026-08-19 | Closes F-01…F-06, F-08, F-09, F-16, F-21, F-23. |
 | 1b — Persistence | **PR 2 merged** 2026-08-19 | Postgres, Alembic, auth. Closes F-07 (write side). |
 | 1c — State migration | **PR 3 merged** 2026-08-19 | Golden baselines, F-12, read-authz sweep. |
-| 2 — Enrichment | **In progress** on `phase-2-enrichment` | Passes died on a Docker stop at 00:18; found F-29, F-30. Found F-27, F-28. Closed F-17. |
+| 2 — Enrichment | **In progress** on `phase-2-enrichment` | Passes running. Found F-27…F-30, F-32, F-33. Closed F-17. |
+| 2b — Book intelligence | **Shipped** 2026-08-29 | §22 BookChunk, §27 semantic search, §18 availability honesty. Found F-34…F-37. |
+
+### Where Phase 2 stands (2026-08-29 21:24)
+
+```
+books             29,975
+descriptions       3,146   10.5%      was 1,286 this morning
+isbn_13            1,999    6.7%
+book_texts         2,446
+chunks            35,403   100% embedded, lsa:501a37e8
+searchable books   2,705    9.0%
+```
+
+Still pending: 9,842 goodreads and 13,016 google_books, both gated on the
+Google quota increase (F-31, OI-7). 3,859 gutenberg still queued and moving at
+roughly 250 books per hour with a 99.9% success rate since F-32.
+
+**Phase 2 sections status:** §17 done, §18 done (honest `unknown`, no provider
+adapters — building them unconfigured would be §8 speculation), §19 done, §22
+done, §27 done. The remaining Phase 2 work is coverage, which is quota-bound
+rather than code-bound.
 
 ### Phase 2 — measured provider yields
 
