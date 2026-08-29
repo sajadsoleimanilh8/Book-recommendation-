@@ -18,13 +18,14 @@ try:
 except ImportError:  # pragma: no cover
     pass
 
-from fastapi import FastAPI, Query, status
+from fastapi import FastAPI, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 import config
 import models
+import ratelimit
 import store
 from ingest import infer_source
 from auth import CurrentUser, OptionalUser, SessionDep
@@ -987,7 +988,25 @@ def audiobook_info(book_id: int):
     }
 
 @app.post("/api/audiobook/generate")
-def audiobook_generate(payload: AudiobookRequest):
+def audiobook_generate(payload: AudiobookRequest, request: Request):
+    # OI-5. This endpoint is unauthenticated (F-07 covered the rest of the
+    # API, not this one) and synchronous (F-19): every call fetches a book and
+    # synthesises speech in the request thread. A few repeat calls occupy
+    # every worker, so it is a denial-of-service lever that needs no
+    # credentials. The limit goes first, before any work is done.
+    try:
+        ratelimit.hit(
+            f"ratelimit:audiobook:{ratelimit.client_ip(request)}",
+            ratelimit.AUDIOBOOK_LIMIT,
+            ratelimit.AUDIOBOOK_WINDOW,
+        )
+    except ratelimit.RateLimited as limited:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"error": {"message": str(limited)}},
+            headers={"Retry-After": str(limited.retry_after)},
+        )
+
     if not RECOMMENDER or not getattr(RECOMMENDER, 'audiobook', None):
         return error_response("Audiobook engine not ready.")
 

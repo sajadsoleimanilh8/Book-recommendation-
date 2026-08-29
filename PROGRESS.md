@@ -232,7 +232,7 @@ pages get 401. Expected and accepted; lands with the Express retirement.
 **Before the app becomes reachable from any network, ALL of:**
 - ~~authentication (F-07)~~ — **done in PR 2**
 - ~~read-authz sweep~~ — **done in PR 3**
-- per-IP rate limit on `/api/audiobook/generate` — still open
+- ~~per-IP rate limit on `/api/audiobook/generate`~~ — **done**, 3/min/IP
 - move generation to a background job (F-19) — still open
 - `JWT_SECRET` set in the environment (config refuses to boot without it
   when `ENV=production`; the `.dev-jwt-secret` fallback is development-only)
@@ -430,6 +430,48 @@ tuning. The seam is already in place: `EMBEDDING_BACKEND=minilm` plus
 **Deferred with a measurement:** at 29k vectors a full scan costs 66 ms, so no
 ANN index yet (§8). Worth revisiting past ~150k chunks, where the same scan
 would cost roughly 380 ms.
+
+### OI-5 · Rate limit — **CLOSED.** Background job (F-19) still blocks
+
+`POST /api/audiobook/generate` now enforces **3 requests per minute per IP**,
+before any work is done.
+
+Design notes worth keeping:
+
+* **Fixed window, not a token bucket.** A fixed window lets through up to 2x
+  the limit across a boundary. That is the textbook objection and it does not
+  matter here: 2x of a very small number is still a very small number, and the
+  goal is to stop one client occupying every worker. Two Redis commands,
+  correct by inspection (§8).
+* **A Redis outage degrades, it does not fail open.** Redis is most likely to
+  be down under exactly the load a rate limit exists to survive, so "open"
+  means no protection precisely when it is needed. It falls back to in-process
+  counters — correct for one instance, which is what this is, and degrading to
+  per-worker limits if it is ever scaled out. Written down so that is a known
+  property rather than a surprise.
+* **`X-Forwarded-For` is ignored.** With no trusted proxy in front it is
+  attacker-controlled, so honouring it would let anyone reset their own limit
+  with one header. A limiter that a single line of curl bypasses is worse than
+  none, because it reads as protection.
+
+Verified against the live Redis container, not only the fallback: refused
+after exactly 3, `retry_after=60`, a second client unaffected.
+
+**OI-5 remains BLOCKING.** The rate limit was one of its three conditions.
+Still open: F-19 (move generation to a background job) and `JWT_SECRET` set in
+the deployment environment.
+
+### F-19 demonstrated itself while these tests were being written
+
+The first version of the endpoint tests hung the suite past 120 seconds on
+three calls, because `generate` performs an unbounded network fetch and a TTS
+call **in the request thread, with no timeout**. Three requests from one test
+were enough to stall it.
+
+That is precisely the denial-of-service shape OI-5 exists for, reproduced by
+accident. The tests now stub synthesis — the hang is recorded as evidence, not
+designed around — and it is a concrete argument for F-19 rather than a
+theoretical one.
 
 ### Boot verified against a real server, not the test client
 
