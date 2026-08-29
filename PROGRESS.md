@@ -448,9 +448,14 @@ fix is a transformer backend, which is OI-9 and needs a decision, not more
 tuning. The seam is already in place: `EMBEDDING_BACKEND=minilm` plus
 `embed_pass --redo`.
 
-**Deferred with a measurement:** at 29k vectors a full scan costs 66 ms, so no
-ANN index yet (§8). Worth revisiting past ~150k chunks, where the same scan
-would cost roughly 380 ms.
+**Deferred with a measurement, and the projection was wrong.** At 29k vectors
+a full scan cost 66 ms, and I projected ~380 ms at 150k by scaling linearly.
+Re-measured at 75,104 vectors: **60 ms** — no worse, slightly better. The scan
+is not the bottleneck at this size; Postgres parallelism and cache absorb it.
+
+So the ANN index stays deferred (§8), but on evidence rather than on my
+arithmetic. Re-measure again past ~250k chunks instead of trusting either
+number.
 
 ### OI-5 · Rate limit — **CLOSED.** Background job (F-19) still blocks
 
