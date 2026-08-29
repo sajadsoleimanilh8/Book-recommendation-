@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from sqlalchemy import case, func, select
 
 import config
+import net_cache
 from db import SessionLocal
 from models import Book
 from providers import GoogleBooksProvider, OpenLibraryProvider, QuotaExceeded, reconcile
@@ -270,6 +271,11 @@ def main() -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="[%(levelname)s] %(message)s",
     )
+
+    # F-32: without this every request pays a fresh DNS lookup, and the
+    # resolver starts refusing under the load of a long parallel run — which
+    # reads as the provider blocking us when it is self-inflicted.
+    net_cache.install()
 
     if not args.stats:
         result = run(

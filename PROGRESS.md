@@ -315,6 +315,67 @@ now scans every migration for the same mistake.
 *Generalisable lesson: a migration verified only against an empty database is
 not verified.*
 
+### F-32 · A 67% failure rate that was self-inflicted, not a provider block — **FIXED**
+
+The relaunched Gutenberg pass reported `unavailable` for 233 of 350 books. The
+obvious reading was that Gutenberg had started blocking us after tens of
+thousands of requests, and the circuit breakers agreed — Open Library stopped
+itself with "provider is refusing traffic".
+
+Both readings were wrong. Breaking the errors down by class:
+
+```
+229  Errno 11001  getaddrinfo failed      <- DNS, not HTTP
+  2  WinError 10060  timed out
+  1  WinError 10053  connection aborted
+  1  timed out
+```
+
+Not one HTTP status among them. Nothing was refusing us; **we could not
+resolve the hostnames.** Resolving the same three hosts twelve times each from
+one idle process succeeded 36/36 in 1.3 seconds, which ruled out the network
+being down.
+
+The cause is that `urllib` opens a fresh connection per request, so every
+fetch paid a fresh DNS lookup. Three passes running for hours meant tens of
+thousands of lookups, and the Windows resolver began refusing under the churn.
+The earlier `WinError 10013` ("socket access forbidden") entries are the same
+exhaustion in different clothing.
+
+Fixed with a process-wide TTL DNS cache (`backend/net_cache.py`). Effect,
+measured on the first 25 books after the change:
+
+```
+before   116 ok / 350 attempted     33%
+after     25 ok /  25 attempted    100%
+```
+
+Six tests, including two that guard the ways a DNS cache can be worse than the
+bug: distinct hosts must never be conflated, and failures must never be cached
+(a cached failure turns one blip into a permanent outage).
+
+*Generalisable lesson: "the provider is blocking us" and "we cannot resolve
+the provider" produce identical-looking failure counts. Breaking errors down
+by class before acting on them took two minutes and reversed the diagnosis.*
+
+### F-33 · This machine is running a second heavy ML workload — **CONTEXT, NEEDS AWARENESS**
+
+While identifying which processes to restart, `Win32_Process` showed ~25
+unrelated Python processes: `SportsStrategyCoachAI` running
+`training.train_ball --part 2 --total-parts 4` with a multiprocessing pool,
+plus large downloads from `exrcsdrive.kaust.edu.sa`.
+
+Left completely alone — it is not mine to touch. But it explains a great deal
+that had been attributed to this project: the socket and DNS exhaustion behind
+F-32, and plausibly the Docker Desktop stops behind F-30, which look like
+memory pressure. It also explains why the earlier watcher never fired: it
+treated "any python.exe is alive" as "the passes are alive", and these
+processes kept that condition true while our passes were dead.
+
+**Implication for scheduling:** enrichment throughput here is not
+provider-bound, it is host-bound. Running more passes in parallel makes things
+worse, not better. Two gentle passes now, rather than three aggressive ones.
+
 ### F-31 · The Google pass is quota-bound, not code-bound — **NEEDS PRODUCT DECISION**
 
 Probed the API directly rather than inferring from the failure logs:

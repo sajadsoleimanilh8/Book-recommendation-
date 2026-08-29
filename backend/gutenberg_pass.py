@@ -32,6 +32,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.dialects.postgresql import insert
 
+import net_cache
 from db import SessionLocal
 from models import Book, BookText
 from providers.base import RateLimiter
@@ -176,6 +177,11 @@ def main() -> int:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+
+    # F-32: without this every request pays a fresh DNS lookup, and the
+    # resolver starts refusing under the load of a long parallel run —
+    # which reads as the provider blocking us when it is self-inflicted.
+    net_cache.install()
 
     if not args.stats:
         result = run(args.limit, redo=args.redo)
