@@ -431,6 +431,35 @@ tuning. The seam is already in place: `EMBEDDING_BACKEND=minilm` plus
 ANN index yet (§8). Worth revisiting past ~150k chunks, where the same scan
 would cost roughly 380 ms.
 
+### F-37 · The guard against mixed vector spaces had a hole — **FIXED**
+
+F-35 stops a query encoded by one backend being ranked against vectors from
+another, by comparing `embedding_model`. Setting up a job to keep chunking as
+enrichment ran surfaced the case it missed:
+
+**refitting LSA on a larger corpus produces a completely different vector
+space, and it was still called `"lsa"`.** The mixed vectors would have sailed
+through the check built to catch exactly that. Worse, it is the likely path in
+practice — the corpus grows every hour, so refitting is routine.
+
+The cause is that LSA is not like a pretrained model. Its space is *defined by
+the corpus it was fitted on*, so the corpus has to be part of the identity.
+`LsaBackend.name` is now `lsa:<fingerprint>`, a digest of the learned
+components: two fits over different corpora differ, refitting the same corpus
+does not (so it does not force a pointless full re-embed).
+
+Refit on the grown 29,257-chunk corpus and re-embedded. Everything now reads
+`lsa:501a37e8`. Quality after the refit:
+
+```
+origin=text          73.3%  (unchanged)
+origin=description   52.2%  (was 56.5% — 150 probes, so within noise)
+```
+
+*Generalisable lesson: a guard is only as good as the identity it compares.
+"Which algorithm" and "which fitted model" are different questions, and only
+the second one is safe to rank against.*
+
 ### F-36 · The app told users every book was free — **FIXED**
 
 Section 18: *"Do not fake price or availability. If no provider is configured:

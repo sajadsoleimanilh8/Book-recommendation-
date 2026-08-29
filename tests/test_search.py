@@ -192,3 +192,40 @@ def test_metadata_filters_narrow_results(corpus):
                 session, _vec(PUBLIC_TEXT), limit=50, language=book.language
             )
             assert PUBLIC_TEXT in _passages(matched)
+
+
+def test_the_lsa_model_name_identifies_the_fitted_space_not_just_the_algorithm():
+    """F-35's guard compares `embedding_model`. Refitting LSA on a different
+    corpus produces a completely different vector space — if both were called
+    "lsa", the mixed vectors would pass the very check built to catch them.
+
+    Unlike a pretrained model, an LSA space is defined by its corpus, so the
+    corpus has to be part of the identity.
+    """
+    import numpy as np
+
+    from embeddings import LsaBackend
+
+    # Varied enough that max_df pruning leaves a vocabulary behind, the way a
+    # real corpus of book passages does.
+    nautical = ["sailor", "harbour", "mast", "tide", "anchor", "voyage", "storm", "keel"]
+    baking = ["baker", "flour", "oven", "yeast", "crust", "dough", "loaf", "sugar"]
+    corpus_a = [f"{w} {nautical[(i + 3) % 8]} chapter {i}" for i, w in
+                enumerate(nautical * 6)]
+    corpus_b = [f"{w} {baking[(i + 3) % 8]} chapter {i}" for i, w in
+                enumerate(baking * 6)]
+
+    a = LsaBackend(dim=8).fit(corpus_a)
+    b = LsaBackend(dim=8).fit(corpus_b)
+
+    assert a.name != b.name, "two different fitted spaces share one name"
+    assert a.name.startswith("lsa:") and b.name.startswith("lsa:")
+
+    # Refitting the same corpus must be stable, or every fit would look like a
+    # new space and force a pointless full re-embed.
+    again = LsaBackend(dim=8).fit(corpus_a)
+    assert again.name == a.name
+
+    # An unfitted backend has no space to identify.
+    assert LsaBackend(dim=8).name == "lsa"
+    assert np.isfinite(a.encode(["a ship at sea"])).all()

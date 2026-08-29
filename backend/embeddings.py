@@ -93,12 +93,26 @@ class LsaBackend:
     `encode()` refuses to guess if it has not run.
     """
 
-    name = "lsa"
-
     def __init__(self, dim: int = 384) -> None:
         self.dim = dim
         self._pipeline = None
         self._fitted_components = 0
+        self._fingerprint = ""
+
+    @property
+    def name(self) -> str:
+        """Identifies the *fitted space*, not just the algorithm.
+
+        F-35 stops a query encoded by one backend being ranked against
+        vectors from another, by comparing `embedding_model`. That guard had a
+        hole: refitting LSA on a larger corpus produces a completely different
+        vector space that would still have been called "lsa", so the mixed
+        vectors would have sailed straight through the check that exists to
+        catch exactly this. Unlike a pretrained model, an LSA space is defined
+        by the corpus it was fitted on — so the corpus has to be part of the
+        identity.
+        """
+        return f"lsa:{self._fingerprint}" if self._fingerprint else "lsa"
 
     @property
     def path(self) -> Path:
@@ -130,7 +144,18 @@ class LsaBackend:
         )
         # F-15's lesson: n_components must fit the vocabulary actually found,
         # or the fit raises and takes the whole pass down with it.
-        matrix = vectoriser.fit_transform(corpus)
+        try:
+            matrix = vectoriser.fit_transform(corpus)
+        except ValueError as exc:
+            # `max_df` prunes terms that appear in most documents. On a small
+            # or homogeneous corpus that can remove every term, and sklearn's
+            # message ("After pruning, no terms remain") does not say which
+            # knob is at fault or that the real problem is the corpus.
+            raise ValueError(
+                f"LSA could not build a vocabulary from {len(corpus)} document(s): "
+                f"{exc}. This backend needs a varied corpus of thousands of "
+                "chunks; run `python -m chunk_pass` first."
+            ) from exc
         components = max(2, min(self.dim, matrix.shape[1] - 1, len(corpus) - 1))
         if components != self.dim:
             log.warning(
@@ -145,6 +170,11 @@ class LsaBackend:
 
         self._pipeline = make_pipeline(vectoriser, svd)
         self._fitted_components = components
+        # A short digest of the learned components. Two fits over different
+        # corpora differ here; refitting the identical corpus does not.
+        self._fingerprint = hashlib.blake2b(
+            np.ascontiguousarray(svd.components_).tobytes(), digest_size=4
+        ).hexdigest()
         log.info(
             f"LSA fitted: {matrix.shape[0]} docs, {matrix.shape[1]} terms, "
             f"{components} components, "
@@ -157,7 +187,11 @@ class LsaBackend:
 
         MODEL_DIR.mkdir(exist_ok=True)
         joblib.dump(
-            {"pipeline": self._pipeline, "components": self._fitted_components},
+            {
+                "pipeline": self._pipeline,
+                "components": self._fitted_components,
+                "fingerprint": self._fingerprint,
+            },
             self.path,
         )
         return self.path
@@ -172,6 +206,7 @@ class LsaBackend:
         blob = joblib.load(self.path)
         self._pipeline = blob["pipeline"]
         self._fitted_components = blob["components"]
+        self._fingerprint = blob.get("fingerprint", "")
         return self
 
     def encode(self, texts: Sequence[str]) -> np.ndarray:
