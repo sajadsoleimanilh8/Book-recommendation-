@@ -202,3 +202,51 @@ def test_results_never_include_a_book_that_does_not_exist(client, seeded):
     with SessionLocal() as session:
         for item in response.json()["items"]:
             assert session.get(Book, item["book_id"]) is not None
+
+
+# ---------------------------------------------------------------------------
+# OI-11 — "books under $5" must not return everything.
+#
+# The price cap lives on POST /api/recommend, not GET /api/books: the
+# catalogue route never declared the parameter (F-38), so `?max_price=5` there
+# is silently ignored rather than wrong. These test the surface that has it.
+# ---------------------------------------------------------------------------
+
+
+def _recommend(client, **payload):
+    response = client.post("/api/recommend", json={"top_k": 12, **payload})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    return body.get("results", body.get("items", body.get("books", [])))
+
+
+def test_max_price_does_not_match_books_with_no_known_price(client):
+    """`_safe_float(None) == 0.0` made every unlisted book look free, so the
+    cap matched the whole catalogue. A filter that silently matches everything
+    is worse than no filter: the caller believes it worked.
+    """
+    unfiltered = _recommend(client, genre="Fiction")
+    capped = _recommend(client, genre="Fiction", max_price=5)
+
+    assert unfiltered, "no baseline results — the fixture cannot show a difference"
+    unknown_priced = [b for b in unfiltered if b.get("availability") == "unknown"]
+    assert unknown_priced, (
+        "baseline had no unknown-price books, so this test cannot detect the bug"
+    )
+    assert not [b for b in capped if b.get("availability") == "unknown"], (
+        "a book whose price nobody knows passed a $5 cap"
+    )
+
+
+def test_every_priced_result_actually_has_a_known_price(client):
+    """The other half of the line: whatever survives must be true, not fewer."""
+    for book in _recommend(client, max_price=5):
+        assert book["availability"] != "unknown", (
+            f"{book['title']!r} passed a price filter with an unknown price"
+        )
+        assert book["price"] is not None and book["price"] <= 5
+
+
+def test_no_cap_still_returns_unknown_priced_books(client):
+    """The fix must not overshoot into hiding books when no cap was asked for."""
+    assert _recommend(client, genre="Fiction"), "filtering with no cap dropped everything"

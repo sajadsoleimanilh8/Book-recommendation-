@@ -204,6 +204,24 @@ def price_and_availability(row: Dict[str, Any]) -> tuple[Optional[float], str, s
     return None, "unknown", source
 
 
+def price_within(row: Dict[str, Any], cap: Optional[float]) -> bool:
+    """Whether a row's price is *known* and within `cap` — OI-11.
+
+    Unknown is not free. `_safe_float(None) == 0.0` made every unlisted book
+    look like it cost nothing, so `max_price=5` returned all 29,975 rows. A
+    filter that silently matches everything is worse than no filter, because
+    the caller believes it worked.
+
+    Shared by the catalogue and recommendation paths for the same reason
+    `price_and_availability` is: when this logic lived inline in both, they
+    could disagree, and only one would ever get fixed.
+    """
+    if cap is None:
+        return True
+    price, availability, _ = price_and_availability(row)
+    return availability != "unknown" and price is not None and price <= cap
+
+
 def _row_to_book(i: int, row: Dict[str, Any]) -> Dict[str, Any]:
     title = str(row.get("title") or "Unknown Title").strip()
     author = str(row.get("author") or "Unknown Author").strip()
@@ -332,7 +350,15 @@ def apply_filters(
     if rating_min is not None:
         out = [b for b in out if _safe_float(b.get("rating")) >= rating_min]
     if max_price is not None:
-        out = [b for b in out if _safe_float(b.get("price")) <= max_price]
+        # OI-11. `_safe_float` turned the unknown price every non-Gutenberg row
+        # carries into 0.0, so "books under $5" matched the entire catalogue —
+        # a filter that silently does nothing is worse than one that is absent.
+        #
+        # Filter on *known* prices only. A book whose price nobody knows may
+        # well cost more than the cap, and we cannot claim otherwise. That
+        # leaves the Gutenberg subset, which is verifiably free, so the filter
+        # is narrow but every result it returns is true.
+        out = [b for b in out if price_within(b, max_price)]
     if q:
         ql = q.lower()
         out = [b for b in out if ql in b.get("title", "").lower() or ql in b.get("author", "").lower() or ql in b.get("description", "").lower()]
@@ -854,7 +880,7 @@ def recommend(payload: RecommendRequest) -> Dict[str, Any]:
         filtered_ml_books = [
             b for b in ml_books
             if (
-                (payload.max_price is None or _safe_float(b.get("list_price")) <= payload.max_price) and
+                price_within(b, payload.max_price) and
                 (payload.min_rating is None or _safe_float(b.get("average_rating")) >= payload.min_rating) and
                 (payload.min_pages is None or _safe_int(b.get("page_count")) >= payload.min_pages) and
                 (payload.max_pages is None or _safe_int(b.get("page_count")) <= payload.max_pages)

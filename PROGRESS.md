@@ -204,7 +204,50 @@ now `DELETE /api/comments/{comment_id}`. Positional indices are racy once
 comments are shared persistent rows — two concurrent deletes shift each
 other's target. Ids come back from POST and from GET.
 
-### OI-11 · What should a price filter do when no price is known? — **NEEDS DECISION**
+### OI-11 · What should a price filter do when no price is known? — **DECIDED, SHIPPED**
+
+Approved 2026-08-30: do not offer a filter that cannot work.
+
+Investigating it turned up something better than expected — **there was no UI
+control to hide.** The questionnaire has six questions and none is about
+price, and no frontend file references `max_price`. So the decision landed at
+the API instead, where the parameter really does exist.
+
+`price_within(row, cap)` now filters on *known* prices only. Unknown is not
+free: a book nobody has priced may well cost more than the cap, and we cannot
+claim otherwise. What survives is the Gutenberg subset, which is verifiably
+free — narrow, but every result it returns is true.
+
+Shared by both call sites, for the same reason `price_and_availability` is:
+the catalogue path and the recommendation path each had their own copy of the
+comparison, so they could disagree and only one would ever get fixed.
+
+Sabotage-checked: restoring `_safe_float(list_price) <= cap` fails exactly the
+two new tests. `test_no_cap_still_returns_unknown_priced_books` holds the
+other side, so the fix cannot overshoot into hiding books nobody asked to
+filter.
+
+### F-38 · `/api/books` silently ignores unknown query parameters — OPEN, **NEEDS DECISION**
+
+Found while testing OI-11. `GET /api/books?max_price=5` returns **all 29,975
+books with HTTP 200**. Not because the filter is broken — because the route
+never declared `max_price`, and FastAPI discards undeclared query parameters
+without complaint.
+
+This is the same failure shape as OI-11 itself, one layer up: the caller
+believes they filtered, the server says 200, and the data says otherwise. Any
+client typo (`ratingmin`, `max_pages`) behaves identically.
+
+I did **not** add `max_price` to the route — that would be adding a price
+filter on the same day you decided not to offer one. The open question is
+narrower and yours:
+
+**Should undeclared query parameters 422 instead of being ignored?** It is the
+honest behaviour, and it would break any existing client that sends a
+parameter this API never had. Low risk today (one frontend, no external
+consumers), higher later.
+
+
 See F-36. `max_price` currently treats unknown as 0, so "under $5" returns
 everything. Excluding unknown-price books is accurate but returns an empty
 list until an availability provider exists. My recommendation: hide the price
