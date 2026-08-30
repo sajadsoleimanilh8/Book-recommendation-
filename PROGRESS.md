@@ -131,6 +131,29 @@ Explicitly **not** built now (§8): RTL layout, locale routing, translation pipe
 
 ---
 
+## Waiting on you — 2026-08-30
+
+All five decisions from the last round are shipped. Three new ones surfaced
+while doing them.
+
+| # | Decision | Why it is yours | Cost of waiting |
+|---|---|---|---|
+| 1 | **Flip search to MiniLM?** | Product tradeoff: search results change for every user. Everything else is built — `.venv` is complete, `server.js` picks it automatically, F-39 makes switching self-healing, `/health` names a mismatch. | Search runs at 50.7% instead of 79.3% |
+| 2 | **F-38 — should undeclared query params 422?** | Breaks any client sending a param this API never had. Low risk now, higher later. | Callers keep believing filters they mistyped worked |
+| 3 | **Google quota** | Only you can request it. | 9,842 Goodreads + 13,016 Google records frozen |
+
+**To do #1 when you decide:**
+
+```bash
+EMBEDDING_BACKEND=minilm .venv/Scripts/python -m chunk_pass --redo   # clears F-40 front matter
+EMBEDDING_BACKEND=minilm .venv/Scripts/python -m embed_pass --limit 200000
+```
+
+~14 minutes for the embed, plus the re-chunk. Reverting is the same two
+commands with `lsa`. The keep-up cron must move to `.venv` at the same time,
+or it will fail on the missing import — that is the one thing that does not
+self-heal.
+
 ## Open items — need review
 
 ### OI-1 · `backend/static/` — unmounted second frontend
