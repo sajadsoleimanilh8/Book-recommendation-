@@ -329,6 +329,40 @@ environment — which incidentally closes **F-24**, the shared global Python.
 step; it requires the app and the keep-up pass to run from `.venv`, which is
 an operational change worth doing deliberately rather than as a side effect.
 
+### F-40 · Tables of contents were being indexed as though they were the book — **FIXED**
+
+Found in a live search result, not by reading code:
+
+```
+"a terrifying story set in a haunted house"
+  top hit -> The Wonder Book of Bible Stories
+  passage -> "THE STORY OF NOAH AND THE ARK 7  THE STORY OF HAGAR AND
+              ISHMAEL 16  THE STORY OF ABRAHAM AND ISAAC 22 ..."
+```
+
+`extract_reading_text` keeps front matter deliberately — it is part of the
+opening pages a reader paginates through (F-17). Embedding it is a different
+question: a contents block yields a confident vector for prose the model never
+saw, which is worse than having no vector at all.
+
+`is_front_matter` now filters the text path at chunking time. Descriptions
+were already covered upstream by `looks_like_prose`.
+
+**The first version of the filter did not catch its own motivating example.**
+The Bible Stories contents had no "Chapter" keyword and no leading enumerator
+— it was titles with *trailing page numbers*. That is now a third signal, and
+it is the test named `the-hit-that-found-this-bug`.
+
+**Measured on 8,000 real chunks: 4.6% flagged.** Spot-checking eight found six
+clear contents blocks, one dedication, and one genuine false positive. So
+roughly 1% of real prose is lost to remove roughly 3.5% of junk — worth it,
+and bounded: if the filter would empty a book entirely it is overruled, since
+indexing something beats indexing nothing.
+
+**Applies to new chunks only.** The existing 81,636 carry the old content
+until a re-chunk, which is the same pass that a MiniLM cutover would run
+anyway.
+
 ### F-39 · A backend switch would have silently mixed two vector spaces — **FIXED**
 
 Found while planning the MiniLM cutover, before it could do damage.

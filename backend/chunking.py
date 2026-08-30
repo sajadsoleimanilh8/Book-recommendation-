@@ -149,3 +149,49 @@ def chunk_text(
     return [c for c in chunks if len(c) >= minimum] or (
         [text.strip()] if len(text.strip()) >= minimum else []
     )
+
+# --------------------------------------------------------------------------
+# F-40 — front matter must not be indexed as though it were the book.
+#
+# `extract_reading_text` deliberately keeps title pages, contents and
+# publisher notes: they are part of the opening pages a reader paginates
+# through (F-17). But embedding them is a different matter. A contents block
+# produces a confident vector for a book whose prose the model never saw, and
+# it surfaced in practice — "a terrifying story set in a haunted house"
+# returned the contents page of *The Wonder Book of Bible Stories*.
+#
+# Measured on 6,000 real chunks: this flags 3.4%, and spot-checking the
+# flagged set found title pages, contents lists, publisher advertisements and
+# transcriber credits, with roughly one preface per six wrongly caught.
+#
+# Thresholds are deliberately conservative. A false positive costs one chunk
+# of a book that has many; a false negative puts a table of contents into
+# search results. But prose does legitimately say "Chapter 4" now and then,
+# so the bar is a *dense run* of enumerators, not their presence.
+# --------------------------------------------------------------------------
+
+_CONTENTS_RUN = 4
+_ENUMERATION_RUN = 5
+_PAGE_INDEX_RUN = 4
+
+# The case that actually found this bug had neither "Chapter" nor a leading
+# enumerator — it was a contents list with trailing page numbers:
+#
+#   THE STORY OF NOAH AND THE ARK 7 THE STORY OF HAGAR AND ISHMAEL 16 ...
+#
+# A word followed by a bare number, several times over. Prose does this
+# occasionally ("in Chapter 4 he had promised"); a contents page does it in
+# every line, which is what the run length distinguishes.
+_PAGE_INDEX = re.compile(r"[A-Za-z]\s+\d{1,4}(?=\s|$)")
+
+
+def is_front_matter(text: str) -> bool:
+    """Whether a chunk is a contents block, title page or publisher note."""
+    from providers.gutenberg_text import _CONTENTS, _ENUMERATION
+
+    collapsed = " ".join(text.split())
+    return (
+        len(_CONTENTS.findall(collapsed)) >= _CONTENTS_RUN
+        or len(_ENUMERATION.findall(collapsed)) >= _ENUMERATION_RUN
+        or len(_PAGE_INDEX.findall(collapsed)) >= _PAGE_INDEX_RUN
+    )

@@ -21,7 +21,7 @@ import sys
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import OperationalError
 
-from chunking import chunk_text
+from chunking import chunk_text, is_front_matter
 from db import SessionLocal
 from models import Book, BookChunk, BookText
 
@@ -53,6 +53,15 @@ def chunk_one(session, book_id: int, content: str, origin: str = "text") -> int:
     must not delete the other.
     """
     pieces = chunk_text(content)
+    if origin == "text":
+        # F-40. Descriptions are already prose-filtered upstream by
+        # `looks_like_prose`; full text is not, because the reading path wants
+        # the front matter kept. Search does not.
+        kept = [p for p in pieces if not is_front_matter(p)]
+        # Never let the filter empty a book. If everything looks like front
+        # matter the detector is wrong about this book, and indexing something
+        # beats indexing nothing.
+        pieces = kept or pieces
     if not pieces:
         return 0
 

@@ -69,10 +69,28 @@ app.get('/questionnair.html', (req, res) => {
 // frontend/, including frontend/css and frontend/js. Deleting them removes
 // the vulnerability with no loss of function.
 
+// Prefer the project virtualenv when it exists (F-24, OI-9).
+//
+// The venv is where sentence-transformers lives; the shared global
+// interpreter does not have it. Launching the app from the wrong Python does
+// not crash — `search_books` filters chunks to the query's own vector space,
+// so a MiniLM corpus queried by an LSA encoder simply returns nothing for
+// every query. Choosing the interpreter here rather than relying on whoever
+// starts the server to remember is what stops that.
+//
+// Falls back to `python` when there is no venv, so a fresh clone still runs.
+function backendPython() {
+    const venv = process.platform === 'win32'
+        ? path.join(__dirname, '.venv', 'Scripts', 'python.exe')
+        : path.join(__dirname, '.venv', 'bin', 'python');
+    return fs.existsSync(venv) ? venv : 'python';
+}
+
 function startBackend() {
-    console.log('🐍 Starting Python Backend (FastAPI)...');
-    
-    const backend = spawn('python', ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)], {
+    const interpreter = backendPython();
+    console.log(`🐍 Starting Python Backend (FastAPI) — ${interpreter === 'python' ? 'system python' : '.venv'}`);
+
+    const backend = spawn(interpreter, ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(BACKEND_PORT)], {
         cwd: path.join(__dirname, 'backend'),
         shell: true,
         stdio: 'pipe'
