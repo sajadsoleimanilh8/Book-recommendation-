@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import config
 import models
+import jobs
 import ratelimit
 import store
 from ingest import infer_source
@@ -1057,17 +1058,49 @@ def audiobook_generate(payload: AudiobookRequest, request: Request):
     if not RECOMMENDER or not getattr(RECOMMENDER, 'audiobook', None):
         return error_response("Audiobook engine not ready.")
 
+    # F-19. Synthesis used to run here, in the request thread, with no
+    # timeout — three concurrent calls hung the entire test suite past 120
+    # seconds. It now returns immediately with a job to poll.
     try:
-        result = RECOMMENDER.audiobook.generate(
+        job = jobs.REGISTRY.submit(
+            RECOMMENDER.audiobook.generate,
             book_name=payload.book_name,
             book_id=payload.book_id,
             lang=payload.language,
         )
-    except Exception as e:
-        return error_response(f"Generation error: {str(e)}")
+    except jobs.Saturated as full:
+        # A queue that accepts everything only moves the exhaustion. Say no.
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"error": {"message": str(full)}},
+            headers={"Retry-After": str(full.retry_after)},
+        )
 
-    code = status.HTTP_200_OK if result.get("ok") else status.HTTP_422_UNPROCESSABLE_ENTITY
-    return JSONResponse(status_code=code, content=result)
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "ok": True,
+            "job_id": job.id,
+            "status": job.status,
+            "poll": f"/api/audiobook/jobs/{job.id}",
+        },
+        headers={"Location": f"/api/audiobook/jobs/{job.id}"},
+    )
+
+
+@app.get("/api/audiobook/jobs/{job_id}")
+def audiobook_job_status(job_id: str):
+    """Poll a generation job — F-19's other half.
+
+    404 means the job never existed *or* its result has aged out of the
+    registry (15 minutes). Those are deliberately indistinguishable: a client
+    that waited that long should re-request rather than be told to keep
+    polling something that is gone.
+    """
+    job = jobs.REGISTRY.get(job_id)
+    if job is None:
+        return error_response("No such job.", status.HTTP_404_NOT_FOUND)
+    return job.to_dict()
 
 
 @app.post("/comments")

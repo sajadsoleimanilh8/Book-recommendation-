@@ -531,7 +531,53 @@ So the ANN index stays deferred (§8), but on evidence rather than on my
 arithmetic. Re-measure again past ~250k chunks instead of trusting either
 number.
 
-### OI-5 · Rate limit — **CLOSED.** Background job (F-19) still blocks
+### OI-5 · Rate limit — **CLOSED.** Background job (F-19) — **CLOSED 2026-08-30**
+
+Both halves are now done. What remains of OI-5 as a deployment gate:
+
+| gate | state |
+|---|---|
+| per-IP rate limit on generate | closed |
+| F-19 background job | **closed** |
+| `JWT_SECRET` set in the environment | **still required** |
+| **single worker process** | **new constraint, see below** |
+
+### F-19 · Audiobook synthesis ran in the request thread — **FIXED**
+
+`POST /api/audiobook/generate` now returns **202** with a job id and a poll
+URL; `GET /api/audiobook/jobs/{id}` reports `queued` / `running` / `done` /
+`failed`.
+
+**The bug demonstrated itself.** Writing the OI-5 tests, three calls hung the
+whole suite past 120 seconds — an unauthenticated denial of service
+reproduced by accident. Sabotage-checking the fix reproduced it again on
+demand: reverting to inline synthesis hung the suite at exactly the same
+point, after failing five of the nine new tests.
+
+**Backgrounding alone would not have fixed it.** An unbounded queue moves the
+exhaustion rather than removing it — a client can enqueue thousands of jobs
+and occupy the workers just as effectively. The registry is bounded at both
+ends: two workers, eight pending, and 503 with `Retry-After` past that.
+`test_an_unbounded_queue_would_only_move_the_problem` holds that line.
+
+Also fixed: gTTS has no timeout of its own, so a wedged job would report
+`running` forever. A job past `JOB_TIMEOUT_SECONDS` is reported failed.
+
+**Deliberately in-process, not Redis or Postgres.** TTS cannot resume in a
+process that died, so persisting job rows would make jobs look durable
+without being durable — a `running` row surviving a restart describes work
+that will never finish. An empty registry after a restart is the truthful
+answer.
+
+**The cost is a real constraint:** this is correct for **one worker process**.
+With several, a job accepted by one is invisible to the others and polling
+404s. Recorded above as a deployment gate. Redis is the fix when multi-worker
+becomes real — the same degradation the rate limiter already documents.
+
+**Frontend impact, as accepted:** the audiobook flow must now POST, read
+`job_id`, and poll. The old single-request flow is gone.
+
+
 
 `POST /api/audiobook/generate` now enforces **3 requests per minute per IP**,
 before any work is done.
