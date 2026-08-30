@@ -31,6 +31,7 @@ import store
 from ingest import infer_source
 from auth import CurrentUser, OptionalUser, SessionDep
 from db import SessionLocal
+from sqlalchemy import func as sa_func, select as sa_select
 from routes_auth import router as auth_router
 
 # Local Imports
@@ -675,6 +676,46 @@ def health():
         "search_ready": _SEARCH_ENCODER is not None,
         "search_backend": getattr(_SEARCH_ENCODER, "name", None),
         "search_error": _SEARCH_ENCODER_ERROR,
+        # F-39's other half. A query encoded by one backend against chunks
+        # embedded by another is filtered out by `search_books`, so the result
+        # is an empty list rather than nonsense — safe, but baffling: search
+        # answers 200 with nothing, for every query, and nothing says why.
+        #
+        # This names the mismatch. `searchable_chunks` counts only the chunks
+        # the active encoder can actually reach, which is the number that
+        # matters, rather than the total.
+        **_search_corpus_health(),
+    }
+
+
+def _search_corpus_health() -> Dict[str, Any]:
+    """What the active encoder can actually see in the corpus."""
+    name = getattr(_SEARCH_ENCODER, "name", None)
+    if name is None:
+        return {"searchable_chunks": None, "corpus_backend_mismatch": None}
+    try:
+        with SessionLocal() as session:
+            counts = dict(
+                session.execute(
+                    sa_select(models.BookChunk.embedding_model, sa_func.count())
+                    .where(models.BookChunk.embedding.isnot(None))
+                    .group_by(models.BookChunk.embedding_model)
+                ).all()
+            )
+    except Exception as exc:
+        return {"searchable_chunks": None, "corpus_backend_error": str(exc)[:120]}
+
+    # The stored name may carry a fingerprint ("lsa:501a37e8") while the
+    # encoder reports the family ("lsa"). Match on the family.
+    reachable = sum(n for m, n in counts.items() if m and m.split(":")[0] == name.split(":")[0])
+    total = sum(counts.values())
+    return {
+        "searchable_chunks": reachable,
+        "corpus_chunks": total,
+        # True when vectors exist that this encoder cannot use — the state
+        # that otherwise looks like "search returns nothing for everything".
+        "corpus_backend_mismatch": total > 0 and reachable == 0,
+        "corpus_backends": {m: n for m, n in counts.items() if m},
     }
 
 @app.get("/books")

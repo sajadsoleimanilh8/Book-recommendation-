@@ -93,3 +93,50 @@ def test_a_chunk_already_on_the_current_backend_is_left_alone(stale_chunk):
     )
     with SessionLocal() as session:
         assert session.get(BookChunk, chunk_id).embedding_model == "hashing"
+
+
+def test_health_names_a_backend_mismatch_instead_of_leaving_search_silent(stale_chunk):
+    """F-39's other half.
+
+    `search_books` filters chunks to the query's own vector space, so a
+    mismatch returns an empty list rather than nonsense — safe, but baffling:
+    every query answers 200 with nothing and nothing says why. /health must
+    name it.
+    """
+    import main
+
+    class FakeEncoder:
+        name = "a-backend-nothing-was-embedded-with"
+
+    original = main._SEARCH_ENCODER
+    try:
+        main._SEARCH_ENCODER = FakeEncoder()
+        health = main._search_corpus_health()
+    finally:
+        main._SEARCH_ENCODER = original
+
+    if not health.get("corpus_chunks"):
+        pytest.skip("no embedded chunks to compare against")
+    assert health["searchable_chunks"] == 0
+    assert health["corpus_backend_mismatch"] is True, (
+        "an encoder that can reach no chunks was reported as healthy"
+    )
+
+
+def test_health_does_not_cry_mismatch_when_the_backend_matches(stale_chunk):
+    """The alarm has to be quiet in the normal case to be worth anything."""
+    import main
+
+    class MatchingEncoder:
+        # The fixture chunk carries exactly this model name.
+        name = "a-backend-we-no-longer-use"
+
+    original = main._SEARCH_ENCODER
+    try:
+        main._SEARCH_ENCODER = MatchingEncoder()
+        health = main._search_corpus_health()
+    finally:
+        main._SEARCH_ENCODER = original
+
+    assert health["corpus_backend_mismatch"] is False
+    assert health["searchable_chunks"] > 0
