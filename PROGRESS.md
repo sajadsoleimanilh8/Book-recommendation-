@@ -292,7 +292,60 @@ API and the frontend must then handle expiry. My recommendation: 401 for a
 *malformed or forged* token, and a distinct, explicit response for an
 *expired* one so the frontend can refresh rather than log the user out.
 
-### OI-9 · Install sentence-transformers for real embeddings? — **NEEDS DECISION**
+### OI-9 · Install sentence-transformers for real embeddings? — **DECIDED, INSTALLED**
+
+Approved 2026-08-30, virtualenv only. Safety re-checked first, and the risk
+was lower than reported: the surviving training process runs from
+`D:\SportsStrategyCoachAI\...env\`, i.e. it was **already insulated** from
+the shared global interpreter. The project venv makes it moot either way.
+
+`.venv/` holds torch 2.13.0+**cpu**, sentence-transformers 6.0.0. CPU-only was
+deliberate: it is ~200 MB rather than ~2.5 GB, and it cannot contend with the
+training job for the GPU.
+
+**Measured, non-destructively — same 4,000 chunks, both backends, in memory:**
+
+```
+same-book@10     lsa 50.7%  ->  minilm 79.3%    (+28.7 points)
+encode 4k        lsa 2s     ->  minilm 44s      (~14 min for the full corpus)
+```
+
+Qualitatively, on the query class section 27 asks for:
+
+```
+"a terrifying story set in a haunted house"
+   lsa     -> The Shoemaker's Apron; Complete Original Short Stories
+   minilm  -> The Forsaken Inn; The Heath Hover Mystery
+```
+
+Honest caveat: the sample is Gutenberg-only, so a query like "practical advice
+for starting a business" has no good answer in it. That is a corpus limit, not
+a model one, and it is why the Google-quota records matter.
+
+The venv also runs the full suite green (219 passed), so it is a complete
+environment — which incidentally closes **F-24**, the shared global Python.
+
+**Not yet flipped.** `EMBEDDING_BACKEND=minilm` plus a re-embed is the next
+step; it requires the app and the keep-up pass to run from `.venv`, which is
+an operational change worth doing deliberately rather than as a side effect.
+
+### F-39 · A backend switch would have silently mixed two vector spaces — **FIXED**
+
+Found while planning the MiniLM cutover, before it could do damage.
+
+`embed_pass` selected only rows where `embedding IS NULL`. After a backend
+change the existing 75k rows keep their LSA vectors while new chunks get
+MiniLM ones — and cosine similarity between two different vector spaces is
+meaningless. Search would have degraded badly while **every individual row
+still looked correctly embedded**. `embedding_model` recorded the mix; nothing
+acted on it.
+
+Now a row whose vector came from another backend is re-embedded like a missing
+one, so switching backends is self-healing and a mixed space is unreachable
+without `--redo`. Two behavioural tests, sabotage-checked; the second pins
+that an ordinary run does *not* become a full re-embed.
+
+
 `torch` is already present, so the install is small, but it resolves
 dependencies inside a shared global Python (F-24) while an unrelated training
 job is running (F-33) and could move `numpy` or `torch` underneath it. Search

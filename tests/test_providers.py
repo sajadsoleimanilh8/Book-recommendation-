@@ -7,6 +7,7 @@ HTML in descriptions, and F-27's source collision.
 
 from __future__ import annotations
 
+import inspect
 import sys
 from pathlib import Path
 

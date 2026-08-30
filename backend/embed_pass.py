@@ -20,7 +20,7 @@ import argparse
 import logging
 import sys
 
-from sqlalchemy import bindparam, func, select
+from sqlalchemy import bindparam, or_, func, select
 from sqlalchemy.exc import OperationalError
 
 from db import SessionLocal
@@ -66,7 +66,23 @@ def run(limit: int, redo: bool = False, backend_name: str | None = None) -> dict
     with SessionLocal() as session:
         stmt = select(BookChunk.id, BookChunk.content)
         if not redo:
-            stmt = stmt.where(BookChunk.embedding.is_(None))
+            # F-39. Selecting only NULL vectors was not enough. After a backend
+            # change the existing rows keep their old vectors while new ones get
+            # the new model, and cosine similarity between two different vector
+            # spaces is meaningless — so search degrades silently, with every
+            # row individually "embedded" and the corpus as a whole incoherent.
+            #
+            # `embedding_model` recorded the mix but nothing acted on it. Now a
+            # row whose vector came from a different backend is re-embedded like
+            # a missing one, which makes switching backends self-healing and a
+            # mixed space unreachable without --redo.
+            stmt = stmt.where(
+                or_(
+                    BookChunk.embedding.is_(None),
+                    BookChunk.embedding_model.is_(None),
+                    BookChunk.embedding_model != backend.name,
+                )
+            )
         rows = session.execute(stmt.order_by(BookChunk.id).limit(limit)).all()
         log.info(f"{len(rows)} chunk(s) queued (backend={backend.name})")
 
