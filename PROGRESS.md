@@ -211,7 +211,38 @@ list until an availability provider exists. My recommendation: hide the price
 filter in the UI while `availability` is unknown for the whole catalogue,
 rather than offering a control that cannot work.
 
-### OI-10 · Should an invalid token 401, or degrade to anonymous? — **NEEDS DECISION**
+### OI-10 · Should an invalid token 401, or degrade to anonymous? — **DECIDED, SHIPPED**
+
+Approved 2026-08-30: 401 for malformed/forged, a distinct code for expired so
+the frontend can refresh rather than logging the user out.
+
+Shipped in `decode_token_detailed`. Three codes, in the body as
+`detail.code` and in a RFC 6750 `WWW-Authenticate` header:
+
+| code | when | client should |
+|---|---|---|
+| `token_expired` | signature valid, `exp` passed | refresh, retry |
+| `token_invalid` | forged, malformed, or unknown user | log in again |
+| `account_inactive` | valid token, `is_active = false` | show a message |
+
+`get_current_user_optional` now raises rather than downgrading. "Optional"
+means *the endpoint tolerates anonymous visitors*; it never meant
+authentication is optional once attempted. A request bearing a token is
+claiming an identity, and a bad claim is an error, not an anonymous visit.
+
+Expiry is checked **before** the user row is loaded, so an expired token never
+reaches the database. `test_an_expired_token_says_so_distinctly` pins that.
+
+The F-34 `xfail(strict=True)` is now three real tests, including
+`test_no_token_is_still_anonymous_not_an_error` so the fix cannot regress into
+breaking anonymous browsing.
+
+**Frontend impact, as accepted:** any read endpoint called with a stale token
+now 401s instead of quietly returning anonymous results. That is the point —
+the old behaviour hid expiry from the user while their private data vanished
+from their own results.
+
+
 See F-34. Current behaviour is silent degradation on every `OptionalUser`
 route. The security-correct answer is 401, but it changes behaviour across the
 API and the frontend must then handle expiry. My recommendation: 401 for a

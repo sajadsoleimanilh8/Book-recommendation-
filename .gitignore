@@ -28,3 +28,4 @@ Thumbs.db
 # Fitted model artefacts. Reproducible with `python -m embed_pass --fit`,
 # and far too large to version (48 MB and growing with the corpus).
 backend/models/
+.venv

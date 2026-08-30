@@ -136,24 +136,55 @@ def test_owner_reaches_their_own_private_passage(client, seeded):
     assert "zarquon" in _passages(response.json())
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "F-34: get_current_user_optional treats an invalid token exactly like "
-        "no token, so a forged or expired token silently downgrades to an "
-        "anonymous search instead of 401. Shared by every OptionalUser route, "
-        "so fixing it is a deliberate change, not a patch here."
-    ),
-)
 def test_an_invalid_token_is_rejected_not_silently_downgraded(client, seeded):
     """A forged token must not quietly become an anonymous search — that
-    turns an authentication failure into a successful-looking response."""
+    turns an authentication failure into a successful-looking response.
+
+    Was xfail(strict=True) while F-34 stood. Now the fix's regression guard.
+    """
     response = client.get(
         "/api/search/semantic",
         params={"q": "whales"},
         headers={"Authorization": "Bearer not-a-real-token"},
     )
     assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "token_invalid"
+
+
+def test_an_expired_token_says_so_distinctly(client, seeded):
+    """The whole point of F-34's fix: a client must be able to tell "refresh
+    your session" from "your token is garbage". Same status, different code.
+    """
+    import jwt
+    from datetime import datetime, timedelta, timezone
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+    import config
+
+    # No real user needed: expiry is checked before the row lookup, which is
+    # itself the correct order — an expired token should never reach the DB.
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    expired = jwt.encode(
+        {"sub": "1", "iat": past - timedelta(hours=1), "exp": past},
+        config.JWT_SECRET,
+        algorithm=config.JWT_ALGORITHM,
+    )
+    response = client.get(
+        "/api/search/semantic",
+        params={"q": "whales"},
+        headers={"Authorization": f"Bearer {expired}"},
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "token_expired"
+    # RFC 6750: the reason belongs in the header too, so a client need not
+    # depend on the body shape.
+    assert "token_expired" in response.headers.get("WWW-Authenticate", "")
+
+
+def test_no_token_is_still_anonymous_not_an_error(client, seeded):
+    """The fix must not break anonymous browsing — "optional" still means the
+    endpoint serves visitors who never claimed an identity."""
+    assert client.get("/api/search/semantic", params={"q": "whales"}).status_code == 200
 
 
 def test_query_bounds_are_enforced(client):
