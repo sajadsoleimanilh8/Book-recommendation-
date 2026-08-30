@@ -39,7 +39,15 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 MODEL_DIR = Path(__file__).resolve().parent / "models"
-DEFAULT_BACKEND = os.getenv("EMBEDDING_BACKEND", "lsa").strip().lower()
+# MiniLM since 2026-08-30 (OI-9), measured rather than assumed: on the same
+# 4,000 chunks, same-book@10 went 50.7% -> 79.3%. LSA matches on word
+# co-occurrence, which is why "a book about grief and losing someone" used to
+# return a C++ textbook — a confident wrong answer, worse than none.
+#
+# Overridable, and switching back is self-healing: `embed_pass` re-embeds any
+# row carrying another backend's vector (F-39), so `EMBEDDING_BACKEND=lsa`
+# plus one pass reverts it. Requires the venv — see scripts/keepup.sh.
+DEFAULT_BACKEND = os.getenv("EMBEDDING_BACKEND", "minilm").strip().lower()
 
 
 def _normalise(matrix: np.ndarray) -> np.ndarray:
@@ -224,27 +232,97 @@ class LsaBackend:
 
 
 class SentenceTransformerBackend:
-    """all-MiniLM-L6-v2. Not installed here — see the module docstring."""
+    """all-MiniLM-L6-v2 — the default since OI-9 was approved.
+
+    Lives in the project venv. A process without it fails loudly on the
+    import below rather than silently falling back to LSA: a fallback would
+    encode queries in a vector space the corpus does not share, and
+    `search_books` would then filter every chunk out, so search would answer
+    200 with nothing for every query. Failing at startup is the kinder error.
+    """
 
     name = "minilm"
     dim = 384
 
     def __init__(
-        self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+        self,
+        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+        device: str | None = None,
     ) -> None:
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # pragma: no cover - depends on the install
             raise RuntimeError(
-                "sentence-transformers is not installed. It was deliberately "
-                "not added while an unrelated training job was using this "
-                "machine's shared Python (F-33, OI-9)."
+                "sentence-transformers is not installed in this interpreter. "
+                "It lives in the project venv — run from .venv (server.js "
+                "selects it automatically), or set EMBEDDING_BACKEND=lsa."
             ) from exc
-        self._model = SentenceTransformer(model_name)
+        import torch
 
-    def encode(self, texts: Sequence[str]) -> np.ndarray:  # pragma: no cover
+        # Device is chosen explicitly and reported, never inferred silently.
+        #
+        # This machine ran a full-corpus embed on CPU and reached 100 degrees.
+        # sentence-transformers will happily fall back to CPU when CUDA is
+        # missing or the wheel is the CPU build, and the only visible symptom
+        # is that it takes far longer — which is indistinguishable from "the
+        # corpus is big". So an explicit EMBEDDING_DEVICE=cuda is a promise
+        # that is *checked*, not a hint.
+        requested = (device or os.getenv("EMBEDDING_DEVICE", "auto")).strip().lower()
+        available = torch.cuda.is_available()
+
+        if requested == "cuda" and not available:
+            raise RuntimeError(
+                "EMBEDDING_DEVICE=cuda but torch reports no CUDA device. "
+                f"torch {torch.__version__} "
+                f"({'CPU-only build' if '+cpu' in torch.__version__ else 'CUDA build'}). "
+                "Refusing to fall back to CPU silently — a full-corpus embed "
+                "on CPU is what overheated this machine."
+            )
+        if requested == "auto":
+            requested = "cuda" if available else "cpu"
+
+        self.device = requested
+        self._model = SentenceTransformer(model_name, device=self.device)
+
+        if self.device == "cpu":
+            # Leave the machine usable, and cooler. torch defaults to every
+            # core, which is how an unattended batch job becomes a thermal
+            # event. Half the cores costs throughput we are not short of.
+            threads = max(1, (os.cpu_count() or 4) // 2)
+            torch.set_num_threads(int(os.getenv("EMBEDDING_CPU_THREADS", threads)))
+            log.warning(
+                f"MiniLM on CPU with {torch.get_num_threads()} threads — "
+                "slow and hot. Set EMBEDDING_DEVICE=cuda once a CUDA build "
+                "of torch is installed."
+            )
+        else:
+            name = torch.cuda.get_device_name(0)
+            log.info(f"MiniLM on {self.device}: {name}")
+
+    def describe(self) -> dict:
+        """What is actually running, for /health and for verification."""
+        import torch
+
+        info = {
+            "backend": self.name,
+            "device": self.device,
+            "torch": torch.__version__,
+            "cuda_available": torch.cuda.is_available(),
+        }
+        if self.device.startswith("cuda") and torch.cuda.is_available():
+            info["gpu"] = torch.cuda.get_device_name(0)
+            info["gpu_memory_allocated_mb"] = round(
+                torch.cuda.memory_allocated() / 1e6, 1
+            )
+        return info
+
+    def encode(self, texts: Sequence[str]) -> np.ndarray:
         return _normalise(
-            self._model.encode(list(texts), batch_size=32, show_progress_bar=False)
+            self._model.encode(
+                list(texts),
+                batch_size=int(os.getenv("EMBEDDING_BATCH", "64")),
+                show_progress_bar=False,
+            )
         )
 
 

@@ -20,6 +20,7 @@ except ImportError:  # pragma: no cover
 
 from fastapi import FastAPI, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.routing import Match
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -57,6 +58,70 @@ app = FastAPI(
     ),
     version="6.0.0",
 )
+
+# --------------------------------------------------------------------------
+# F-38 — an undeclared query parameter is a 422, not a shrug.
+#
+# `GET /api/books?max_price=5` returned all 29,975 books with HTTP 200, not
+# because the filter was broken but because the route never declared
+# `max_price` and FastAPI discards parameters it does not know about. The
+# caller believes they filtered, the server says 200, and the data disagrees.
+# Every typo — `ratingmin`, `max_pages`, `limt` — behaves the same way.
+#
+# This is the same failure shape as OI-11 one layer up, and the reason to fix
+# it now is that it gets more expensive with every client added.
+#
+# Implemented as middleware rather than per-route so a route added later
+# cannot forget it. It resolves the route itself, because Starlette has not
+# matched one yet at middleware time.
+# --------------------------------------------------------------------------
+
+_QUERY_PARAM_ALLOWLIST = {
+    # Cache-busting parameters that HTTP clients append on their own. These
+    # are not the caller expressing intent, so rejecting them would fail
+    # requests over something the caller did not write.
+    "_",
+}
+
+
+def _declared_query_params(dependant) -> set[str]:
+    """Every query parameter a route accepts, including via sub-dependencies."""
+    names = {p.alias or p.name for p in dependant.query_params}
+    for sub in dependant.dependencies:
+        names |= _declared_query_params(sub)
+    return names
+
+
+@app.middleware("http")
+async def reject_undeclared_query_params(request: Request, call_next):
+    if request.query_params:
+        for route in app.router.routes:
+            dependant = getattr(route, "dependant", None)
+            if dependant is None:
+                continue
+            match, _ = route.matches(request.scope)
+            if match != Match.FULL:
+                continue
+            declared = _declared_query_params(dependant) | _QUERY_PARAM_ALLOWLIST
+            unknown = sorted(set(request.query_params.keys()) - declared)
+            if unknown:
+                return JSONResponse(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    content={
+                        "error": {
+                            "message": (
+                                "Unknown query parameter(s): "
+                                + ", ".join(unknown)
+                            ),
+                            "code": "unknown_query_parameter",
+                            "unknown": unknown,
+                            "accepted": sorted(declared - _QUERY_PARAM_ALLOWLIST),
+                        }
+                    },
+                )
+            break
+    return await call_next(request)
+
 
 # F-07 follow-on: allow_origins=["*"] with allow_credentials=True is an
 # invalid combination that browsers reject outright once credentials are

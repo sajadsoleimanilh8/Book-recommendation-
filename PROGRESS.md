@@ -138,8 +138,8 @@ while doing them.
 
 | # | Decision | Why it is yours | Cost of waiting |
 |---|---|---|---|
-| 1 | **Flip search to MiniLM?** | Product tradeoff: search results change for every user. Everything else is built — `.venv` is complete, `server.js` picks it automatically, F-39 makes switching self-healing, `/health` names a mismatch. | Search runs at 50.7% instead of 79.3% |
-| 2 | **F-38 — should undeclared query params 422?** | Breaks any client sending a param this API never had. Low risk now, higher later. | Callers keep believing filters they mistyped worked |
+| 1 | ~~Flip search to MiniLM~~ | **Done.** 137,317 chunks, 100% on `minilm`, measured 84.0% same-book@10. | — |
+| 2 | ~~F-38 undeclared params~~ | **Done.** 422 with the accepted list. | — |
 | 3 | **Google quota** | Only you can request it. | 9,842 Goodreads + 13,016 Google records frozen |
 
 **To do #1 when you decide:**
@@ -351,6 +351,66 @@ environment — which incidentally closes **F-24**, the shared global Python.
 **Not yet flipped.** `EMBEDDING_BACKEND=minilm` plus a re-embed is the next
 step; it requires the app and the keep-up pass to run from `.venv`, which is
 an operational change worth doing deliberately rather than as a side effect.
+
+### F-41 · A CPU embed took the machine to 100 °C — **FIXED, now on GPU**
+
+Reported by the user mid-run, not by any check of mine. Three things were
+competing for every core: the MiniLM re-embed on CPU-only torch, and two
+stray `pytest` runs left over from backgrounded commands, each fitting the
+full ML stack.
+
+**Immediate:** killed all three. CPU load fell to 6%.
+
+**Root cause, and why it was invisible.** `sentence-transformers` falls back
+to CPU whenever CUDA is missing or the wheel is the CPU build, and says
+nothing. The only symptom is that it takes far longer — which is
+indistinguishable from "the corpus got bigger". I installed `+cpu` torch
+deliberately (to avoid contending with a training job for the GPU) and never
+revisited it when that job's exposure turned out to be nil.
+
+**Fixed on the hardware that was there all along:**
+
+```
+torch 2.13.0+cpu  ->  2.11.0+cu128     RTX 5070 Ti, sm_120 (Blackwell)
+0.09 ms/chunk vs 11.0 on CPU           124x
+137,317 chunks                         ~12s, was ~25 min
+```
+
+Verified as *execution*, not availability: model parameters on `cuda:0`,
+90.9 MB allocated after load, peak 82% GPU utilisation and 2.3 GB GPU memory
+sampled from `nvidia-smi` during the run. `torch.cuda.is_available()` alone
+would not have proved anything.
+
+**The silent fallback is now impossible.** `EMBEDDING_DEVICE=cuda` is a
+promise that is checked — the backend raises rather than starting on CPU. On
+an explicit `cpu` it caps threads at half the cores and says so at WARNING,
+because an unattended batch job taking every core is how this happened.
+`describe()` reports device, torch build and live GPU memory, so /health and
+any future check can see what is actually running.
+
+*Generalisable lesson: a performance decision made to avoid a constraint
+should be revisited when the constraint disappears. The GPU was idle at 44 °C
+for the entire CPU run.*
+
+### F-38 · `/api/books` silently ignored unknown query parameters — **FIXED**
+
+Approved 2026-08-30. `?max_price=5` returned all 29,975 books with 200 —
+FastAPI discards parameters a route never declared. Every typo behaved the
+same way: `limt`, `genr`, `ratingmin`.
+
+Middleware, not per-route, so a route added later cannot forget it. It
+resolves the route itself because Starlette has not matched one at middleware
+time, and it walks sub-dependencies so a shared pagination dependency's
+parameters still count as declared.
+
+The 422 names both the unknown parameters and the accepted ones — a rejection
+that does not say what would have worked just moves the guessing. Cache
+busters (`_`) are tolerated: they are added by HTTP clients, not written by
+the caller, and failing a request over something the caller never typed is
+not honesty.
+
+Eight tests, including that declared parameters still work and that a
+path-only route is not mistaken for a query-less one.
 
 ### F-40 · Tables of contents were being indexed as though they were the book — **FIXED**
 
