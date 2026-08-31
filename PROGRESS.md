@@ -131,28 +131,18 @@ Explicitly **not** built now (§8): RTL layout, locale routing, translation pipe
 
 ---
 
-## Waiting on you — 2026-08-30
-
-All five decisions from the last round are shipped. Three new ones surfaced
-while doing them.
+## Waiting on you — 2026-08-31
 
 | # | Decision | Why it is yours | Cost of waiting |
 |---|---|---|---|
-| 1 | ~~Flip search to MiniLM~~ | **Done.** 137,317 chunks, 100% on `minilm`, measured 84.0% same-book@10. | — |
-| 2 | ~~F-38 undeclared params~~ | **Done.** 422 with the accepted list. | — |
-| 3 | **Google quota** | Only you can request it. | 9,842 Goodreads + 13,016 Google records frozen |
+| 1 | **Google Books quota** | Only you can request it. Submitted, pending review. | 22,858 records frozen at 0% description |
+| 2 | **What is a good recommendation?** | Product definition, not a technical choice. Engagement, completion, explicit rating, or return visits — the answer decides what replaces F-26's circular target. | The ranker can only learn popularity until it is answered |
+| 3 | **`POST /api/feedback` tells users something untrue** | User-facing copy. It answers *"taste model updated"* and reports `taste_vector_dim`, which is always 0 — `taste_vector` is never assigned anywhere. Options: remove the claim, or build the taste model it describes. | Users are told about a feature that does not exist |
+| 4 | **Branch name** | `phase-2-enrichment` now carries six commits of Phase 3 work. Rename, or branch fresh. Nothing is pushed and there is no remote, so it is free either way. | Cosmetic, but the history reads wrong |
+| 5 | **System clock / OI-8** | Host setting. The machine slept repeatedly and Docker died four times; `powercfg /change standby-timeout-ac 0` fixes the sleep. If the real date is later than the machine's, commit timestamps are wrong too. | More lost unattended runs |
 
-**To do #1 when you decide:**
-
-```bash
-EMBEDDING_BACKEND=minilm .venv/Scripts/python -m chunk_pass --redo   # clears F-40 front matter
-EMBEDDING_BACKEND=minilm .venv/Scripts/python -m embed_pass --limit 200000
-```
-
-~14 minutes for the embed, plus the re-chunk. Reverting is the same two
-commands with `lsa`. The keep-up cron must move to `.venv` at the same time,
-or it will fail on the missing import — that is the one thing that does not
-self-heal.
+Decision 2 is the one that gates real progress. Everything below F-26 in this
+document is groundwork for it, and it cannot be answered from the code.
 
 ## Open items — need review
 
@@ -406,6 +396,42 @@ is demonstrably not accidental.
 onto them are separate commits on purpose: the first is additive and changes
 no behaviour, the second will move every ranking and needs the golden
 baselines read rather than regenerated.
+
+### F-47 · `POST /api/recommend` cannot filter by language at all — OPEN, **NEEDS DECISION**
+
+Surfaced by the F-26 diff review, not caused by it. `thoughtful_mood` rank 3
+became **아웃라이어** — Gladwell's *Outliers*, Korean edition. Semantically a
+good match for "thoughtful"; it simply should not reach an English reader.
+
+The two recommendation paths disagree, structurally:
+
+```
+QuestionerEngine._filter_df    filters language (answers["language"])
+UserProfile                    has no language field at all
+RecommendRequest               has no language field either
+```
+
+`recommend_by_profile`'s mask covers genre, author, mood, viewed books and
+disliked keywords. Language is absent, and no caller can supply it — so the
+direct recommend endpoint has no way to express the constraint even in
+principle.
+
+**Pre-existing, and my change made it visible.** Better content matching
+ranked a genuinely apt Korean book highly, where the old positional ordering
+had buried it. The bug was always there; the improvement exposed it. That is
+the ordinary way a latent defect surfaces, and worth recording as such rather
+than as a regression.
+
+**Why it needs you rather than a patch:** OI-2 was decided as "filter
+non-English at query time rather than deleting the rows", so the direction is
+settled. What is not settled is the **default**. Defaulting `/api/recommend`
+to English changes results for every existing caller and silently hides
+catalogue from anyone who wanted it; defaulting to "any" leaves today's
+behaviour, which shows Korean and Italian books to English readers. The third
+option is to make the parameter required, which breaks callers loudly rather
+than quietly.
+
+Not choosing that unilaterally. Logged with the evidence.
 
 ### F-46 · `recommend_by_profile` had never used content similarity at all — **FIXED**
 
@@ -1394,7 +1420,7 @@ Blast radius while the bug was live: 133 `not_found` rows, against only 5
 network warnings in that log. So at most ~5 are false. Left alone; re-running
 them costs no quota if it ever matters.
 
-### F-26 · 7 of 10 LTR features have zero importance — OPEN, **PHASE 3**
+### F-26 · 7 of 10 LTR features have zero importance — **SKEW FIXED, TARGET STILL OPEN**
 
 **Measured, not inferred.** Feature importances of the trained model:
 
@@ -1456,6 +1482,103 @@ suite the moment they start passing, forcing the markers off when fixed.
 **Silver lining for PR 3:** because the comment loop is already disconnected,
 migrating comments to Postgres cannot regress ranking through it. The golden
 baselines still matter, because Phase 3 reconnects it.
+
+---
+
+**Fixed 2026-08-31 — the skew half. Read the expectations note below before
+judging this by the ranking.**
+
+The diagnosis sharpened while fixing it. Five of the ten features are
+**query-dependent**: `content_s`, `cf_s`, `cluster_match` and `mood_match`
+only mean anything relative to a seed, and `comment_score` is zero for every
+book at fit time. Training pointwise over the catalogue left no seed to be
+relative to, so the code passed `ones` for two and `zeros` for two more. This
+was never an oversight — it was **train/serve skew**, and there was nothing
+sensible to put in those columns given the training shape.
+
+The fix gives training the same shape as serving: sample 400 seeds, take each
+seed's 60 nearest candidates, and build the row relative to that seed — using
+`self.ltr._features`, **the same function inference calls**. Sharing the
+function is what stops the skew returning; two parallel implementations would
+drift the first time either changed.
+
+**Measured. Column standard deviations in the 24,000-row training matrix:**
+
+```
+content_s        0.09081     was ones
+cf_s             0.10620     was ones
+cluster_match    0.49553     was zeros
+mood_match       0.15701     was zeros
+comment_score    0.00365     varies now, barely (only 4 comments exist)
+inv_price        0.00000     still constant - see below
+```
+
+Only `inv_price` remains constant, and **for a data reason rather than a
+construction one**: every `list_price` is 0 (F-36, no availability provider),
+so `1/(1+0)` is 1.0 for every book. It will vary on its own if real prices
+ever arrive. The test excludes it explicitly rather than silently.
+
+Zero-importance features went from **7 of 10 to 3 of 10**.
+
+**Expectations — this removes a defect, it does not improve rankings today.**
+
+```
+log_ratings        0.5136
+log_ratings_norm   0.4722     <- 98.6% of importance, still popularity
+avg_rating         0.0143
+cf_s               0.000012
+recency            0.000002
+content_s          ~0
+cluster_match      ~0
+```
+
+The four repaired features are now *visible* to the model and carry almost no
+weight. That is the correct and predicted outcome: **the target is still
+circular.** `relevance = 0.4*rating + 0.6*norm(log(ratings_count))` is a
+function of three of the model's own inputs, so popularity is the only thing
+there is to learn. Features that do not predict popularity will be weighted
+near zero no matter how well they are constructed.
+
+So the honest claim is narrow: the model can now *see* content, collaborative,
+cluster and mood signal, where before it was structurally blind to them. When
+the target is replaced with something real, that fix will land on a model that
+can act on it. Without this, it would have landed on one that could not.
+
+
+**Diff review before re-baselining.** `6 failed, 20 passed` overstated the
+change considerably. Separating *reordering* from *score drift* — the golden
+fingerprint stores `final_score` to 4 dp, so a retrained model fails a test
+without moving a single book:
+
+```
+ORDER CHANGED (2 of 9)
+  author_only        Sanderson titles reshuffling under an author filter
+  thoughtful_mood    아웃라이어 enters at rank 3   -> became F-47
+
+ORDER IDENTICAL, scores only (7 of 9)
+  fantasy_adventurous, fiction_dark, no_preferences,
+  questionnaire_{empty_answers, fantasy_dark_fast,
+                 popular_english, selfhelp_motivational}
+  max |Δscore| 0.0000 - 0.0095
+```
+
+Seven of nine reordered nothing; two of those failed on a `Δ` of exactly
+0.0000. Had I re-baselined on the summary I would have recorded "the F-26 fix
+moved six scenarios" — true in letter, misleading in substance — and missed
+the Korean-language finding entirely, since it is invisible unless you read
+*which* book moved and ask why.
+
+*Worth raising rather than quietly relaxing: including `final_score` at 4 dp
+makes the fingerprint fail on any retrain. That may be tighter than useful,
+but loosening a regression guard has its own risks and is not a change to
+make while using it.*
+
+**Still open — needs data and a decision, not code:** replacing the target
+requires accumulated `interaction_events` and `recommendation_log` rows
+(F-42, now filling) *and* a product decision about what a good recommendation
+is: engagement, completion, explicit rating, or return visits. Options will be
+written up rather than chosen unilaterally.
+
 
 ### F-24 · The global Python is shared — RECOMMEND A VIRTUALENV
 Installing the pinned requirements downgraded `click` and broke an unrelated

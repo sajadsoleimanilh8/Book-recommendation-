@@ -518,37 +518,32 @@ class LearningToRank:
             np.log1p(cands["ratings_count"].values),
         ])
 
-    def train(self, df, content_s, cf_s):
-        rating_norm = df["average_rating"].values / 5.0
-        rating_count_norm = np.log1p(df["ratings_count"].values)
-        rating_count_norm = rating_count_norm / (rating_count_norm.max() + 1e-9)
-        
-        relevance = rating_norm * 0.4 + rating_count_norm * 0.6
-        relevance = relevance.flatten()
-        
-        cs = df.get("comment_score", pd.Series(0.0, index=df.index)).values
-        if cs.ndim > 1:
-            cs = cs.flatten()
-        
-        content_s_1d = np.asarray(content_s).flatten()[:len(df)]
-        cf_s_1d = np.asarray(cf_s).flatten()[:len(df)]
-        
-        X = np.column_stack([
-            content_s_1d,
-            cf_s_1d,
-            np.zeros(len(df)),
-            df["average_rating"].values / 5.0,
-            np.log1p(df["ratings_count"].values) / 15.0,
-            1.0 / (1.0 + df["list_price"].values),
-            df.get("recency_weight", pd.Series(0.5, index=df.index)).values,
-            np.zeros(len(df)),
-            cs[:len(df)],
-            np.log1p(df["ratings_count"].values),
-        ])
-        
-        X_tr, X_val, y_tr, y_val = train_test_split(X, relevance, test_size=0.15, random_state=42)
+    def train(self, X: np.ndarray, y: np.ndarray):
+        """Fit on a prepared (X, y) — F-26.
+
+        The caller builds the matrix, because five of the ten features are
+        *query-dependent* and this class has no query. It used to accept
+        `(df, content_s, cf_s)` and fill the rest with `ones` and `zeros`,
+        which is how `content_s`, `cf_s`, `cluster_match` and `mood_match`
+        came to be constant columns. A gradient-boosted tree never splits on
+        a constant, so those four features were dead weight at training and
+        live inputs at inference — a train/serve skew, not an oversight.
+        """
+        if len(X) < 20:
+            # score() already falls back to a fixed blend when unfitted, so
+            # refusing is better than fitting on noise and looking trained.
+            log.warning(f"LTR: only {len(X)} training rows; leaving unfitted")
+            self.fitted = False
+            return
+
+        X_tr, X_val, y_tr, y_val = train_test_split(
+            X, y, test_size=0.15, random_state=42
+        )
         self.model.fit(X_tr, y_tr)
-        log.info(f"LTR val R2: {self.model.score(X_val, y_val):.4f}")
+        log.info(
+            f"LTR trained on {len(X):,} seed-relative rows; "
+            f"val R2 {self.model.score(X_val, y_val):.4f}"
+        )
         self.fitted = True
 
     def score(self, cands, content_s, cf_s, cluster_id, mood_genres) -> np.ndarray:
@@ -1207,8 +1202,8 @@ class Recommender:
             log.info("content similarity: TF-IDF + SVD (fallback)")
         self.cf.fit(self.df)
 
-        diag = np.ones(len(self.df))
-        self.ltr.train(self.df, diag, diag)
+        X_ltr, y_ltr = self._ltr_training_set()
+        self.ltr.train(X_ltr, y_ltr)
 
         # Fix: Clean description before passing to comment embedder
         descriptions = self.df["description"].fillna("").astype(str).tolist()
@@ -1285,6 +1280,89 @@ class Recommender:
     # that has rated nothing has still *told us something*, and that is the
     # most common state a recommender ever sees.
     # ----------------------------------------------------------------
+
+    # ----------------------------------------------------------------
+    # F-26. Five of the ten LTR features are query-dependent: content_s,
+    # cf_s, cluster_match and mood_match only mean anything *relative to a
+    # seed*, and comment_score is zero for every book at fit time because no
+    # book has a comment yet.
+    #
+    # Training pointwise over the catalogue left no seed to be relative to,
+    # so the old code passed `ones` for two of them and `zeros` for two more.
+    # A gradient-boosted tree never splits on a constant column, which is
+    # why 7 of 10 features measured exactly 0.000 importance while five of
+    # them were live inputs at inference. That is train/serve skew.
+    #
+    # The fix is to give training the same shape as serving: sample seeds,
+    # build each example relative to its seed, and — critically — build it
+    # with `self.ltr._features`, *the same function inference calls*. Sharing
+    # the function is what makes the skew unable to come back; two parallel
+    # implementations would drift again the first time either changed.
+    #
+    # What this does NOT fix: the target. `relevance` is still
+    # 0.4*rating + 0.6*norm(log(ratings_count)), a function of three of the
+    # model's own inputs, so the model can still only learn popularity. That
+    # needs real interaction data (F-42) and a product decision about what a
+    # good recommendation is. Expect this change to remove a defect, not to
+    # improve rankings today.
+    # ----------------------------------------------------------------
+
+    LTR_SEEDS = 400
+    LTR_PER_SEED = 60
+
+    def _relevance(self, cands: pd.DataFrame, count_scale: float) -> np.ndarray:
+        """The training target. Unchanged, and still circular — see above."""
+        rating = cands["average_rating"].to_numpy(dtype=float) / 5.0
+        counts = np.log1p(cands["ratings_count"].to_numpy(dtype=float))
+        # Normalised against the whole catalogue, not the batch, so targets
+        # from different seeds are on one scale.
+        return 0.4 * rating + 0.6 * (counts / count_scale)
+
+    def _ltr_training_set(self) -> tuple[np.ndarray, np.ndarray]:
+        rng = np.random.default_rng(42)
+        n = len(self.df)
+        count_scale = float(np.log1p(self.df["ratings_count"].to_numpy(dtype=float)).max()) + 1e-9
+
+        seeds = rng.choice(n, size=min(self.LTR_SEEDS, n), replace=False)
+        moods = list(MOOD_GENRE_MAP) or [None]
+
+        blocks_X: list[np.ndarray] = []
+        blocks_y: list[np.ndarray] = []
+
+        for seed in seeds:
+            seed = int(seed)
+            try:
+                idx, sims = self.ann.query(seed, k=self.LTR_PER_SEED)
+            except Exception:
+                continue
+            if len(idx) == 0:
+                continue
+
+            cf_top = self.cf.similar_items(seed, k=200)
+            cf_rank = {int(j): 1.0 - r / max(len(cf_top), 1) for r, j in enumerate(cf_top)}
+            cf_s = np.array([cf_rank.get(int(j), 0.0) for j in idx])
+
+            cands = self.df.loc[list(idx)]
+            mood = moods[int(rng.integers(len(moods)))]
+
+            blocks_X.append(
+                self.ltr._features(
+                    cands,
+                    np.asarray(sims, dtype=float),
+                    cf_s,
+                    int(self.df.loc[seed, "cluster"]),
+                    MOOD_GENRE_MAP.get(mood, []) if mood else [],
+                )
+            )
+            blocks_y.append(self._relevance(cands, count_scale))
+
+        if not blocks_X:
+            # Nothing to learn from. `score()` already falls back to a fixed
+            # blend when unfitted, so returning empty is safe and honest.
+            log.warning("LTR: no seed produced candidates; leaving model unfitted")
+            return np.empty((0, 10)), np.empty(0)
+
+        return np.vstack(blocks_X), np.concatenate(blocks_y)
 
     def _profile_text(self, profile: UserProfile) -> str:
         """The reader's stated preference, in the book vectors' own idiom.
