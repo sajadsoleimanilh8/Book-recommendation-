@@ -407,7 +407,7 @@ onto them are separate commits on purpose: the first is additive and changes
 no behaviour, the second will move every ranking and needs the golden
 baselines read rather than regenerated.
 
-### F-46 · `recommend_by_profile` has never used content similarity at all — OPEN, **HIGH**
+### F-46 · `recommend_by_profile` had never used content similarity at all — **FIXED**
 
 Found by refusing to accept a green golden run. After F-45 was fixed and the
 MiniLM path was demonstrably live (`content_space: minilm`, pinned by a test),
@@ -479,6 +479,59 @@ anything — which is the single most common state a recommender sees.
 Not doing it in this commit: it changes ranking for every profile-based
 request, and this commit's job is the feature-space swap with the baselines
 verified. Logged as the next step.
+
+
+**Fixed 2026-08-31.** `_profile_query` encodes the reader's stated preference
+in the book vectors' own idiom — `"Fantasy. adventurous"` against
+`"Dune. Frank Herbert. Science Fiction"` — and queries the ANN. A profile that
+has rated nothing has still told us something, and that is the most common
+state a recommender ever sees.
+
+Three guards, because this replaces a path that always worked:
+
+* no encoder, or nothing stated → the old ordering, unchanged
+* every neighbour filtered out by genre/mood → falls through; an *empty*
+  content signal is worse than a weak one
+* encoder model ≠ book-vector model → refuses and logs. That is the exact
+  door the mixed-space bug (F-39) would come through, and relying on
+  `taste_vector` being dead to keep it shut was luck, not design.
+
+**Diff review before re-baselining, per the product owner's instruction.**
+
+The clearest evidence the old path was positional: *The Watcher, and other
+weird stories* was rank 1 for **three unrelated scenarios** — different
+genres, different moods. Three distinct queries could not distinguish
+themselves, because ranking followed source-file order. After the fix they
+diverge.
+
+```
+scenario               was                          now
+no_preferences         Tan Lines                    Tan Lines          (identical)
+author_only            Skyward                      The Rithmatist     (both Sanderson)
+fantasy_adventurous    The Watcher (weird stories)  At the Earth's Core
+fiction_dark           The Watcher (weird stories)  The Secret Adversary
+thoughtful_mood        Russia and the Russians      Maps of Meaning
+```
+
+`thoughtful_mood` is the standout: a history shelf (*Russia and the Russians*,
+*The Cambridge Ancient History*, *The Real History of WWII*) became a
+psychology and philosophy shelf (*Maps of Meaning*, *Exploring Psychology*,
+*Talking to Strangers*).
+
+`no_preferences` is **byte-identical**, which is the most reassuring line in
+the output: with nothing stated the encoder is skipped and the old path runs,
+so the fallback is provably intact.
+
+**A correction I made mid-review:** from rank 1 alone I judged `fiction_dark`
+"arguably worse". The full top-5 shows both are mystery/thriller shelves of
+comparable quality — *Four Weird Tales* and *The Grey Room* are as apt as what
+they replaced. It is a wash, not a regression. Reviewing rank 1 only would
+have recorded a regression that is not there, which is the argument for
+reading the whole prefix.
+
+**Verdict: two improvements (one large), two neutral, one unchanged, no
+regressions.** Baselines regenerated on that basis, not to make a failure go
+away.
 
 ### F-45 · A golden run reported success for a change it never executed — **FIXED**
 

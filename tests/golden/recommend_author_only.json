@@ -12,57 +12,57 @@
   "results": [
     {
       "rank": 1,
-      "title": "Skyward",
+      "title": "The Rithmatist",
       "author": "Brandon Sanderson",
-      "final_score": 0.746
+      "final_score": 0.6098
     },
     {
       "rank": 2,
-      "title": "Words of Radiance (The Stormlight Archive, #2)",
+      "title": "The Well of Ascension (Mistborn, #2)",
       "author": "Brandon Sanderson",
-      "final_score": 0.646
+      "final_score": 0.5706
     },
     {
       "rank": 3,
-      "title": "The Way of Kings (The Stormlight Archive, #1)",
+      "title": "Elantris (Elantris, #1)",
       "author": "Brandon Sanderson",
-      "final_score": 0.6455
+      "final_score": 0.5697
     },
     {
       "rank": 4,
       "title": "The Hero of Ages (Mistborn, #3)",
       "author": "Brandon Sanderson",
-      "final_score": 0.6141
+      "final_score": 0.5684
     },
     {
       "rank": 5,
-      "title": "Mistborn Trilogy Boxed Set (Mistborn, #1-3)",
+      "title": "The Way of Kings (The Stormlight Archive, #1)",
       "author": "Brandon Sanderson",
-      "final_score": 0.6119
+      "final_score": 0.5664
     },
     {
       "rank": 6,
-      "title": "The Way of Kings, Part 1 (The Stormlight Archive #1.1)",
+      "title": "The Final Empire (Mistborn, #1)",
       "author": "Brandon Sanderson",
-      "final_score": 0.6101
+      "final_score": 0.5533
     },
     {
       "rank": 7,
-      "title": "The Final Empire (Mistborn, #1)",
+      "title": "Warbreaker (Warbreaker, #1)",
       "author": "Brandon Sanderson",
-      "final_score": 0.6098
+      "final_score": 0.5522
     },
     {
       "rank": 8,
-      "title": "A Memory of Light (Wheel of Time, #14)",
-      "author": "Robert Jordan, Brandon Sanderson",
-      "final_score": 0.6069
+      "title": "Firefight (The Reckoners, #2)",
+      "author": "Brandon Sanderson",
+      "final_score": 0.5483
     },
     {
       "rank": 9,
-      "title": "Towers of Midnight (Wheel of Time, #13)",
+      "title": "The Gathering Storm (Wheel of Time, #12)",
       "author": "Robert Jordan, Brandon Sanderson",
-      "final_score": 0.5932
+      "final_score": 0.5444
     }
   ]
 }

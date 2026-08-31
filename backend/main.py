@@ -417,7 +417,22 @@ def fit_ml(books: List[Dict[str, Any]]):
     if CONTENT_VECTOR_REPORT.get("error"):
         log.warning(f"content vectors: {CONTENT_VECTOR_REPORT['error']}")
 
-    recommender.fit(content_vectors)
+    # F-46: the same encoder that produced the book vectors, so a stated
+    # preference is compared in the space the documents live in. None when
+    # search is unconfigured, which leaves the old ordering behaviour.
+    encoder = _get_search_encoder()
+    query_encoder = None
+    if encoder is not None and content_vectors is not None:
+        if getattr(encoder, "name", None) == CONTENT_VECTOR_REPORT.get("models", [None])[0]:
+            query_encoder = encoder.encode
+        else:
+            log.warning(
+                f"query encoder {getattr(encoder, 'name', None)!r} does not "
+                f"match book vector model {CONTENT_VECTOR_REPORT.get('models')} "
+                "— profile queries stay on the positional fallback"
+            )
+
+    recommender.fit(content_vectors, query_encoder=query_encoder)
 
     for i, b in enumerate(books):
         if i < len(recommender.df):

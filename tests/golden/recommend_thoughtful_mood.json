@@ -10,57 +10,57 @@
   "results": [
     {
       "rank": 1,
-      "title": "Russia and the Russians",
-      "author": "Geoffrey A. Hosking",
-      "final_score": 0.8644
+      "title": "Maps of Meaning",
+      "author": "Jordan B. Peterson",
+      "final_score": 0.5423
     },
     {
       "rank": 2,
-      "title": "War",
-      "author": "Gwynne Dyer",
-      "final_score": 0.8511
+      "title": "Exploring Psychology",
+      "author": "David G. Myers",
+      "final_score": 0.5325
     },
     {
       "rank": 3,
-      "title": "The Cambridge Ancient History",
-      "author": "John Boardman, J. A. Crook, Andrew Lintott, Elizabeth Rawson",
-      "final_score": 0.8376
+      "title": "Sociology, Race, and Ethnicity",
+      "author": "Harry H. Bash",
+      "final_score": 0.5175
     },
     {
       "rank": 4,
-      "title": "The Real History of World War II",
-      "author": "Alan Axelrod",
-      "final_score": 0.8364
+      "title": "Talking to Strangers",
+      "author": "Malcolm Gladwell",
+      "final_score": 0.5169
     },
     {
       "rank": 5,
-      "title": "21 lecciones para el siglo XXI",
-      "author": "Yuval Noah Harari",
-      "final_score": 0.8335
+      "title": "The Rise of Scientific Philosophy",
+      "author": "Hans Reichenbach",
+      "final_score": 0.5159
     },
     {
       "rank": 6,
-      "title": "Restless Giant",
-      "author": "James T. Patterson",
-      "final_score": 0.8333
+      "title": "아웃라이어",
+      "author": "Malcolm Gladwell",
+      "final_score": 0.5154
     },
     {
       "rank": 7,
-      "title": "A History of the Ancient World",
-      "author": "Chester G. Starr",
-      "final_score": 0.8189
+      "title": "The Sociology of Science",
+      "author": "Robert K. Merton",
+      "final_score": 0.5126
     },
     {
       "rank": 8,
-      "title": "21 lições para o século 21",
-      "author": "Yuval Noah Harari",
-      "final_score": 0.8131
+      "title": "Personality, Character, and Intelligence",
+      "author": "Malcolm Gladwell",
+      "final_score": 0.4909
     },
     {
       "rank": 9,
-      "title": "Dystopian Fiction East and West",
-      "author": "Erika Gottlieb",
-      "final_score": 0.8003
+      "title": "Philosophy and Cognitive Science",
+      "author": "Lorenzo Magnani, Ping Li",
+      "final_score": 0.4744
     }
   ]
 }

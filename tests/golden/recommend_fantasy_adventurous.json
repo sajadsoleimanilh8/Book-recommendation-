@@ -13,57 +13,57 @@
   "results": [
     {
       "rank": 1,
-      "title": "The Watcher, and other weird stories",
-      "author": "Joseph Sheridan Le Fanu",
-      "final_score": 0.6443
+      "title": "At the Earth's Core",
+      "author": "Edgar Rice Burroughs",
+      "final_score": 0.5536
     },
     {
       "rank": 2,
-      "title": "The Sword of Welleran and Other Stories",
-      "author": "Lord Dunsany",
-      "final_score": 0.6424
+      "title": "The shadow over Innsmouth",
+      "author": "H. P. (Howard Phillips) Lovecraft",
+      "final_score": 0.5495
     },
     {
       "rank": 3,
-      "title": "The Story of Peter Pan, Retold from the fairy play by Sir James Barrie",
-      "author": "Daniel O'Connor",
-      "final_score": 0.6405
+      "title": "The Iceberg Express",
+      "author": "David Cory",
+      "final_score": 0.5474
     },
     {
       "rank": 4,
-      "title": "My First Cruise, and Other stories",
-      "author": "William Henry Giles Kingston",
-      "final_score": 0.6387
+      "title": "At the mountains of madness",
+      "author": "H. P. (Howard Phillips) Lovecraft",
+      "final_score": 0.5427
     },
     {
       "rank": 5,
-      "title": "The story of Aaron (so named) the son of Ben Ali :  Told by his friends and acquaintances",
-      "author": "Joel Chandler Harris",
-      "final_score": 0.6368
+      "title": "The Voyages of Doctor Dolittle",
+      "author": "Hugh Lofting",
+      "final_score": 0.5401
     },
     {
       "rank": 6,
-      "title": "The Beasts of Tarzan",
-      "author": "Edgar Rice Burroughs",
-      "final_score": 0.6349
+      "title": "Through the gates of the silver key",
+      "author": "H. P. (Howard Phillips) Lovecraft",
+      "final_score": 0.5397
     },
     {
       "rank": 7,
-      "title": "Sylvie and Bruno Concluded (Illustrated)",
-      "author": "Lewis Carroll",
-      "final_score": 0.633
+      "title": "The Monster Men",
+      "author": "Edgar Rice Burroughs",
+      "final_score": 0.5393
     },
     {
       "rank": 8,
-      "title": "Captain Salt in Oz",
-      "author": "Ruth Plumly Thompson",
-      "final_score": 0.6311
+      "title": "The Dunwich Horror",
+      "author": "H. P. (Howard Phillips) Lovecraft",
+      "final_score": 0.5383
     },
     {
       "rank": 9,
-      "title": "The Lost City",
-      "author": "Jos. E. (Joseph Edward) Badger",
-      "final_score": 0.6293
+      "title": "Tales of Wonder",
+      "author": "Lord Dunsany",
+      "final_score": 0.5368
     }
   ]
 }

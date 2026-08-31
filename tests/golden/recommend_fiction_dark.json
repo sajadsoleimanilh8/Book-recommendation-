@@ -13,57 +13,57 @@
   "results": [
     {
       "rank": 1,
-      "title": "The Watcher, and other weird stories",
-      "author": "Joseph Sheridan Le Fanu",
-      "final_score": 0.68
+      "title": "The Secret Adversary",
+      "author": "Agatha Christie",
+      "final_score": 0.5857
     },
     {
       "rank": 2,
-      "title": "The crystal claw",
-      "author": "William Le Queux",
-      "final_score": 0.6781
+      "title": "The Three Just Men",
+      "author": "Edgar Wallace",
+      "final_score": 0.5824
     },
     {
       "rank": 3,
-      "title": "The House Opposite: A Mystery",
-      "author": "Elizabeth Kent",
-      "final_score": 0.6762
+      "title": "Four Weird Tales",
+      "author": "Algernon Blackwood",
+      "final_score": 0.5767
     },
     {
       "rank": 4,
-      "title": "The Lock and Key Library: Classic Mystery and Detective Stories: Modern English",
-      "author": "Julian Hawthorne",
-      "final_score": 0.6744
+      "title": "Sight Unseen",
+      "author": "Mary Roberts Rinehart",
+      "final_score": 0.5738
     },
     {
       "rank": 5,
-      "title": "Mr. Marx's Secret",
-      "author": "E. Phillips (Edward Phillips) Oppenheim",
-      "final_score": 0.6725
+      "title": "The Grey Room",
+      "author": "Eden Phillpotts",
+      "final_score": 0.5689
     },
     {
       "rank": 6,
-      "title": "A Bullet for Cinderella",
-      "author": "John D. (John Dann) MacDonald",
-      "final_score": 0.6706
+      "title": "Frankenstein; Or, The Modern Prometheus",
+      "author": "Mary Wollstonecraft Shelley",
+      "final_score": 0.568
     },
     {
       "rank": 7,
-      "title": "The Red Lady",
-      "author": "Katharine Newlin Burt",
-      "final_score": 0.6687
+      "title": "The shadow over Innsmouth",
+      "author": "H. P. (Howard Phillips) Lovecraft",
+      "final_score": 0.5668
     },
     {
       "rank": 8,
-      "title": "The Putnam Hall Cadets; or, Good Times in School and Out",
-      "author": "Edward Stratemeyer",
-      "final_score": 0.6668
+      "title": "Dead Man's Love",
+      "author": "Tom Gallon",
+      "final_score": 0.5639
     },
     {
       "rank": 9,
-      "title": "The Great God Pan",
-      "author": "Arthur Machen",
-      "final_score": 0.665
+      "title": "The Bond of Black",
+      "author": "William Le Queux",
+      "final_score": 0.563
     }
   ]
 }

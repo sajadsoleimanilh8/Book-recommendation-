@@ -11,7 +11,7 @@ import warnings
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -1167,8 +1167,17 @@ class Recommender:
     # working (the F-41 lesson).
     content_space: str = "tfidf_svd"
 
-    def fit(self, content_vectors: Optional[np.ndarray] = None):
+    def fit(
+        self,
+        content_vectors: Optional[np.ndarray] = None,
+        query_encoder: Optional[Callable[[list[str]], np.ndarray]] = None,
+    ):
         log.info("=== Fitting Recommender ===")
+
+        # F-46: encodes a stated preference into the same space as the book
+        # vectors, so a profile that has rated nothing still gets a real
+        # content signal. Optional — without it the old behaviour stands.
+        self._query_encoder = query_encoder
 
         self._X = self.engineer.fit_transform(self.df)
         self.df["cluster"] = self.cluster.fit(self._X)
@@ -1259,11 +1268,67 @@ class Recommender:
             q_idx = [i for i in q_idx if i in cand_idx]
             q_sims = q_sims[:len(q_idx)]
         else:
-            q_idx = candidates.head(150).index.tolist()
-            q_sims = np.linspace(1, 0, len(q_idx))
+            q_idx, q_sims = self._profile_query(profile, candidates)
 
         seed_idx = q_idx[0] if q_idx else 0
         return self._rank(seed_idx, q_idx, np.array(q_idx), q_sims, profile, n)
+
+    # ----------------------------------------------------------------
+    # F-46. `taste_vector` is never assigned anywhere in this codebase, so
+    # the branch above was unreachable and *every* profile request fell to
+    # the else — where `content_s` was `linspace(1, 0)` over the first 150
+    # candidates in source-file order. A positional prior carrying 0.28 of
+    # the final score under the name of a content signal.
+    #
+    # With per-book MiniLM vectors (F-44) the honest version is cheap: encode
+    # what the reader actually said they wanted and ask the ANN. A profile
+    # that has rated nothing has still *told us something*, and that is the
+    # most common state a recommender ever sees.
+    # ----------------------------------------------------------------
+
+    def _profile_text(self, profile: UserProfile) -> str:
+        """The reader's stated preference, in the book vectors' own idiom.
+
+        Same shape as `book_vector_pass.build_text` on purpose — "Fiction.
+        dark." is compared against "Dune. Frank Herbert. Science Fiction.",
+        so the query should read like the documents.
+        """
+        parts: list[str] = []
+        parts.extend(profile.preferred_genres or [])
+        parts.extend(profile.preferred_authors or [])
+        if profile.mood:
+            parts.append(str(profile.mood))
+            parts.extend(MOOD_GENRE_MAP.get(profile.mood, []))
+        return ". ".join(str(p).strip() for p in parts if str(p).strip())
+
+    def _profile_query(self, profile: UserProfile, candidates: pd.DataFrame):
+        """(indices, similarities) for a profile with no taste vector."""
+        text = self._profile_text(profile)
+        encoder = getattr(self, "_query_encoder", None)
+
+        if encoder is not None and text:
+            try:
+                vector = np.asarray(encoder([text]), dtype=np.float32).reshape(-1)
+                idx, sims = self.ann.query_vector(
+                    vector, k=min(150, len(self.df))
+                )
+                keep = [
+                    (i, sc)
+                    for i, sc in zip(idx.tolist(), sims.tolist())
+                    if i in candidates.index
+                ]
+                if keep:
+                    return [i for i, _ in keep], np.array([sc for _, sc in keep])
+                # Every neighbour was filtered out by genre/mood. Falling
+                # through is correct: an empty content signal is worse than
+                # the positional one it replaces.
+            except Exception as exc:
+                log.warning(f"profile query encoding failed, using order: {exc}")
+
+        # Unchanged fallback: no encoder, no stated preference, or no
+        # neighbour survived the filters.
+        idx = candidates.head(150).index.tolist()
+        return idx, np.linspace(1, 0, len(idx))
 
     def _rank(self, seed_idx, cand_list, ann_idx, ann_sims, profile, n) -> list[dict]:
         if not cand_list:
