@@ -352,7 +352,7 @@ environment — which incidentally closes **F-24**, the shared global Python.
 step; it requires the app and the keep-up pass to run from `.venv`, which is
 an operational change worth doing deliberately rather than as a side effect.
 
-### F-44 · The obvious way to do Phase 3 item #2 would silently break 77% of the catalogue — **CAUGHT IN DESIGN**
+### F-44 · The obvious way to do Phase 3 item #2 would silently break 77% of the catalogue — **CAUGHT IN DESIGN, NOW BUILT**
 
 Plan item #2 was "swap `content_s` from TF-IDF to the MiniLM vectors". Checked
 the coverage before writing any of it:
@@ -384,6 +384,77 @@ vector should be *marked* as thinner, so the UI can distinguish "similar
 because we read both books" from "similar because both are 1890s adventure
 novels". I am not building that distinction yet; noting it because it is
 cheap now and expensive to retrofit once explanations (§26) exist.
+
+
+**Built 2026-08-31.** `book_vectors`, one row per book, new table with a
+verified rollback (`downgrade` drops it; round-tripped against the populated
+29,975-row database before relying on it — the F-28 lesson).
+
+```
+books              29,975
+with_vector        29,975    100.0%
+with_description    6,998
+metadata_only      22,977
+by_model           {'minilm': 29975}
+skipped_empty           0
+```
+
+Seconds on the GPU. Both populations exist and are counted, so the coverage
+is demonstrably not accidental.
+
+**Not yet wired into ranking.** Building the vectors and switching `content_s`
+onto them are separate commits on purpose: the first is additive and changes
+no behaviour, the second will move every ranking and needs the golden
+baselines read rather than regenerated.
+
+### Measuring the content-similarity switch — **two of my three metrics were useless**
+
+Before wiring `content_s` onto the new vectors, I measured. The first attempt
+mostly measured nothing, which is worth recording because the failure mode is
+easy to repeat.
+
+```
+                     tf-idf    minilm    delta
+same-author@10        32.1%     32.5%    +0.3     <- uninformative
+same-genre@10        100.0%    100.0%    +0.0     <- broken
+series-recall@10      94.7%     98.1%    +3.4     <- real
+```
+
+**`same-genre@10` is broken.** 39.9% of the catalogue has `genre = "Unknown"`,
+and the sample (top by `ratings_count`) is dominated by exactly those rows. It
+was matching noise to noise and reporting a perfect score for both methods. A
+metric that reads 100% for two visibly different systems is measuring the
+sample, not the systems.
+
+**`same-author@10` is uninformative.** Both feature sets contain the author
+string, so both retrieve same-author books equally well. It measures metadata
+overlap, not semantics.
+
+**`series-recall@10` has real ground truth** — series membership parsed from
+titles like `(Chicagoland Vampires, #3)`, restricted to series with more than
+one member present so a miss is a genuine miss. MiniLM wins by 3.4 points.
+
+**The aggregate understates it, and the qualitative gap is large:**
+
+```
+seed: Dracula
+  tf-idf   Metamorphoses; The Omen; Us
+  minilm   Twice Bitten (Chicagoland Vampires); The Vampire Armand; Micah
+
+seed: Pride and Prejudice and Zombies
+  tf-idf   Northanger Abbey; A Thousand Acres; Tao Te Ching
+  minilm   Eligible: A Modern Retelling of Pride and Prejudice; Persuasion
+```
+
+Both readings are true, and the reconciliation is the useful part: the
+metrics are dominated by easy cases — series volumes with near-identical
+titles — where TF-IDF already succeeds. The improvement is concentrated in
+the hard cases where the words differ and the meaning does not. *Dracula* to
+vampire novels rather than *Metamorphoses* is the whole point, and no
+aggregate over this sample surfaces it.
+
+**Conclusion: proceed, but do not expect the ranking metrics to jump.** The
+honest claim is better neighbours on hard cases, not a large aggregate win.
 
 ### F-42 · The data moat was never being filled — **FIXED**
 

@@ -385,6 +385,48 @@ class Reminder(Base):
 # ==========================================================================
 
 
+class BookVector(Base):
+    """One embedding per book, for content similarity — F-44.
+
+    Distinct from `book_chunks` on purpose. A chunk is a passage someone can
+    read; this is a summary of the whole book, and mixing the two would put
+    29,975 metadata blobs into passage search results.
+
+    **Uniform recipe, every book.** `title + author + genre + description`,
+    with the description simply absent when there is none. The tempting
+    alternative — chunk means where chunks exist, metadata elsewhere — would
+    create two populations with different character inside one vector space,
+    which is F-39 wearing a different hat. Comparable vectors require
+    comparable construction, not merely the same model.
+
+    Why it must cover everything: content similarity carries weight 0.28 in
+    the final blend and feeds the LTR component's 0.32. Only 23.3% of books
+    have a chunk, so a vector built from chunks alone would silently drop
+    three quarters of the catalogue out of content-based ranking. Nothing
+    would error; the rankings would just quietly get worse.
+    """
+
+    __tablename__ = "book_vectors"
+
+    book_id: Mapped[int] = mapped_column(
+        ForeignKey("books.id", ondelete="CASCADE"), primary_key=True
+    )
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(EMBEDDING_DIM), nullable=True
+    )
+    # Same reason as book_chunks.embedding_model: without it, a backend change
+    # leaves two vector spaces in one column and nothing says so (F-39).
+    embedding_model: Mapped[str | None] = mapped_column(String(64))
+    # What text produced the vector, so a thin metadata-only vector can be
+    # told apart from one that saw a real description. Recorded now because
+    # explanations (section 26) will want it and it is expensive to backfill.
+    has_description: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    source_chars: Mapped[int | None] = mapped_column(Integer)
+    built_at: Mapped[datetime] = TimestampCol()
+
+
 class InteractionEvent(Base):
     """Every user action worth learning from.
 
