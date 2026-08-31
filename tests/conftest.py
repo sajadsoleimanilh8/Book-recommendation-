@@ -156,3 +156,62 @@ def questioner(fitted_app):
     if main.QUESTIONER is None:
         pytest.fail("QuestionerEngine did not initialise")
     return main.QUESTIONER
+
+
+# --------------------------------------------------------------------------
+# F-43 — a green run that tested nothing is worse than a red one.
+#
+# Every database-dependent test is guarded by `database_reachable()`, which
+# swallows its exception and returns False. When Docker Desktop stops — which
+# on this machine has now happened four times — the whole suite skips those
+# tests and **exits 0**. Observed live: `10 skipped in 131s`, exit code 0,
+# and nothing in the output said the database was the reason.
+#
+# That is the same shape as the watcher that could not see a crash: silence
+# reading as success. The suite must say so, and in CI it must fail.
+# --------------------------------------------------------------------------
+
+REQUIRE_DATABASE = os.getenv("REQUIRE_DATABASE", "").strip().lower() in {"1", "true", "yes"}
+
+
+def pytest_configure(config):
+    """Fail fast when the database is required but absent.
+
+    Failing at configure time rather than per-test means one clear message
+    instead of N skips, and it happens before the expensive ML fixture runs.
+    """
+    if REQUIRE_DATABASE and not database_reachable():
+        raise pytest.UsageError(
+            "REQUIRE_DATABASE=1 but Postgres is not reachable. "
+            "The database-dependent tests would silently skip and the run "
+            "would exit 0, reporting success for tests that never ran. "
+            "Start it with: docker compose up -d"
+        )
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Say plainly when the database was the reason, and how many were lost."""
+    skipped = terminalreporter.stats.get("skipped", [])
+    if not skipped:
+        return
+    db_skips = [
+        r for r in skipped
+        if any(
+            phrase in str(getattr(r, "longrepr", ""))
+            for phrase in ("Postgres not reachable", "database")
+        )
+    ]
+    if not db_skips:
+        return
+
+    terminalreporter.write_sep("=", "DATABASE UNREACHABLE", red=True, bold=True)
+    terminalreporter.write_line(
+        f"{len(db_skips)} test(s) skipped because Postgres was not reachable — "
+        "they did not run and prove nothing."
+    )
+    terminalreporter.write_line(
+        "  Start it with:  docker compose up -d"
+    )
+    terminalreporter.write_line(
+        "  Set REQUIRE_DATABASE=1 to make this a failure instead of a skip."
+    )

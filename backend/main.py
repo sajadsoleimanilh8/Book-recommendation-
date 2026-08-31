@@ -26,6 +26,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import config
 import models
+import time
+
+import events
 import jobs
 import ratelimit
 import store
@@ -48,6 +51,13 @@ from engine import (
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
+
+# Stamped on every recommendation_log row. Without it, rows from before and
+# after a ranking change are indistinguishable, and the first question anyone
+# asks of this table is "did the change help?".
+MODEL_VERSION = os.getenv(
+    "MODEL_VERSION", f"rec-6.0.0+{os.getenv('EMBEDDING_BACKEND', 'minilm')}"
+)
 
 app = FastAPI(
     title="DigiKitab ML API",
@@ -828,10 +838,19 @@ def filter_options() -> Dict[str, Any]:
 
 @app.get("/books/{book_id}")
 @app.get("/api/books/{book_id}")
-def book_detail(book_id: int):
+def book_detail(book_id: int, user: OptionalUser, session: SessionDep):
     b = BOOK_BY_ID.get(book_id)
     if not b:
         return error_response("Book not found", status.HTTP_404_NOT_FOUND)
+    # F-42. A book view is the cheapest real interest signal there is, and it
+    # is the one a ranking model needs most: ratings tell you what people
+    # finished, views tell you what they considered.
+    events.record(
+        events.BOOK_VIEW,
+        user_id=user.id if user else None,
+        book_id=store.resolve_book_pk(session, b),
+        context={"genre": b.get("genre"), "source": b.get("source")},
+    )
     return b
 
 @app.get("/search")
@@ -933,6 +952,21 @@ def semantic_search_route(
     else:
         items = search_books(session, vector, user_id=user_id, limit=limit, **filters)
 
+    # F-42. Search queries are the clearest statement of intent a reader ever
+    # makes — section 24 lists them under behavioural signals for that reason.
+    # The result count matters as much as the query: a search returning
+    # nothing is a content gap worth knowing about.
+    events.record(
+        events.SEARCH,
+        user_id=user_id,
+        context={
+            "q": q,
+            "results": len(items),
+            "backend": encoder.name,
+            "filters": {k: v for k, v in filters.items() if v is not None} or None,
+        },
+    )
+
     return {
         "query": q,
         "items": items,
@@ -967,6 +1001,7 @@ def filter_books(payload: FilterRequest) -> Dict[str, Any]:
 @app.post("/recommend")
 @app.post("/api/recommend")
 def recommend(payload: RecommendRequest) -> Dict[str, Any]:
+    started = time.perf_counter()
     profile = get_profile(payload.user_id)
 
     if payload.feeling:
@@ -1020,6 +1055,37 @@ def recommend(payload: RecommendRequest) -> Dict[str, Any]:
     for b in final:
         if b.get("title") and b["title"] not in profile.viewed_books:
             profile.viewed_books.append(b["title"])
+
+    # F-42. This is the row F-13 is actually waiting on. A click recorded
+    # later means nothing unless we know what was *shown* alongside it — the
+    # books that were offered and passed over are half the training signal,
+    # and they exist nowhere else.
+    #
+    # `shown` stores ids and ranks only. Storing the rendered payload would
+    # duplicate the catalogue into an append-only table and rot as it changes.
+    events.record_recommendation(
+        user_id=None,  # RecommendRequest.user_id is a client string, not a row
+        request={
+            "profile_user": payload.user_id,
+            "genre": payload.genre,
+            "feeling": payload.feeling,
+            "favorite_book": payload.favorite_book,
+            "favorite_author": payload.favorite_author,
+            "top_k": payload.top_k,
+            "filters": {
+                "max_price": payload.max_price,
+                "min_rating": payload.min_rating,
+                "min_pages": payload.min_pages,
+                "max_pages": payload.max_pages,
+            },
+        },
+        shown={
+            "book_ids": [b.get("id") for b in final],
+            "ranks": list(range(1, len(final) + 1)),
+        },
+        model_version=MODEL_VERSION,
+        latency_ms=int((time.perf_counter() - started) * 1000),
+    )
 
     return {"items": final, "total": len(final), "ml_powered": RECOMMENDER is not None}
 
@@ -1095,6 +1161,18 @@ def feedback(payload: FeedbackRequest) -> Dict[str, Any]:
             RECOMMENDER.record_feedback(int(matches.index[0]), payload.rating, profile)
         except Exception as e:
             log.error(f"Error recording feedback: {e}")
+
+    # F-42. An explicit rating is the strongest signal in the product and the
+    # only one that is unambiguous about direction. It currently updates an
+    # in-memory taste vector that dies with the process; this makes it
+    # durable, which is what a retrained model would need.
+    with SessionLocal() as _s:
+        _pk = store.resolve_book_pk(_s, b)
+    events.record(
+        events.FEEDBACK,
+        book_id=_pk,
+        context={"rating": payload.rating, "profile_user": payload.user_id},
+    )
 
     return {
         "ok": True,
@@ -1258,6 +1336,18 @@ def add_comment(payload: CommentRequest, user: CurrentUser, session: SessionDep)
         rating=comment.rating,
         sentiment=comment.sentiment,
         keywords=list(comment.keywords or []),
+    )
+
+    # F-42. The comment itself is already durable; this records it as an
+    # *interaction* so it sits in the same series as views, searches and
+    # progress. F-26 found the comment loop is currently decorative — a
+    # maxed comment_score moves no ranking — and this is the row that makes
+    # a real fix measurable rather than asserted.
+    events.record(
+        events.COMMENT,
+        user_id=user.id,
+        book_id=book_pk,
+        context={"rating": comment.rating, "sentiment": comment.sentiment},
     )
 
     return {
@@ -1459,6 +1549,19 @@ def progress(payload: ProgressRequest, user: CurrentUser, session: SessionDep) -
             book_pk=book_pk,
             progress=payload.progress,
             page=int(payload.total_pages or 0),
+        )
+        # F-42. Section 24 lists chapter completion and abandonment as
+        # behavioural signals; both are read off a series of these. A single
+        # progress row says how far someone got, but the *sequence* says
+        # whether they finished or gave up, which is the part that matters.
+        events.record(
+            events.PROGRESS,
+            user_id=user.id,
+            book_id=book_pk,
+            context={
+                "progress": payload.progress,
+                "total_pages": payload.total_pages,
+            },
         )
         return result
 

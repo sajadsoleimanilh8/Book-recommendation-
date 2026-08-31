@@ -352,6 +352,91 @@ environment — which incidentally closes **F-24**, the shared global Python.
 step; it requires the app and the keep-up pass to run from `.venv`, which is
 an operational change worth doing deliberately rather than as a side effect.
 
+### F-44 · The obvious way to do Phase 3 item #2 would silently break 77% of the catalogue — **CAUGHT IN DESIGN**
+
+Plan item #2 was "swap `content_s` from TF-IDF to the MiniLM vectors". Checked
+the coverage before writing any of it:
+
+```
+books                29,975
+books with a chunk    6,989   (23.3%)
+books with NO chunk  22,986   (76.7%)
+```
+
+Embeddings exist per *chunk*, and chunks only exist for books that have a
+description or Gutenberg text. A straight swap would give `content_s = 0` to
+**more than three quarters of the catalogue** — and since content carries
+weight 0.28 directly plus feeds the LTR component's 0.32, those books would
+quietly stop being recommendable on any content basis. Nothing would error.
+The rankings would just get worse in a way no test currently asserts against.
+
+**Design decision: one vector per book, same recipe for every book.**
+`title + author + genre + description (when present)`, embedded with MiniLM.
+Uniform construction means one vector space at 100% coverage rather than two
+populations with different character, which is the F-39 mistake wearing a
+different hat. Books with descriptions get richer text; the recipe does not
+change.
+
+Cost is negligible — 29,975 short strings is seconds on the GPU.
+
+**Open question for the product owner, not blocking:** whether a metadata-only
+vector should be *marked* as thinner, so the UI can distinguish "similar
+because we read both books" from "similar because both are 1890s adventure
+novels". I am not building that distinction yet; noting it because it is
+cheap now and expensive to retrofit once explanations (§26) exist.
+
+### F-42 · The data moat was never being filled — **FIXED**
+
+`interaction_events` and `recommendation_log` shipped in **PR 2** with indexes
+and docstrings that say, in the tables' own words:
+
+> *"It ships before any model work because interaction history cannot be
+> backfilled — a week not logged is a week lost permanently."*
+> *"Phase 3 is gated on this table having accumulated data — so it starts
+> filling now, in Phase 1."*
+
+Nothing ever wrote to either one. Both were empty. `grep` finds no reference
+outside `models.py` and the migration.
+
+```
+InteractionEvent   0        Comment           0
+RecommendationLog  0        ReadingProgress   0
+```
+
+Six call sites now log: `search`, `book_view`, `recommend`, `feedback`,
+`comment`, `progress`. `recommendation_log` records the **shown** set with
+ranks — a later click means nothing without the books that were offered and
+passed over, and those exist nowhere else.
+
+Three properties, all cheaper to build in than retrofit:
+
+1. **Logging never breaks the request.** A recommendation that 500s because
+   analytics failed is strictly worse than one nobody measured.
+2. **A failed log never poisons the caller's transaction** — events write on
+   their own session. This is the F-30 lesson one layer over: an INSERT that
+   raises inside a shared session makes the *next* statement fail too, so the
+   user's actual request dies of an analytics error.
+3. **Anonymous is signal.** `user_id` is nullable deliberately; dropping
+   anonymous traffic would discard most of what a young product sees.
+
+Event types are a closed vocabulary — a typo'd `event_type` is a silent hole
+in the data six months later, so `record()` refuses unknown ones.
+
+### F-43 · The suite reports success when the database is down — **FIXED**
+
+Found by accident: `tests/test_events.py` returned `10 skipped in 131s`,
+**exit code 0**, and nothing said why. Docker Desktop had stopped again
+(fourth time). `database_reachable()` swallows its exception and returns
+False, so every database-dependent test skips and the run passes.
+
+A green run that tested nothing is worse than a red one. Same shape as the
+watcher that could not see a crash: silence reading as success.
+
+Now the terminal summary names it — how many tests were lost and why — and
+`REQUIRE_DATABASE=1` fails at configure time, before the expensive ML fixture
+runs. Local runs stay skippable, because needing Postgres up to run the
+pure-logic tests would make the fast path slow.
+
 ### F-41 · A CPU embed took the machine to 100 °C — **FIXED, now on GPU**
 
 Reported by the user mid-run, not by any check of mine. Three things were
