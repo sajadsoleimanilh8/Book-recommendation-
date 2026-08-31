@@ -30,12 +30,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import numpy as np
+
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from ingest import infer_source
-from models import Book, Comment, ReadingProgress, Reminder
+from models import Book, BookVector, Comment, ReadingProgress, Reminder
 
 log = logging.getLogger(__name__)
 
@@ -185,3 +187,60 @@ def set_reminder(
 
 def reminders_for_user(session: Session, user_id: int) -> list[Reminder]:
     return list(session.scalars(select(Reminder).where(Reminder.user_id == user_id)))
+
+
+def load_content_vectors(
+    session: Session, books: list[dict[str, Any]]
+) -> tuple[np.ndarray | None, dict[str, Any]]:
+    """MiniLM book vectors aligned to DataFrame row order — F-44.
+
+    Returns `(vectors, report)`, or `(None, report)` when they cannot be used.
+
+    **All or nothing, deliberately.** A missing vector would have to be filled
+    with zeros, and a zero vector has cosine similarity 0 with everything — so
+    that book would never surface as anyone's neighbour. It would not error;
+    it would simply vanish from content-based recommendation, which is the
+    exact failure F-44 exists to prevent, reintroduced at load time. If even
+    one book is missing, the caller falls back to TF-IDF for the whole
+    catalogue and says so.
+    """
+    report: dict[str, Any] = {"requested": len(books), "found": 0, "missing": 0}
+    if not books:
+        return None, report
+
+    rows = session.execute(
+        select(BookVector.book_id, BookVector.embedding, BookVector.embedding_model)
+        .where(BookVector.embedding.isnot(None))
+    ).all()
+    by_pk = {pk: vec for pk, vec, _ in rows}
+    models = {m for _, _, m in rows}
+    report["models"] = sorted(m for m in models if m)
+
+    if len(report["models"]) > 1:
+        # Two vector spaces in one column: cosine between them is a number,
+        # not a measurement (F-39).
+        report["error"] = f"multiple embedding models present: {report['models']}"
+        return None, report
+
+    vectors, missing = [], 0
+    for book in books:
+        pk = resolve_book_pk(session, book)
+        vec = by_pk.get(pk) if pk is not None else None
+        if vec is None:
+            missing += 1
+            if missing <= 3:
+                log.warning(f"no content vector for {book.get('title', '?')[:50]!r}")
+        else:
+            vectors.append(vec)
+
+    report["found"] = len(vectors)
+    report["missing"] = missing
+    if missing:
+        report["error"] = (
+            f"{missing} of {len(books)} books have no vector — falling back to "
+            "TF-IDF rather than letting those books silently drop out of "
+            "content ranking"
+        )
+        return None, report
+
+    return np.asarray(vectors, dtype=np.float32), report

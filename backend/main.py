@@ -55,6 +55,8 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 # Stamped on every recommendation_log row. Without it, rows from before and
 # after a ranking change are indistinguishable, and the first question anyone
 # asks of this table is "did the change help?".
+CONTENT_VECTOR_REPORT: Dict[str, Any] = {}
+
 MODEL_VERSION = os.getenv(
     "MODEL_VERSION", f"rec-6.0.0+{os.getenv('EMBEDDING_BACKEND', 'minilm')}"
 )
@@ -397,7 +399,25 @@ def fit_ml(books: List[Dict[str, Any]]):
 
     df = _books_to_df(books)
     recommender = Recommender(df)
-    recommender.fit()
+
+    # F-44: content similarity on MiniLM book vectors when they are all
+    # present. Loaded here rather than inside the engine so a database outage
+    # degrades one feature instead of stopping the app from booting.
+    global CONTENT_VECTOR_REPORT
+    content_vectors = None
+    try:
+        with SessionLocal() as session:
+            content_vectors, CONTENT_VECTOR_REPORT = store.load_content_vectors(
+                session, books
+            )
+    except Exception as exc:
+        CONTENT_VECTOR_REPORT = {"error": f"{type(exc).__name__}: {exc}"}
+        log.warning(f"content vectors unavailable: {CONTENT_VECTOR_REPORT['error']}")
+
+    if CONTENT_VECTOR_REPORT.get("error"):
+        log.warning(f"content vectors: {CONTENT_VECTOR_REPORT['error']}")
+
+    recommender.fit(content_vectors)
 
     for i, b in enumerate(books):
         if i < len(recommender.df):
@@ -760,6 +780,10 @@ def health():
         # the active encoder can actually reach, which is the number that
         # matters, rather than the total.
         **_search_corpus_health(),
+        # F-44 + the F-41 lesson: a silent fallback to the weaker content
+        # space looks exactly like working. Name which one is live.
+        "content_similarity_space": getattr(RECOMMENDER, "content_space", None),
+        "content_vectors": CONTENT_VECTOR_REPORT or None,
     }
 
 

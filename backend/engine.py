@@ -1162,13 +1162,40 @@ class Recommender:
         self.chatbot: Optional[ChatbotEngine] = None
         self.reminder: Optional[ReminderEngine] = None
 
-    def fit(self):
+    # Which space content similarity is actually using. Reported by /health,
+    # because a silent fallback to the weaker space is indistinguishable from
+    # working (the F-41 lesson).
+    content_space: str = "tfidf_svd"
+
+    def fit(self, content_vectors: Optional[np.ndarray] = None):
         log.info("=== Fitting Recommender ===")
 
         self._X = self.engineer.fit_transform(self.df)
         self.df["cluster"] = self.cluster.fit(self._X)
         self.df["recency_weight"] = self.engineer.numeric_matrix[:, -2]
-        self.ann.fit(self._X)
+
+        # Content similarity runs on MiniLM book vectors when the caller
+        # supplies them (F-44). Clustering deliberately keeps the TF-IDF
+        # space: `cluster_match` is a separate feature, and changing two
+        # things at once would make the ranking diff unreadable.
+        #
+        # The engine takes vectors rather than reading them itself, so it
+        # stays free of any database dependency — a failed load degrades
+        # content similarity instead of preventing the app from starting
+        # (section 12).
+        if content_vectors is not None and len(content_vectors) == len(self.df):
+            self.ann.fit(np.asarray(content_vectors, dtype=np.float32))
+            self.content_space = "minilm"
+            log.info(f"content similarity: MiniLM ({content_vectors.shape})")
+        else:
+            if content_vectors is not None:
+                log.warning(
+                    f"content vectors were {len(content_vectors)} rows for a "
+                    f"{len(self.df)}-row catalogue — ignoring them"
+                )
+            self.ann.fit(self._X)
+            self.content_space = "tfidf_svd"
+            log.info("content similarity: TF-IDF + SVD (fallback)")
         self.cf.fit(self.df)
 
         diag = np.ones(len(self.df))

@@ -407,6 +407,118 @@ onto them are separate commits on purpose: the first is additive and changes
 no behaviour, the second will move every ranking and needs the golden
 baselines read rather than regenerated.
 
+### F-46 · `recommend_by_profile` has never used content similarity at all — OPEN, **HIGH**
+
+Found by refusing to accept a green golden run. After F-45 was fixed and the
+MiniLM path was demonstrably live (`content_space: minilm`, pinned by a test),
+all 18 golden tests still passed. A feature-space change that moves nothing is
+not a result, it is a symptom.
+
+`recommend_by_profile`, engine.py:1257-1263:
+
+```python
+if profile.taste_vector is not None:
+    q_idx, q_sims = self.ann.query_vector(profile.taste_vector, ...)
+else:
+    q_idx  = candidates.head(150).index.tolist()
+    q_sims = np.linspace(1, 0, len(q_idx))     # <- "content similarity"
+```
+
+**Correction to my own first reading of this.** I initially logged it as
+affecting cold-start users, on the assumption that `record_feedback` populates
+`taste_vector`. It does not. **`taste_vector` is never assigned anywhere in
+the codebase** — it is declared on `UserProfile`, read in three places, and
+written in none. `record_feedback` updates the bandit and the exploration
+rate only.
+
+So the `if profile.taste_vector is not None:` branch is **unreachable dead
+code**, and the `else` runs for *every* profile request, for every user,
+regardless of history. `content_s` is always `linspace(1, 0)` over the first
+150 candidates in DataFrame order — which is source-file order. A positional
+prior wearing the name of a content signal.
+
+```
+before feedback:    None
+after 2 feedbacks:  None      <- record_feedback does not touch it
+ANN branch reachable: False
+```
+
+There is a small mercy in this: because the branch is dead, my switching the
+ANN to MiniLM did **not** create a mixed-space bug, which it would have if
+`taste_vector` were populated in the old TF-IDF space and then used to query a
+MiniLM index.
+
+**Measured, not inferred** — ANN calls counted by wrapping the methods:
+
+```
+recommend_by_profile (fresh profile)   query_vector 0   query 0
+recommend_by_book                      query_vector 0   query 1
+```
+
+**Consequences:**
+
+- `WEIGHTS["content"] = 0.28` of the final score is unrelated to content, for
+  every user, on every profile-based request.
+- `POST /api/feedback` answers `"Feedback recorded — taste model updated."`
+  and reports `taste_vector_dim`, which is always 0. The message describes
+  something that does not happen.
+- It also feeds `content_s` into the LTR feature matrix, so **F-26's finding
+  understated the problem**: `content_s` is not merely constant at *training*
+  time, it is synthetic at *inference* time too, on the most common path.
+- The MiniLM switch (F-44) therefore improves `recommend_by_book` and does
+  nothing for `recommend_by_profile` until this is fixed. That is exactly why
+  the golden baselines did not move, and the honest reading of "no diff" is
+  "the change could not reach this path", not "the change is safe".
+
+**The fix is now cheap and was not before.** With per-book MiniLM vectors in
+place, a cold-start profile can be turned into a real query vector: encode the
+stated preferences (`"Fiction. dark."`) and ask the ANN. That is a genuine
+content signal for a user who has told us what they want but not yet rated
+anything — which is the single most common state a recommender sees.
+
+Not doing it in this commit: it changes ranking for every profile-based
+request, and this commit's job is the feature-space swap with the baselines
+verified. Logged as the next step.
+
+### F-45 · A golden run reported success for a change it never executed — **FIXED**
+
+Switched content similarity to MiniLM, ran the golden baselines, got
+`17 passed`. For a feature-space change, "nothing moved" is implausible — and
+it hadn't:
+
+```
+test db:  29,975 books,  2,097 vectors   ->  loader refuses, falls back
+```
+
+The test database held only the 300-row sample a fixture had built.
+`load_content_vectors` did exactly what it is designed to do — refuse a
+partial set rather than zero-fill — so the engine ran on TF-IDF and the
+baselines were re-verified against **the space I was replacing**.
+
+This is F-43 in a different costume, and the third time this session the same
+shape has appeared: **silence and success looking identical**. F-30's watcher
+could not see a crash; F-43's suite passed with no database; this passed
+without running the code under test.
+
+Fixed twice over. The test database now has full vector coverage, and
+`test_the_baselines_describe_the_space_they_were_recorded_in` pins
+`content_space` *before* any baseline is compared, so a fallback can never
+again be mistaken for a pass — in this change or a future one.
+`EXPECT_CONTENT_SPACE` overrides it for deliberately testing the fallback.
+
+*Generalisable rule, now stated so it stops being rediscovered: **a test that
+can pass without executing the code under test is not a test of that code.**
+When a change should move something and the suite is green, suspect the
+harness before believing the result.*
+
+**Known limitation, deliberately accepted:** the test database has
+`with_description = 0`, so its vectors are all metadata-only, while production
+has 6,998 richer ones. The baselines therefore pin *deterministic behaviour*,
+not production ranking quality. That is the right trade for a regression
+guard, but it means a golden diff is evidence about stability, not about
+whether recommendations got better. Quality is measured separately, in the
+series-recall and qualitative comparisons above.
+
 ### Measuring the content-similarity switch — **two of my three metrics were useless**
 
 Before wiring `content_s` onto the new vectors, I measured. The first attempt

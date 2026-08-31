@@ -161,6 +161,29 @@ def _compare(name: str, actual: list[dict], meta: dict) -> None:
 # Recommender
 # --------------------------------------------------------------------------
 
+def test_the_baselines_describe_the_space_they_were_recorded_in(recommender):
+    """A golden run that silently used the fallback proves nothing.
+
+    Observed live: after switching content similarity to MiniLM, all 17 golden
+    tests passed — because the test database held 2,097 vectors for 29,975
+    books, `load_content_vectors` correctly refused, and the engine fell back
+    to TF-IDF. The baselines were re-verified against the *old* space and
+    reported success for a change they never exercised.
+
+    That is the F-43 shape wearing a different costume: a green result that
+    did not run the code under test. Pinning the space makes the fallback
+    impossible to mistake for a pass.
+    """
+    space = getattr(recommender, "content_space", None)
+    expected = os.getenv("EXPECT_CONTENT_SPACE", "minilm")
+    assert space == expected, (
+        f"content similarity is running on {space!r}, not {expected!r}. The "
+        "baselines below would be verified against the wrong feature space. "
+        "Build the vectors (python -m book_vector_pass) or set "
+        "EXPECT_CONTENT_SPACE to the space you mean to test."
+    )
+
+
 @pytest.mark.parametrize("name", sorted(PROFILE_SCENARIOS))
 def test_recommender_golden(recommender, name):
     from engine import UserProfile
