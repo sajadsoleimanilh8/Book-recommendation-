@@ -1,7 +1,7 @@
 """Populate book_chunks from stored book text — sections 22 and 27.
 
-    python -m chunk_pass --limit 500
-    python -m chunk_pass --stats
+    python -m scripts.chunk_pass --limit 500
+    python -m scripts.chunk_pass --stats
 
 Separate from the fetch pass on purpose. Fetching is network-bound and slow;
 chunking is pure CPU over text already on disk, so it can run whenever, be

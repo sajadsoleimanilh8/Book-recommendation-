@@ -1,7 +1,7 @@
 """Fetch descriptions and reading text for Gutenberg books — Phase 2.
 
-    python -m gutenberg_pass --limit 200
-    python -m gutenberg_pass --stats
+    python -m scripts.gutenberg_pass --limit 200
+    python -m scripts.gutenberg_pass --stats
 
 Why this exists rather than more Open Library
 ---------------------------------------------

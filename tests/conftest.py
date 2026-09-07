@@ -22,6 +22,16 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+# The one-shot CLI passes moved to backend/scripts/ in the Phase B
+# restructure. The application never imports them, but four test modules do
+# — test_book_vectors, test_chunk_pass, test_embed_pass and test_front_matter
+# all `import chunk_pass` / `import embed_pass` flat. Putting the directory
+# on the path keeps those imports working without editing the tests, which
+# is the only reason this entry exists. See RESTRUCTURE-NOTES B-7.
+SCRIPTS = BACKEND / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
 # --------------------------------------------------------------------------
 # Test database isolation
 # --------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 """One embedding per book, for content similarity — F-44.
 
-    python -m book_vector_pass --limit 40000
-    python -m book_vector_pass --stats
+    python -m scripts.book_vector_pass --limit 40000
+    python -m scripts.book_vector_pass --stats
 
 Why a book-level vector and not the chunks we already have
 ----------------------------------------------------------

@@ -1,7 +1,7 @@
 """Retrieval quality measurement — a number to decide backends by.
 
-    python -m eval_search
-    python -m eval_search --probes 300
+    python -m scripts.eval_search
+    python -m scripts.eval_search --probes 300
 
 Why this exists
 ---------------

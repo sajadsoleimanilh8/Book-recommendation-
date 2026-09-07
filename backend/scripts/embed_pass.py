@@ -1,8 +1,8 @@
 """Fill book_chunks.embedding — section 27.
 
-    python -m embed_pass --fit           # fit the LSA model on the corpus
-    python -m embed_pass --limit 20000   # embed unembedded chunks
-    python -m embed_pass --stats
+    python -m scripts.embed_pass --fit           # fit the LSA model on the corpus
+    python -m scripts.embed_pass --limit 20000   # embed unembedded chunks
+    python -m scripts.embed_pass --stats
 
 Two steps, because they fail differently. Fitting reads a corpus sample and
 produces one artefact; embedding is a long write-heavy loop over every chunk.
@@ -42,7 +42,7 @@ def fit(dim: int = EMBEDDING_DIM, sample: int = FIT_SAMPLE) -> dict:
     with SessionLocal() as session:
         total = session.scalar(select(func.count()).select_from(BookChunk)) or 0
         if total < 2:
-            raise SystemExit("no chunks to fit on — run `python -m chunk_pass` first")
+            raise SystemExit("no chunks to fit on — run `python -m scripts.chunk_pass` first")
 
         # Ordered by id rather than random: a repeatable fit is worth more
         # than a marginally better sample, because an unreproducible model is

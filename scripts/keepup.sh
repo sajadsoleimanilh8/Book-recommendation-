@@ -7,7 +7,7 @@
 # (F-37), and a periodic job that refit would leave the column holding a
 # different space every 20 minutes. New chunks are embedded with the existing
 # model, which is what keeps them comparable. Refitting is a manual,
-# deliberate act followed by `embed_pass --redo`.
+# deliberate act followed by `python -m scripts.embed_pass --redo`.
 #
 # Runs from the project venv, not system python: that is where
 # sentence-transformers lives, and the corpus is MiniLM (OI-9). On the global
@@ -40,9 +40,9 @@ while true; do
   if docker exec digikitab-postgres pg_isready -U digikitab >/dev/null 2>&1; then
     {
       echo "--- $(date +%H:%M) ---"
-      POSTGRES_DB=digikitab "$PY" -m chunk_pass --limit 5000 2>&1 | tail -3
-      POSTGRES_DB=digikitab "$PY" -m chunk_pass --origin description --limit 20000 2>&1 | tail -3
-      POSTGRES_DB=digikitab "$PY" -m embed_pass --limit 200000 2>&1 | tail -4
+      POSTGRES_DB=digikitab "$PY" -m scripts.chunk_pass --limit 5000 2>&1 | tail -3
+      POSTGRES_DB=digikitab "$PY" -m scripts.chunk_pass --origin description --limit 20000 2>&1 | tail -3
+      POSTGRES_DB=digikitab "$PY" -m scripts.embed_pass --limit 200000 2>&1 | tail -4
     } >> "$SP/keepup.log" 2>&1
   else
     echo "$(date +%H:%M) postgres unreachable, skipping this round" >> "$SP/keepup.log"
