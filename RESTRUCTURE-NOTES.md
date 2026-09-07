@@ -218,17 +218,35 @@ SQLAlchemy schema. Every existing `from db import ...` keeps resolving. This is
 why `db/` is absent from the Phase A scaffold commit — it arrives with its own
 move, atomically with the deletion of `db.py`.
 
-### 3.3 Five tests assert on `main.py`'s source text, not its behaviour
+### 3.3 Seven tests assert on module *source text*, not on behaviour
 
-These read `backend/main.py` off disk and string-match it, pinning specific
-code to that file regardless of where it belongs:
+These read a `.py` file off disk and string-match it, which pins specific code
+to a specific file regardless of where it belongs. The full set — found by
+`grep -rn 'BACKEND /' tests/*.py | grep read_text`, after the first two had
+already broken a run:
 
-| Test | What it pins to `main.py` |
-| --- | --- |
-| `test_data_loading.py:36` | the `DATA_FILE_CANDIDATES = [` literal |
-| `test_data_loading.py:66` | `"synthetic"` and `using_real_data` (the `/health` body) |
-| `test_data_loading.py:77` | `def load_books_raw(limit: Optional[int] = None)` |
-| `test_security.py:73` | `class AudiobookRequest` and `ConfigDict(extra="forbid")` |
+| Test | Reads | What it pins | Retargeted to |
+| --- | --- | --- | --- |
+| `test_data_loading.py:36` | `main.py` | the `DATA_FILE_CANDIDATES = [` literal | `services/catalogue.py` |
+| `test_data_loading.py:66` | `main.py` | `"synthetic"`, `using_real_data` (the `/health` body) | `api/health.py` |
+| `test_data_loading.py:77` | `main.py` | `def load_books_raw(limit: Optional[int] = None)` | `services/catalogue.py` |
+| `test_security.py:73` | `main.py` | `class AudiobookRequest`, `ConfigDict(extra="forbid")` | `schemas/audiobook.py` |
+| `test_security.py:131` | `engine.py` | the `def generate(` body: no `output_file: str`, `AUDIO_DIR` present, no `os.remove(output_file)` | `services/audio.py` |
+| `test_security.py:157` | `engine.py` | no `f"_tmp_{i}.mp3"`, `mkdtemp` present | `services/audio.py` |
+| `test_security.py:215` | `config.py` | `IS_PRODUCTION`, `JWT_SECRET must be set` | `core/config.py` |
+
+The last one is the reason this table is longer than the five originally
+catalogued: it was not found by reading the tests for `main.`-prefixed
+attribute access, only by moving `config.py` and watching
+`test_production_refuses_a_generated_jwt_secret` fail against its own shim.
+The two `engine.py` guards were then found by grep before they could do the
+same in Phase C.
+
+These guards are worth keeping — each pins a real security property (F-04's
+caller-supplied path, F-06's shared temp file, a per-process JWT secret in
+production). What makes them brittle is only that they name a file. Every edit
+below changes **which file is read** and nothing about **what is asserted**,
+and each is called out in the commit that forces it.
 
 One more couples through the module namespace rather than the file:
 
@@ -290,11 +308,32 @@ live attribute of the module the tests name.
 
 ### B-5 · The test suite needs Postgres but does not say so
 
-With the container down, `_ensure_test_database()` fails and large parts of the
-suite skip rather than fail, so a run can look healthy while testing very
-little. It also spends minutes in connection timeouts first. Not a code bug,
-but it made the first two baseline attempts here worthless, and it is worth a
-line in the README.
+With the container down the suite does not fail — it **hangs**, and then lies.
+
+`conftest._ensure_test_database()` shells out to `alembic upgrade head` and
+`python -m ingest` with `capture_output=True` and **no `timeout=`**. When
+Postgres is unreachable those subprocesses sit in connection retries, so the
+session-scoped autouse fixture blocks before the first test runs, with every
+byte of diagnostic output swallowed by the capture. Measured here:
+
+```
+$ POSTGRES_DB=digikitab_test python -m alembic upgrade head   # container down
+ALEMBIC_EXIT=124        # killed at 120s, no output
+
+$ python -m pytest tests/ -q                                  # container down
+(no output, 107 minutes, then 26 dots)
+```
+
+Two runs during this work were lost that way, one of them for nearly two
+hours, and the second reported `EXIT=1` with an empty log — indistinguishable
+at a glance from a real regression. The container had been displaced by another
+project's `docker compose`, which is easy to do because nothing in the suite
+checks for it.
+
+Worth two small changes, neither made here: a `timeout=` on both
+`subprocess.run` calls, and a fail-fast check that Postgres answers before the
+suite starts. Until then, **confirm `digikitab-postgres` is up before trusting
+any run** — every verification run in this restructure is guarded that way.
 
 ### B-6 · `__file__`-derived paths silently re-anchor when a module changes directory
 

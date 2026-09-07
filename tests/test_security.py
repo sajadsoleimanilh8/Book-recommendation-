@@ -212,7 +212,10 @@ def test_env_example_carries_no_real_secrets():
 def test_production_refuses_a_generated_jwt_secret():
     """A per-process secret in production would break tokens across workers
     and log everyone out on every restart, silently."""
-    src = (BACKEND / "config.py").read_text(encoding="utf-8")
+    # backend/config.py is a compatibility shim since the Phase B restructure;
+    # the settings themselves live in backend/core/config.py. Only the path
+    # this reads has changed — the assertion is the one it always made.
+    src = (BACKEND / "core" / "config.py").read_text(encoding="utf-8")
     assert "IS_PRODUCTION" in src and "JWT_SECRET must be set" in src, (
-        "config.py no longer refuses to boot without JWT_SECRET in production"
+        "core/config.py no longer refuses to boot without JWT_SECRET in production"
     )
