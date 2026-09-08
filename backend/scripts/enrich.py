@@ -3,9 +3,9 @@
 Fills in the descriptions that F-15 found missing for 100% of the catalogue,
 and the ISBNs that reconciliation and the F-25 duplicate recheck both need.
 
-    python -m enrich --limit 200          # bounded run
-    python -m enrich --stats              # report only, no requests
-    python -m enrich --limit 500 --dry-run
+    python -m scripts.enrich --limit 200          # bounded run
+    python -m scripts.enrich --stats              # report only, no requests
+    python -m scripts.enrich --limit 500 --dry-run
 
 **Quota is the binding constraint.** The Google Books free tier is roughly
 1,000 queries/day and there are 28,399 books, so a full pass is measured in
