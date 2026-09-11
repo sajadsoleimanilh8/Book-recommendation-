@@ -39,6 +39,7 @@ from services.catalogue import (
     DATA_FILE_CANDIDATES,
     _books_to_df,
     load_books_raw,
+    overlay_languages,
 )
 
 log = logging.getLogger(__name__)
@@ -125,10 +126,17 @@ def startup():
     main.BOOK_BY_ID = {b["id"]: b for b in main.BOOKS}
     log.info(f"Loaded {len(main.BOOKS)} books.")
 
-    # F-26. Must precede fit_ml: the relevance target is computed while the
-    # ranker trains, from the frame built out of main.BOOKS. Evidence attached
-    # afterwards would never reach it.
+    # F-48 and F-26. Both must run before fit_ml, because the recommender
+    # builds its DataFrame from main.BOOKS and anything attached afterwards
+    # never reaches ranking. Only real catalogue data — the synthetic fallback
+    # has no database counterpart.
+    #   F-48: replace seed language labels with the database's; the seed file
+    #         labels every Gutenberg book Italian.
+    #   F-26: attach reading-depth evidence, the relevance target's input.
+    # Independent of each other; language first because it corrects the
+    # catalogue itself.
     if main.DATA_SOURCE in ("json", "csv_fallback"):
+        _overlay_db_languages()
         _attach_reading_depth()
 
     if main.BOOKS:
@@ -191,6 +199,41 @@ def _attach_reading_depth() -> None:
         "books_measured": len(depth),
     }
     log.info(f"reading depth: {main.READING_DEPTH_REPORT}")
+
+
+def _overlay_db_languages() -> None:
+    """Replace seed language labels with the database's — F-48.
+
+    Failure degrades rather than cascades (section 12): with Postgres down
+    the app still boots, on the seed labels, and says so. The one thing it
+    must not do is fail silently, because the seed labels file every
+    Gutenberg book as Italian and that is invisible downstream.
+    """
+    try:
+        from sqlalchemy import select
+
+        from db import SessionLocal
+        from models import Book
+
+        with SessionLocal() as session:
+            rows = session.execute(
+                select(Book.source, Book.external_id, Book.language).where(
+                    Book.language.isnot(None), Book.external_id.isnot(None)
+                )
+            ).all()
+    except Exception as exc:
+        log.warning(
+            f"language overlay skipped, database unavailable: "
+            f"{type(exc).__name__}: {exc}. Running on seed labels, which "
+            "mislabel Gutenberg (F-48)."
+        )
+        main.LANGUAGE_OVERLAY = {"error": f"{type(exc).__name__}: {exc}"}
+        return
+
+    mapping = {(str(src), str(ext).strip()): lang for src, ext, lang in rows}
+    counts = overlay_languages(main.BOOKS, mapping)
+    main.LANGUAGE_OVERLAY = counts
+    log.info(f"language overlay: {counts}")
 
 
 def _build_pk_index() -> None:

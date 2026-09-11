@@ -88,6 +88,47 @@ def normalize_language(lang: Any) -> str:
     s = str(lang).strip().lower() if lang else "unknown"
     return mapping.get(s, s.capitalize())
 
+def overlay_languages(
+    books: List[Dict[str, Any]],
+    db_languages: Dict[tuple, str],
+) -> Dict[str, int]:
+    """Prefer the database's language over the JSON seed's — F-48.
+
+    `site_ready_books.json` labels every one of the 6,307 Gutenberg books
+    `'it'`, which `normalize_language` renders as `"It"`. Measured on 600
+    with stored text: 600 English, 0 Italian. `scripts.gutendex_language`
+    repairs the label in Postgres from Gutenberg's own metadata, but the
+    recommender builds its frame from *this* list — so without this step the
+    repair would correct the database and change no recommendation at all.
+    That was the flaw in the first version of the fix.
+
+    Section 19 settles the precedence: the JSON is seed/fallback data, the
+    database is the source of truth. So a real database value wins; a
+    missing one (`None`, or a row the database does not have) leaves the
+    seed untouched rather than blanking it.
+
+    Pure: takes the mapping rather than a session, so it is testable without
+    Postgres and the caller owns the failure handling. Mutates `books` in
+    place and returns counts.
+
+    `db_languages` is keyed ``(source, external_id)``, matching the
+    ``(source, external_id)`` uniqueness the ingest enforces (F-27).
+    """
+    counts = {"checked": 0, "changed": 0, "no_db_value": 0}
+    for book in books:
+        counts["checked"] += 1
+        key = (str(book.get("source") or ""), str(book.get("book_id") or "").strip())
+        db_value = db_languages.get(key)
+        if not db_value:
+            counts["no_db_value"] += 1
+            continue
+        corrected = normalize_language(db_value)
+        if corrected != book.get("language"):
+            book["language"] = corrected
+            counts["changed"] += 1
+    return counts
+
+
 def infer_mood(genre: str, title: str, desc: str) -> str:
     text = f"{genre} {title} {desc}".lower()
     for mood, kws in {

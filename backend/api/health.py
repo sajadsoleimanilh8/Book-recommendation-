@@ -100,6 +100,10 @@ def health():
         # still the popularity prior — visible here so nobody mistakes the
         # new target for an active one before it has data.
         "reading_depth": main.READING_DEPTH_REPORT or None,
+        # F-48. The seed file labels every Gutenberg book Italian; this says
+        # whether the database correction was applied. A skipped overlay is
+        # invisible downstream, so it has to be visible here.
+        "language_overlay": main.LANGUAGE_OVERLAY or None,
     }
 
 
