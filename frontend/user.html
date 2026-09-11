@@ -1,0 +1,426 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Workspace - DigiKitab</title>
+    <link rel="stylesheet" href="./css/styles.css">
+    <style>
+        body { font-family: Arial, sans-serif; background: #0f0f1a; color: #eef3ff; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .topbar { background: #1a1a2e; padding: 15px; border-radius: 12px; margin-bottom: 30px; }
+        .brand { font-size: 24px; font-weight: bold; }
+        .nav { margin-top: 10px; }
+        .nav a { color: #91a0c7; text-decoration: none; margin-right: 20px; padding: 5px 10px; }
+        .nav a:hover, .nav a.active { color: #7c9cff; }
+        .card { background: rgba(255,255,255,0.05); border-radius: 16px; padding: 24px; margin-bottom: 20px; }
+        .reader-surface { background: rgba(255,255,255,0.03); padding: 20px; border-radius: 12px; min-height: 300px; max-height: 400px; overflow-y: auto; }
+        .btn { padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; background: #7c9cff; color: #0f0f1a; font-weight: bold; }
+        .btn-secondary { background: rgba(255,255,255,0.1); color: white; }
+        .workspace-layout { display: flex; gap: 24px; flex-wrap: wrap; }
+        .workspace-sidebar { width: 280px; }
+        .workspace-main { flex: 1; }
+        .muted { color: #91a0c7; font-size: 13px; }
+        .stats { display: flex; gap: 20px; margin-top: 15px; }
+        .stat { text-align: center; flex: 1; }
+        .stat small { font-size: 12px; color: #91a0c7; }
+        .stat strong { font-size: 20px; display: block; }
+        .loading, .error { text-align: center; padding: 40px; }
+        .error { color: #ff6b6b; }
+        .actions { display: flex; justify-content: center; gap: 12px; margin-top: 20px; }
+        .workspace-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px; }
+        .list { max-height: 200px; overflow-y: auto; }
+        .list-item { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .list-item:last-child { border-bottom: none; }
+        .input, .select, textarea { width: 100%; padding: 10px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; color: white; margin-bottom: 10px; }
+        .mini-chat-window { height: 150px; overflow-y: auto; background: rgba(0,0,0,0.2); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+        .chat-message { padding: 8px 12px; margin: 5px 0; border-radius: 12px; }
+        .chat-message.user { background: #7c9cff; color: #0f0f1a; text-align: right; }
+        .chat-message.bot { background: rgba(255,255,255,0.1); }
+        .rating-stars { color: #ffd166; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="topbar">
+            <div class="brand">📚 DigiKitab</div>
+            <div class="nav">
+                <a href="./index.html">Home</a>
+                <a href="./filter.html">Library</a>
+                <a href="./chatbot.html">Chat</a>
+                <a href="./Audiobook.html">Audio</a>
+                <a href="./user.html" class="active">Workspace</a>
+            </div>
+        </div>
+
+        <div class="workspace-layout">
+            <div class="workspace-sidebar">
+                <div class="card">
+                    <h2 id="bookTitle">Select a Book</h2>
+                    <p id="bookAuthor" class="muted">Click on a book from Library</p>
+                    <div class="stats">
+                        <div class="stat"><small>Pages</small><strong id="bookPages">-</strong></div>
+                        <div class="stat"><small>Rating</small><strong id="bookRating">-</strong></div>
+                    </div>
+                    <button class="btn" id="saveBookBtn" style="width:100%; margin-top:15px;">💾 Save to Library</button>
+                </div>
+
+                <div class="card">
+                    <h3>Saved Books</h3>
+                    <div id="savedBooksList" class="list">
+                        <div class="muted">No saved books yet. Click "Save to Library"</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="workspace-main">
+                <div class="card">
+                    <div class="reader-surface" id="readerPage">
+                        <div class="loading">Click on a book from Library to start reading...</div>
+                    </div>
+                    <div class="actions">
+                        <button class="btn btn-secondary" id="prevPage">← Previous</button>
+                        <span id="pageInfo">Page 0 of 0</span>
+                        <button class="btn btn-secondary" id="nextPage">Next →</button>
+                    </div>
+                </div>
+
+                <div class="workspace-grid">
+                    <div class="card">
+                        <h3>💬 Comments</h3>
+                        <textarea id="commentText" class="input" rows="3" placeholder="Share your thoughts about this book..."></textarea>
+                        <div class="stats" style="margin:10px 0;">
+                            <select id="commentRating" class="select" style="width:100px;">
+                                <option value="">Rating</option>
+                                <option value="5">★★★★★</option>
+                                <option value="4">★★★★☆</option>
+                                <option value="3">★★★☆☆</option>
+                                <option value="2">★★☆☆☆</option>
+                                <option value="1">★☆☆☆☆</option>
+                            </select>
+                            <button class="btn" id="postCommentBtn">Post Comment</button>
+                        </div>
+                        <div id="commentsList" class="list">
+                            <div class="muted">No comments yet.</div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h3>📅 Reading Reminders</h3>
+                        <input type="datetime-local" id="reminderDate" class="input">
+                        <textarea id="reminderNote" class="input" rows="2" placeholder="Reminder note..."></textarea>
+                        <button class="btn" id="setReminderBtn">Set Reminder</button>
+                        <div id="remindersList" class="list" style="margin-top:15px;">
+                            <div class="muted">No reminders set.</div>
+                        </div>
+                    </div>
+
+                    <div class="card" style="grid-column: span 2;">
+                        <h3>🤖 Book Chat</h3>
+                        <div id="chatMessages" class="mini-chat-window">
+                            <div class="chat-message bot">👋 Ask me anything about this book!</div>
+                        </div>
+                        <div style="display:flex; gap:10px;">
+                            <input type="text" id="chatInput" class="input" placeholder="Ask a question about this book...">
+                            <button class="btn" id="sendChatBtn">Send</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://127.0.0.1:8000';
+        let currentBookId = null;
+        let currentPage = 1;
+        let totalPages = 0;
+        let currentBook = null;
+        let userId = localStorage.getItem('userId') || 'guest_' + Math.random().toString(36).substr(2, 8);
+        localStorage.setItem('userId', userId);
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const bookId = urlParams.get('book');
+        
+        if (bookId) {
+            loadBook(parseInt(bookId));
+        }
+
+        loadSavedBooks();
+
+        async function loadBook(bookId) {
+            currentBookId = bookId;
+            currentPage = 1;
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/books/${bookId}`);
+                if (!response.ok) throw new Error('Book not found');
+                
+                currentBook = await response.json();
+                
+                document.getElementById('bookTitle').innerText = currentBook.title;
+                document.getElementById('bookAuthor').innerHTML = `by ${currentBook.author}`;
+                document.getElementById('bookPages').innerHTML = currentBook.pages || '?';
+                document.getElementById('bookRating').innerHTML = `★ ${currentBook.rating || 'N/A'}`;
+                
+                totalPages = currentBook.pages || 100;
+                
+                await loadPage();
+                await loadComments();
+                await loadReminders();
+                checkIfSaved();
+                
+            } catch (error) {
+                document.getElementById('readerPage').innerHTML = '<div class="error">Failed to load book. Make sure backend is running on port 8000.</div>';
+            }
+        }
+
+        async function loadPage() {
+            const container = document.getElementById('readerPage');
+            container.innerHTML = '<div class="loading">Loading page...</div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/books/${currentBookId}/pages?page=${currentPage}&page_size=1`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.items && data.items.length > 0) {
+                        container.innerHTML = `<div>${escapeHtml(data.items[0].content)}</div>`;
+                    } else {
+                        container.innerHTML = `<div>Page ${currentPage} - No content available yet.</div>`;
+                    }
+                } else {
+                    container.innerHTML = `<div>Page ${currentPage} - 📖 You are reading page ${currentPage} of "${currentBook?.title}".</div>`;
+                }
+                
+                document.getElementById('pageInfo').innerText = `Page ${currentPage} of ${totalPages}`;
+                
+            } catch (error) {
+                container.innerHTML = `<div>📖 Page ${currentPage} - Reading "${currentBook?.title}", page ${currentPage} of ${totalPages}.</div>`;
+            }
+        }
+
+        // ========== SAVE BOOK ==========
+        function saveCurrentBook() {
+            if (!currentBook) return;
+            
+            let saved = JSON.parse(localStorage.getItem('savedBooks') || '[]');
+            if (!saved.some(b => b.id === currentBookId)) {
+                saved.push({
+                    id: currentBookId,
+                    title: currentBook.title,
+                    author: currentBook.author,
+                    savedAt: new Date().toISOString()
+                });
+                localStorage.setItem('savedBooks', JSON.stringify(saved));
+                loadSavedBooks();
+                alert(`"${currentBook.title}" saved to your library!`);
+            } else {
+                alert('This book is already in your library.');
+            }
+        }
+
+        function loadSavedBooks() {
+            const saved = JSON.parse(localStorage.getItem('savedBooks') || '[]');
+            const container = document.getElementById('savedBooksList');
+            
+            if (saved.length === 0) {
+                container.innerHTML = '<div class="muted">No saved books yet. Click "Save to Library"</div>';
+                return;
+            }
+            
+            container.innerHTML = saved.map(book => `
+                <div class="list-item" style="cursor:pointer;" onclick="loadBook(${book.id})">
+                    <strong>${escapeHtml(book.title)}</strong><br>
+                    <small class="muted">${escapeHtml(book.author)}</small><br>
+                    <small>Saved: ${new Date(book.savedAt).toLocaleDateString()}</small>
+                </div>
+            `).join('');
+        }
+
+        function checkIfSaved() {
+            const saved = JSON.parse(localStorage.getItem('savedBooks') || '[]');
+            const isSaved = saved.some(b => b.id === currentBookId);
+            const saveBtn = document.getElementById('saveBookBtn');
+            if (saveBtn) {
+                saveBtn.innerText = isSaved ? '✓ Saved' : '💾 Save to Library';
+                saveBtn.disabled = isSaved;
+            }
+        }
+
+        // ========== COMMENTS ==========
+        async function loadComments() {
+            try {
+                const response = await fetch(`${API_BASE}/api/comments/${currentBookId}`);
+                if (!response.ok) throw new Error();
+                
+                const data = await response.json();
+                const comments = data.comments || [];
+                const container = document.getElementById('commentsList');
+                
+                if (comments.length === 0) {
+                    container.innerHTML = '<div class="muted">No comments yet. Be the first!</div>';
+                } else {
+                    container.innerHTML = comments.map(c => `
+                        <div class="list-item">
+                            <strong>${escapeHtml(c.user_id)}</strong>
+                            ${c.rating ? `<span class="rating-stars">${'★'.repeat(c.rating)}</span>` : ''}
+                            <p style="margin:5px 0;">${escapeHtml(c.text)}</p>
+                            <small class="muted">${new Date(c.timestamp).toLocaleString()}</small>
+                        </div>
+                    `).join('');
+                }
+            } catch (error) {
+                document.getElementById('commentsList').innerHTML = '<div class="muted">Comments not available.</div>';
+            }
+        }
+
+        document.getElementById('postCommentBtn')?.addEventListener('click', async () => {
+            if (!currentBookId) { alert('Select a book first'); return; }
+            
+            const text = document.getElementById('commentText').value;
+            const rating = document.getElementById('commentRating').value;
+            
+            if (!text.trim()) { alert('Please enter a comment'); return; }
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/comments`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_id: userId,
+                        book_id: currentBookId,
+                        comment: text,
+                        rating: rating ? parseInt(rating) : null
+                    })
+                });
+                
+                if (response.ok) {
+                    document.getElementById('commentText').value = '';
+                    document.getElementById('commentRating').value = '';
+                    await loadComments();
+                }
+            } catch (error) {
+                alert('Failed to post comment');
+            }
+        });
+
+        // ========== REMINDERS ==========
+        async function loadReminders() {
+            try {
+                const response = await fetch(`${API_BASE}/api/reminders?user_id=${userId}`);
+                if (!response.ok) throw new Error();
+                
+                const data = await response.json();
+                const reminders = data.reminders || [];
+                const container = document.getElementById('remindersList');
+                
+                if (reminders.length === 0) {
+                    container.innerHTML = '<div class="muted">No reminders set.</div>';
+                } else {
+                    container.innerHTML = reminders.map(r => `
+                        <div class="list-item">
+                            <strong>${escapeHtml(r.title)}</strong>
+                            <p>${escapeHtml(r.note || '')}</p>
+                            <small class="muted">Created: ${new Date(r.created_at).toLocaleDateString()}</small>
+                        </div>
+                    `).join('');
+                }
+            } catch (error) {
+                document.getElementById('remindersList').innerHTML = '<div class="muted">Reminders not available.</div>';
+            }
+        }
+
+        document.getElementById('setReminderBtn')?.addEventListener('click', async () => {
+            if (!currentBookId) { alert('Select a book first'); return; }
+            
+            const remindAt = document.getElementById('reminderDate').value;
+            if (!remindAt) { alert('Please set a date/time'); return; }
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/reminder`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_id: userId,
+                        book_id: currentBookId,
+                        enabled: true
+                    })
+                });
+                
+                if (response.ok) {
+                    document.getElementById('reminderDate').value = '';
+                    document.getElementById('reminderNote').value = '';
+                    await loadReminders();
+                    alert('Reminder set!');
+                }
+            } catch (error) {
+                alert('Failed to set reminder');
+            }
+        });
+
+        // ========== CHAT ==========
+        document.getElementById('sendChatBtn')?.addEventListener('click', async () => {
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+            if (!message) return;
+            
+            addChatMessage(message, 'user');
+            input.value = '';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: message,
+                        user_id: userId,
+                        book_id: currentBookId
+                    })
+                });
+                
+                const data = await response.json();
+                addChatMessage(data.answer || data.message || 'Sorry, I could not respond.', 'bot');
+            } catch (error) {
+                addChatMessage('Chatbot is not available right now.', 'bot');
+            }
+        });
+
+        function addChatMessage(text, sender) {
+            const container = document.getElementById('chatMessages');
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `chat-message ${sender}`;
+            msgDiv.innerHTML = escapeHtml(text);
+            container.appendChild(msgDiv);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // ========== PAGE NAVIGATION ==========
+        document.getElementById('prevPage')?.addEventListener('click', () => {
+            if (currentPage > 1) {
+                currentPage--;
+                loadPage();
+            }
+        });
+
+        document.getElementById('nextPage')?.addEventListener('click', () => {
+            if (currentPage < totalPages) {
+                currentPage++;
+                loadPage();
+            }
+        });
+
+        document.getElementById('saveBookBtn')?.addEventListener('click', saveCurrentBook);
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str).replace(/[&<>]/g, function(m) {
+                if (m === '&') return '&amp;';
+                if (m === '<') return '&lt;';
+                if (m === '>') return '&gt;';
+                return m;
+            });
+        }
+    </script>
+</body>
+</html>

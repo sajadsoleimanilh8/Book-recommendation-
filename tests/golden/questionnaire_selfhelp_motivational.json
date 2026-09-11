@@ -1,0 +1,72 @@
+{
+  "meta": {
+    "answers": {
+      "genre": "self-help",
+      "mood": "motivational"
+    },
+    "n": 10,
+    "note": "audit H.4 — this flow is behaviour-frozen; any diff is a bug"
+  },
+  "results": [
+    {
+      "rank": 1,
+      "title": "Everyday Greatness",
+      "author": "Stephen R. Covey",
+      "final_score": 0.5257
+    },
+    {
+      "rank": 2,
+      "title": "How to Stop Worrying and Start Living",
+      "author": "Dale Carnegie",
+      "final_score": 0.5147
+    },
+    {
+      "rank": 3,
+      "title": "Motivational Books",
+      "author": "Ivan King, motivational books",
+      "final_score": 0.5042
+    },
+    {
+      "rank": 4,
+      "title": "Self Help Books",
+      "author": "Ivan King, Self Help Books",
+      "final_score": 0.5023
+    },
+    {
+      "rank": 5,
+      "title": "Self Help Books",
+      "author": "Ivan King, self help books",
+      "final_score": 0.5023
+    },
+    {
+      "rank": 6,
+      "title": "How to Help Yourself With Self-Help",
+      "author": "Martin Meadows",
+      "final_score": 0.4833
+    },
+    {
+      "rank": 7,
+      "title": "Think and Grow Rich! The classic personal development and self-help book by Napoleon Hill",
+      "author": "Napoleon Hill",
+      "final_score": 0.4823
+    },
+    {
+      "rank": 8,
+      "title": "Self Help Stories",
+      "author": "J. Macgregor",
+      "final_score": 0.4769
+    },
+    {
+      "rank": 9,
+      "title": "\"Elevate Your Life: A Journey of Personal Growth and Self-Discovery\"",
+      "author": "Shameem Anas",
+      "final_score": 0.4615
+    },
+    {
+      "rank": 10,
+      "title": "Start With Why (Tamil)",
+      "author": "Simon Sinek",
+      "final_score": 0.4506
+    }
+  ]
+}

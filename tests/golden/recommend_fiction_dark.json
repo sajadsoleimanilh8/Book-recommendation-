@@ -1,0 +1,69 @@
+{
+  "meta": {
+    "scenario": {
+      "preferred_genres": [
+        "Fiction"
+      ],
+      "mood": "dark"
+    },
+    "n": 10,
+    "deterministic_prefix": 9,
+    "note": "positions beyond the prefix are bandit exploration and are not pinned"
+  },
+  "results": [
+    {
+      "rank": 1,
+      "title": "The Secret Adversary",
+      "author": "Agatha Christie",
+      "final_score": 0.5857
+    },
+    {
+      "rank": 2,
+      "title": "The Three Just Men",
+      "author": "Edgar Wallace",
+      "final_score": 0.5824
+    },
+    {
+      "rank": 3,
+      "title": "Four Weird Tales",
+      "author": "Algernon Blackwood",
+      "final_score": 0.5767
+    },
+    {
+      "rank": 4,
+      "title": "Sight Unseen",
+      "author": "Mary Roberts Rinehart",
+      "final_score": 0.5738
+    },
+    {
+      "rank": 5,
+      "title": "The Grey Room",
+      "author": "Eden Phillpotts",
+      "final_score": 0.5689
+    },
+    {
+      "rank": 6,
+      "title": "Frankenstein; Or, The Modern Prometheus",
+      "author": "Mary Wollstonecraft Shelley",
+      "final_score": 0.568
+    },
+    {
+      "rank": 7,
+      "title": "The shadow over Innsmouth",
+      "author": "H. P. (Howard Phillips) Lovecraft",
+      "final_score": 0.5668
+    },
+    {
+      "rank": 8,
+      "title": "Dead Man's Love",
+      "author": "Tom Gallon",
+      "final_score": 0.5639
+    },
+    {
+      "rank": 9,
+      "title": "The Bond of Black",
+      "author": "William Le Queux",
+      "final_score": 0.563
+    }
+  ]
+}

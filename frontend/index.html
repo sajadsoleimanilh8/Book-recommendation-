@@ -1,0 +1,103 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DigiKitab Next - Smart Reading Workspace</title>
+  <link rel="stylesheet" href="./css/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <a class="brand" href="./index.html"><span class="brand-badge">DK</span><span>DigiKitab Next</span></a>
+      <nav class="nav">
+        <a class="active" href="./index.html">Home</a>
+        <a href="./filter.html">Library</a>
+        <a href="./chatbot.html">Chat</a>
+        <a href="./Audiobook.html">Audio</a>
+        <a href="./user.html">Workspace</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="container hero-grid">
+        <div class="card hero-copy">
+          <span class="kicker">Reader + Audio + Notes + Reminders + Chat</span>
+          <h1>Move from discovery to reading without leaving the app.</h1>
+          <p>
+            This updated Downloads build keeps recommendations at the center, then opens a full reading workspace with page previews,
+            browser audio playback, comments, reading reminders, and an AI-assisted chat layer with local fallback.
+          </p>
+          <div class="hero-actions">
+            <a href="#quiz" class="btn btn-primary">Find a book</a>
+            <a href="./user.html" class="btn btn-secondary">Open workspace</a>
+          </div>
+        </div>
+        <div class="card panel stack-gap">
+          <div>
+            <h3 class="no-top">What is wired now</h3>
+            <p class="muted">The backend now persists comments, reminders, and progress, exposes reader pages, and can use OpenAI when configured.</p>
+          </div>
+          <div class="stats">
+            <div class="stat"><small>Reader</small><strong>Pages API</strong></div>
+            <div class="stat"><small>Audio</small><strong>Browser TTS</strong></div>
+            <div class="stat"><small>Chat</small><strong>AI + Fallback</strong></div>
+          </div>
+          <div class="summary-list compact-list">
+            <div class="summary-item">Home and filter results open directly into the reading workspace.</div>
+            <div class="summary-item">Saved books sync through local storage for quick handoff between pages.</div>
+            <div class="summary-item">Reader progress is posted back to the backend as you move through pages.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="quiz" class="section">
+      <div class="container">
+        <div class="section-title">
+          <div>
+            <h2>Book Discovery Wizard</h2>
+            <p>Share a few preferences and the backend will return ranked suggestions from the merged catalog.</p>
+          </div>
+        </div>
+
+        <div class="quiz single-page-quiz">
+          <div class="card quiz-steps full-width">
+            <form id="quizForm">
+              <div id="options" class="form-grid"></div>
+              <div class="quiz-actions">
+                <button type="submit" id="nextBtn" class="btn btn-primary">View recommendations</button>
+              </div>
+            </form>
+          </div>
+
+          <aside class="card summary">
+            <h3 class="no-top">Your choices</h3>
+            <div id="summaryList" class="summary-list"></div>
+            <div class="actions top-gap">
+              <a href="./filter.html" class="btn btn-secondary">Open advanced library</a>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section id="resultsSection" class="section">
+      <div class="container">
+        <div class="section-title">
+          <div>
+            <h2>Your Recommendations</h2>
+            <p>Save a title, jump into the reader, listen to audio, or open the chat and notes workspace.</p>
+          </div>
+        </div>
+        <div id="results" class="book-grid"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer container">Run the FastAPI backend on port 8000, then browse the site through the frontend files or through the backend root.</footer>
+  <script src="./js/questionnair.js"></script>
+</body>
+</html>

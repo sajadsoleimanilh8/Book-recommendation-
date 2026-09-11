@@ -1,0 +1,69 @@
+{
+  "meta": {
+    "answers": {},
+    "n": 10,
+    "note": "audit H.4 — this flow is behaviour-frozen; any diff is a bug"
+  },
+  "results": [
+    {
+      "rank": 1,
+      "title": "Tan Lines",
+      "author": "Katherine Applegate",
+      "final_score": 0.8641
+    },
+    {
+      "rank": 2,
+      "title": "The Shepherd's Crown",
+      "author": "Terry Pratchett",
+      "final_score": 0.8222
+    },
+    {
+      "rank": 3,
+      "title": "The Floating Islands",
+      "author": "Rachel Neumeier",
+      "final_score": 0.77
+    },
+    {
+      "rank": 4,
+      "title": "Slowly, I Start to See",
+      "author": "John M. Schreiner",
+      "final_score": 0.7375
+    },
+    {
+      "rank": 5,
+      "title": "Sustainable Living For Dummies",
+      "author": "Michael Grosvenor",
+      "final_score": 0.7018
+    },
+    {
+      "rank": 6,
+      "title": "Black Athena",
+      "author": "Martin Bernal",
+      "final_score": 0.6549
+    },
+    {
+      "rank": 7,
+      "title": "The Rithmatist",
+      "author": "Brandon Sanderson",
+      "final_score": 0.6483
+    },
+    {
+      "rank": 8,
+      "title": "The Vegetarian Slow Cooker",
+      "author": "Judith Finlayson",
+      "final_score": 0.6465
+    },
+    {
+      "rank": 9,
+      "title": "Plant Nutrition — Molecular Biology and Genetics",
+      "author": "G. Gissel-Nielsen, A. Jensen",
+      "final_score": 0.6427
+    },
+    {
+      "rank": 10,
+      "title": "Managing Tourism and Hospitality Services",
+      "author": "B. Prideaux, Gianna Moscardo, Eric Laws",
+      "final_score": 0.6417
+    }
+  ]
+}

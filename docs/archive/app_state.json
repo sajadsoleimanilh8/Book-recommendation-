@@ -1,0 +1,90 @@
+{
+  "last_updated": "2026-04-18T11:57:46.714757+00:00",
+  "total_books": 29975,
+  "progress": [
+    {
+      "user_id": "guest",
+      "book_id": "5400",
+      "progress": 1,
+      "page": 1,
+      "source": "reader",
+      "updated_at": "2026-04-25T06:08:57.394718+00:00"
+    },
+    {
+      "user_id": "guest",
+      "book_id": "768",
+      "progress": 0.16666666666666666,
+      "page": 1,
+      "source": "reader",
+      "updated_at": "2026-04-22T16:28:12.881150+00:00"
+    },
+    {
+      "user_id": "guest",
+      "book_id": "25525",
+      "progress": 1,
+      "page": 6,
+      "source": "reader",
+      "updated_at": "2026-04-18T12:39:17.865809+00:00"
+    },
+    {
+      "user_id": "guest",
+      "book_id": "57333",
+      "progress": 0.2,
+      "page": 1,
+      "source": "reader",
+      "updated_at": "2026-04-22T17:24:37.621526+00:00"
+    },
+    {
+      "user_id": "guest",
+      "book_id": "135",
+      "progress": 0.16666666666666666,
+      "page": 1,
+      "source": "reader",
+      "updated_at": "2026-04-18T16:36:04.344778+00:00"
+    },
+    {
+      "user_id": "guest",
+      "book_id": "7kU_AAAAYAAJ",
+      "progress": 1,
+      "page": 1,
+      "source": "reader",
+      "updated_at": "2026-04-18T15:19:10.571895+00:00"
+    },
+    {
+      "user_id": "guest",
+      "book_id": "160",
+      "progress": 0.16666666666666666,
+      "page": 1,
+      "source": "reader",
+      "updated_at": "2026-04-20T08:08:18.469210+00:00"
+    },
+    {
+      "user_id": "guest",
+      "book_id": "20610",
+      "progress": 0.25,
+      "page": 1,
+      "source": "reader",
+      "updated_at": "2026-04-20T08:08:57.376881+00:00"
+    },
+    {
+      "user_id": "guest",
+      "book_id": "79HCwAEACAAJ",
+      "progress": 1,
+      "page": 1,
+      "source": "reader",
+      "updated_at": "2026-04-20T08:19:55.400431+00:00"
+    }
+  ],
+  "comments": {
+    "5400": [
+      {
+        "id": "comment-1-1776672460",
+        "book_id": "5400",
+        "user_name": "Reader",
+        "text": "that book is good",
+        "rating": null,
+        "created_at": "2026-04-20T08:07:40.653305+00:00"
+      }
+    ]
+  }
+}

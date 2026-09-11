@@ -1,0 +1,66 @@
+{
+  "meta": {
+    "scenario": {
+      "mood": "thoughtful"
+    },
+    "n": 10,
+    "deterministic_prefix": 9,
+    "note": "positions beyond the prefix are bandit exploration and are not pinned"
+  },
+  "results": [
+    {
+      "rank": 1,
+      "title": "Maps of Meaning",
+      "author": "Jordan B. Peterson",
+      "final_score": 0.5423
+    },
+    {
+      "rank": 2,
+      "title": "Exploring Psychology",
+      "author": "David G. Myers",
+      "final_score": 0.5319
+    },
+    {
+      "rank": 3,
+      "title": "아웃라이어",
+      "author": "Malcolm Gladwell",
+      "final_score": 0.5223
+    },
+    {
+      "rank": 4,
+      "title": "Sociology, Race, and Ethnicity",
+      "author": "Harry H. Bash",
+      "final_score": 0.5173
+    },
+    {
+      "rank": 5,
+      "title": "Talking to Strangers",
+      "author": "Malcolm Gladwell",
+      "final_score": 0.5163
+    },
+    {
+      "rank": 6,
+      "title": "The Rise of Scientific Philosophy",
+      "author": "Hans Reichenbach",
+      "final_score": 0.5153
+    },
+    {
+      "rank": 7,
+      "title": "The Sociology of Science",
+      "author": "Robert K. Merton",
+      "final_score": 0.512
+    },
+    {
+      "rank": 8,
+      "title": "Personality, Character, and Intelligence",
+      "author": "Malcolm Gladwell",
+      "final_score": 0.4904
+    },
+    {
+      "rank": 9,
+      "title": "Philosophy and Cognitive Science",
+      "author": "Lorenzo Magnani, Ping Li",
+      "final_score": 0.474
+    }
+  ]
+}

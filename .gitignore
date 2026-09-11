@@ -1,0 +1,31 @@
+# Secrets — must never be committed
+.env
+.dev-jwt-secret
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Generated audio (regenerable; see F-06)
+backend/audio_outputs/*.mp3
+audiobook.mp3
+_tmp_*.mp3
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
+# Fitted model artefacts. Reproducible with `python -m scripts.embed_pass --fit`,
+# and far too large to version (48 MB and growing with the corpus).
+backend/model_artifacts/
+.venv

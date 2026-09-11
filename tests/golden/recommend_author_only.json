@@ -1,0 +1,68 @@
+{
+  "meta": {
+    "scenario": {
+      "preferred_authors": [
+        "Brandon Sanderson"
+      ]
+    },
+    "n": 10,
+    "deterministic_prefix": 9,
+    "note": "positions beyond the prefix are bandit exploration and are not pinned"
+  },
+  "results": [
+    {
+      "rank": 1,
+      "title": "The Rithmatist",
+      "author": "Brandon Sanderson",
+      "final_score": 0.6107
+    },
+    {
+      "rank": 2,
+      "title": "Elantris (Elantris, #1)",
+      "author": "Brandon Sanderson",
+      "final_score": 0.5719
+    },
+    {
+      "rank": 3,
+      "title": "The Well of Ascension (Mistborn, #2)",
+      "author": "Brandon Sanderson",
+      "final_score": 0.5717
+    },
+    {
+      "rank": 4,
+      "title": "The Hero of Ages (Mistborn, #3)",
+      "author": "Brandon Sanderson",
+      "final_score": 0.5689
+    },
+    {
+      "rank": 5,
+      "title": "The Way of Kings (The Stormlight Archive, #1)",
+      "author": "Brandon Sanderson",
+      "final_score": 0.5658
+    },
+    {
+      "rank": 6,
+      "title": "Warbreaker (Warbreaker, #1)",
+      "author": "Brandon Sanderson",
+      "final_score": 0.5547
+    },
+    {
+      "rank": 7,
+      "title": "The Final Empire (Mistborn, #1)",
+      "author": "Brandon Sanderson",
+      "final_score": 0.5544
+    },
+    {
+      "rank": 8,
+      "title": "Firefight (The Reckoners, #2)",
+      "author": "Brandon Sanderson",
+      "final_score": 0.5502
+    },
+    {
+      "rank": 9,
+      "title": "The Gathering Storm (Wheel of Time, #12)",
+      "author": "Robert Jordan, Brandon Sanderson",
+      "final_score": 0.5455
+    }
+  ]
+}

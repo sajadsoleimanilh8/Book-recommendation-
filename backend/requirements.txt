@@ -1,0 +1,57 @@
+# DigiKitab backend dependencies
+#
+# F-02: this file previously listed six packages with no version on any line,
+# and omitted three that the code actually imports. A fresh install pulled
+# whatever existed that day, so no two installs were the same.
+#
+# Versions below marked "verified" are the ones present in the environment
+# where PR 1 was validated. Those marked "unverified" are not installed in
+# that environment (see the note at the bottom) and carry bounded ranges.
+
+# --- Web framework (verified) ---
+fastapi==0.139.2
+uvicorn==0.51.0
+pydantic==2.13.4          # ConfigDict(extra="forbid") in main.py needs v2
+
+# --- Data / ML (verified) ---
+pandas==3.0.5
+numpy==2.4.6
+scipy==1.17.1
+
+# --- Previously missing from this file entirely (F-02) ---
+requests==2.34.2          # engine.py:15  GutenbergClient - verified
+scikit-learn>=1.7,<2      # engine.py:19-25 - unverified, see note
+gtts>=2.5,<3              # engine.py:621  AudiobookEngine - unverified
+plyer>=2.1,<3             # engine.py:1084 ReminderEngine  - unverified
+
+# --- Configuration ---
+python-dotenv==1.2.2      # loads .env; GOOGLE_BOOKS_API_KEY used from Phase 2
+
+# --- Persistence (PR 2) ---
+SQLAlchemy==2.0.51
+alembic==1.19.1
+psycopg[binary]==3.3.4
+pgvector==0.4.2         # unused until Phase 2; the image already ships it
+redis==4.6.0
+
+# --- Auth (PR 2) ---
+argon2-cffi==25.1.0     # argon2id — no bcrypt 72-byte truncation footgun
+PyJWT==2.13.0
+email-validator==2.3.0   # pydantic EmailStr
+
+# --- Tests ---
+pytest==9.1.1
+httpx==0.28.1             # required by fastapi.testclient
+
+# NOTE - unverified pins and a live compatibility risk
+#
+# scikit-learn, gtts and plyer are NOT installed in the environment where
+# PR 1 was validated, so `import engine` fails there and the app has never
+# been executed end to end during this work. Their pins are reasoned, not
+# tested. First task after installing them is to confirm the app boots.
+#
+# Separately: pandas 3.x and numpy 2.x are both major versions newer than
+# the code was written against. engine.py uses chained .loc assignment
+# (e.g. df.loc[mask, "comment_score"] += boost) which behaves differently
+# under pandas 3's copy-on-write default. Treat the first successful boot
+# as a real test, not a formality.
