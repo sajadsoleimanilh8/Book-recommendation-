@@ -125,6 +125,12 @@ def startup():
     main.BOOK_BY_ID = {b["id"]: b for b in main.BOOKS}
     log.info(f"Loaded {len(main.BOOKS)} books.")
 
+    # F-26. Must precede fit_ml: the relevance target is computed while the
+    # ranker trains, from the frame built out of main.BOOKS. Evidence attached
+    # afterwards would never reach it.
+    if main.DATA_SOURCE in ("json", "csv_fallback"):
+        _attach_reading_depth()
+
     if main.BOOKS:
         log.info("Fitting ML engine…")
         try:
@@ -146,6 +152,45 @@ def startup():
     # and does not depend on the recommender, so a failed ML fit must not also
     # take search down. Failure here is recorded, never fatal.
     _get_search_encoder()
+
+
+def _attach_reading_depth() -> None:
+    """Attach per-book reading depth to the catalogue — F-26's target.
+
+    Degrades rather than cascades (section 12): with Postgres down the app
+    boots on the popularity prior alone, which is exactly the behaviour with
+    zero readers, and says so.
+    """
+    try:
+        from db import SessionLocal
+        from services.reading_depth import load_reading_depth
+
+        with SessionLocal() as session:
+            depth = load_reading_depth(session)
+    except Exception as exc:
+        log.warning(
+            f"reading depth unavailable: {type(exc).__name__}: {exc}. "
+            "Ranking falls back to the popularity prior."
+        )
+        main.READING_DEPTH_REPORT = {"error": f"{type(exc).__name__}: {exc}"}
+        return
+
+    matched = readers = 0
+    for book in main.BOOKS:
+        key = (str(book.get("source") or ""), str(book.get("book_id") or "").strip())
+        found = depth.get(key)
+        if found is None:
+            continue
+        book["reading_depth"], book["reading_depth_n"] = found
+        matched += 1
+        readers += found[1]
+
+    main.READING_DEPTH_REPORT = {
+        "books_with_readers": matched,
+        "total_starts": readers,
+        "books_measured": len(depth),
+    }
+    log.info(f"reading depth: {main.READING_DEPTH_REPORT}")
 
 
 def _build_pk_index() -> None:

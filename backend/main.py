@@ -51,6 +51,9 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 # after a ranking change are indistinguishable, and the first question anyone
 # asks of this table is "did the change help?".
 CONTENT_VECTOR_REPORT: Dict[str, Any] = {}
+# F-26: how much reading-depth evidence the ranker trained on. Empty until
+# startup runs.
+READING_DEPTH_REPORT: Dict[str, Any] = {}
 
 MODEL_VERSION = os.getenv(
     "MODEL_VERSION", f"rec-6.0.0+{os.getenv('EMBEDDING_BACKEND', 'minilm')}"

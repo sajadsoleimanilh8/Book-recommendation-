@@ -95,6 +95,11 @@ def health():
         # space looks exactly like working. Name which one is live.
         "content_similarity_space": getattr(main.RECOMMENDER, "content_space", None),
         "content_vectors": main.CONTENT_VECTOR_REPORT or None,
+        # F-26: how much real reading evidence the ranker is learning from.
+        # Zero is expected until there is traffic, and means the target is
+        # still the popularity prior — visible here so nobody mistakes the
+        # new target for an active one before it has data.
+        "reading_depth": main.READING_DEPTH_REPORT or None,
     }
 
 

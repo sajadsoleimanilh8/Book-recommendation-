@@ -105,23 +105,31 @@ def test_the_matrix_has_one_row_per_seed_candidate(training_matrix, recommender)
     assert len(X) <= recommender.LTR_SEEDS * recommender.LTR_PER_SEED
 
 
-def test_the_target_is_still_circular_and_that_is_recorded(training_matrix):
-    """Not a bug report — a tripwire.
+def test_with_no_readers_the_target_is_the_popularity_prior(training_matrix):
+    """F-26, answered 2026-09-11: relevance is reading depth, shrunk towards a
+    popularity prior by the amount of evidence.
 
-    `relevance` remains 0.4*rating + 0.6*norm(log(ratings_count)), a function
-    of three of the model's own inputs, so the model can still only learn
-    popularity. Fixing that needs real interaction data (F-42) and a product
-    decision about what a good recommendation is.
+    With no reading evidence — the state of the test database, and of every
+    database until there is traffic — the shrinkage returns the prior exactly.
+    So this asserts the target is still 0.4*rating + 0.6*norm(log count):
+    not because that is the target any more, but because with zero readers it
+    is what the target must reduce to. That is what keeps rankings unchanged
+    until real reading data arrives.
 
-    This test exists so that when someone does fix it, this file fails and
-    forces the docs above to be updated with it.
+    Formerly `test_the_target_is_still_circular_and_that_is_recorded`, a
+    tripwire meant to fail when the target was replaced. It could not: with no
+    data the new target and the old one are numerically identical. It is
+    renamed and re-documented by hand for exactly that reason — a green test
+    whose explanation has gone stale is the failure it existed to prevent.
+    The shift towards depth is pinned in tests/test_reading_depth.py.
     """
     X, y = training_matrix
     rating = X[:, FEATURES.index("avg_rating")]
     counts = X[:, FEATURES.index("log_ratings")]
     counts_norm = counts / (counts.max() + 1e-9)
-    reconstructed = 0.4 * rating + 0.6 * counts_norm
-    assert np.allclose(y, reconstructed, atol=1e-6), (
-        "the training target is no longer the circular popularity formula — "
-        "good, but F-26's writeup and this test now describe the wrong thing"
+    prior = 0.4 * rating + 0.6 * counts_norm
+    assert np.allclose(y, prior, atol=1e-6), (
+        "with no reading evidence the target should equal the popularity "
+        "prior exactly — either the test database now has reading events, or "
+        "the shrinkage no longer reduces to the prior at zero readers"
     )

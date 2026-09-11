@@ -230,12 +230,36 @@ class Recommender:
     LTR_PER_SEED = 60
 
     def _relevance(self, cands: pd.DataFrame, count_scale: float) -> np.ndarray:
-        """The training target. Unchanged, and still circular — see above."""
+        """The training target — reading depth, shrunk towards a prior (F-26).
+
+        Decided 2026-09-11: relevance is how far readers get into a book.
+        The popularity formula below survives only as the *prior*: what a
+        book's relevance is assumed to be before anyone has read it.
+
+            relevance = (n * depth + k * prior) / (n + k)
+
+        With no readers `n` is 0 and this returns the prior exactly — so while
+        there is no traffic, training is unchanged and so is every ranking.
+        As readers accumulate, the target moves to what they actually did.
+
+        Depth is read here and nowhere else. It is deliberately **not** a
+        feature: a column that were both input and target would let the model
+        learn "relevance equals this column" and nothing else.
+        """
         rating = cands["average_rating"].to_numpy(dtype=float) / 5.0
         counts = np.log1p(cands["ratings_count"].to_numpy(dtype=float))
         # Normalised against the whole catalogue, not the batch, so targets
         # from different seeds are on one scale.
-        return 0.4 * rating + 0.6 * (counts / count_scale)
+        prior = 0.4 * rating + 0.6 * (counts / count_scale)
+
+        if "reading_depth_n" not in cands.columns:
+            return prior
+
+        from services.reading_depth import shrink
+
+        readers = cands["reading_depth_n"].to_numpy(dtype=float)
+        depth = cands["reading_depth"].to_numpy(dtype=float)
+        return shrink(depth, readers, prior)
 
     def _ltr_training_set(self) -> tuple[np.ndarray, np.ndarray]:
         rng = np.random.default_rng(42)

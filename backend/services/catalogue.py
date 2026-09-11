@@ -238,5 +238,16 @@ def _books_to_df(books: List[Dict[str, Any]]) -> pd.DataFrame:
         "list_price": b["price"] if b["price"] is not None else 0.0,
         "language": b["language"],
         "published_year": _safe_int(b.get("published_year"), 2000),
+        # F-26: the relevance target's evidence, attached at startup by
+        # lifespan._attach_reading_depth. Used for the TARGET only, never as a
+        # feature — a column that is both would let the model learn
+        # "relevance equals this column" and nothing else.
+        #
+        # 0 rather than None when a book has no readers, for the reason given
+        # above for list_price: a NaN anywhere stops the ranker fitting. Zero
+        # readers is also the honest value, and `shrink` treats it as "use the
+        # prior", never as "this book is bad".
+        "reading_depth": float(b.get("reading_depth") or 0.0),
+        "reading_depth_n": int(b.get("reading_depth_n") or 0),
     } for b in books])
 

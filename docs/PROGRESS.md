@@ -925,9 +925,25 @@ two queries each. That is two to four weeks of wall-clock at the current
 allowance. See F-31. If the increase does not land, the choice is between
 Open Library-only coverage for the English set or a standing ~800/day job.
 
-### OI-6 · Frontend needs a login UI — OPEN
+### OI-6 · Frontend needs a login UI — OPEN, **NEXT MEANINGFUL UNLOCK** (not started)
 Comments, progress and reminders all require a token now, so the existing
 pages get 401. Expected and accepted; lands with the Express retirement.
+
+**Re-prioritised 2026-09-11, alongside F-26's answer.** Reading depth is now
+the relevance target, and it is **book-level only**: with no login and no
+visitor id, a page turn cannot be attributed to a reader. Login is what turns
+it into personalisation. Concretely, it would make reachable:
+
+| Unlocked by login | Today |
+|---|---|
+| per-reader depth — *this* reader's furthest page | only aggregate, via the survival curve |
+| Reading DNA (§25), derived from a reader's own history | no history can be attributed |
+| explicit ratings — `comments.rating`, `POST /api/feedback` | both exist; neither reachable |
+| progress and completion — `reading_progress` | exists; nothing writes it |
+| impression -> click attribution | no identity to join on |
+
+**Not started, by the product owner's instruction.** Do not begin without
+explicit go-ahead.
 
 ### OI-5 · Rate limit required before any deployment — **BLOCKING**
 **Status (2026-08-19):** product owner confirmed the app is **local-only until further notice**, so the rate limit was deliberately **excluded from PR 1**.
@@ -1513,7 +1529,7 @@ Blast radius while the bug was live: 133 `not_found` rows, against only 5
 network warnings in that log. So at most ~5 are false. Left alone; re-running
 them costs no quota if it ever matters.
 
-### F-26 · 7 of 10 LTR features have zero importance — **SKEW FIXED, TARGET STILL OPEN**
+### F-26 · 7 of 10 LTR features have zero importance — **SKEW FIXED, TARGET DECIDED: READING DEPTH**
 
 **Measured, not inferred.** Feature importances of the trained model:
 
@@ -1671,6 +1687,62 @@ requires accumulated `interaction_events` and `recommendation_log` rows
 (F-42, now filling) *and* a product decision about what a good recommendation
 is: engagement, completion, explicit rating, or return visits. Options will be
 written up rather than chosen unilaterally.
+
+---
+
+#### DECISION (product owner, 2026-09-11): the relevance target is **reading depth**
+
+> *"It's buildable now, and it measures what the product actually claims to
+> care about — not just curiosity-driven clicks."*
+
+This answers F-26's blocking question. The circular popularity target is
+replaced by **how far readers get into a book**, normalised and aggregated per
+book across everyone who engaged with it.
+
+**Why reading depth, over the alternatives — decided on what exists, not what
+is theoretically possible.** An audit of what the product can actually
+capture found:
+
+| Signal | State on 2026-09-11 |
+|---|---|
+| explicit ratings | two mechanisms in the schema (`comments.rating`, `POST /api/feedback`); neither reachable — posting needs a login the UI does not have |
+| completion / progress | `reading_progress` exists; **no page calls `POST /api/progress`**, and it needs a login |
+| click-through | impossible: the UI's recommendation path (`/api/questionnaire`) logs no impressions, and there is **no visitor identity** to join a click to an impression |
+| **reading depth** | **the reader already requests one page per turn** (`/pages?page=N&page_size=1`) — the signal exists in the traffic, only unlogged |
+
+Reading depth was the only candidate capturable today with no login and no
+new UI. It is also the closest to the product's own thesis (§6): *the system
+should become more useful as the user actually reads.* A click measures
+curiosity about a title; pages read measure whether the recommendation was
+right.
+
+**Scope, stated plainly.** This is **book-level relevance** — which
+recommendations work *in general*. It is not personalisation. With no login
+and no visitor id, a page turn cannot be attributed to a person, so the model
+learns what holds readers, not what holds *this* reader. Expected and accepted
+until login exists.
+
+**Two refinements made during implementation, recorded rather than silent:**
+
+1. **Normalised by excerpt length, not book length.** `book_texts` holds the
+   opening chapters only — measured at 20,358 characters on average, about 11
+   pages at 1,800 per page. Against a 300-page book a reader who finishes
+   every available page scores ~4%, which would compress every book into a
+   sliver of the range. Against the excerpt, reading all of it is 1.0 and
+   bouncing after page one is 0.0. So the honest description of what is
+   measured is **"did the opening of a recommended book hold the reader"** —
+   whole-book depth needs whole-book text, which is Phase 5.
+
+2. **Empty pages do not count.** The reader's pager uses the book's full page
+   count (`currentBook.pages || 100`), so it lets a reader click "next" to
+   page 300 through an 11-page excerpt. Each of those empty pages would
+   otherwise log as reading deeper. Only pages that returned content count.
+
+**Next meaningful unlock: login (OI-6).** It turns this from book-level
+relevance into personalisation — attributing depth to a reader, building
+Reading DNA (§25) from their own history, and making ratings and progress
+reachable at all. Flagged, **not started**, pending the product owner.
+
 
 
 ### F-24 · The global Python is shared — RECOMMEND A VIRTUALENV
