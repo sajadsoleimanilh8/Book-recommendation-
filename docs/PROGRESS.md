@@ -1760,12 +1760,13 @@ Carried deliberately, with the reason. Each has a closing phase.
 | ID | Item | Why deferred | Closes in |
 |---|---|---|---|
 | ~~F-07~~ | ~~No authentication anywhere~~ | **Closed** — writes in PR 2, reads in PR 3 | ✅ |
-| F-19 | Synchronous TTS blocks the request | Needs Redis + job queue | Phase 6 |
+| ~~F-19~~ | ~~Synchronous TTS blocks the request~~ | **Closed** — 202 + poll, bounded in-process registry | ✅ |
 | F-18 | Server-side desktop notifications (`plyer`) | Needs a real delivery channel + queue | Phase 6 |
-| F-13 | LTR trained on constant features, circular target | Needs `recommendation_log` data first | Phase 3 |
-| F-26 | 7/10 LTR features zero importance; comment loop decorative | Ranking change — belongs with Phase 3's real-signal work, not a persistence PR | Phase 3 |
+| ~~F-13~~ | ~~LTR trained on constant features, circular target~~ | **Closed** — skew fixed (F-26), target replaced by reading depth (2026-09-11) | ✅ |
+| ~~F-26~~ | ~~7/10 LTR features zero importance~~ | **Closed** — skew fixed; target decided and shipped as reading depth (2026-09-11) | ✅ |
 | F-14 | "CF" is popularity, not collaborative filtering | Needs real interaction data | Phase 3 |
-| F-17 | Book "pages" return placeholder strings | Needs real book text ingestion | Phase 5 |
+| ~~F-17~~ | ~~Book "pages" return placeholder strings~~ | **Closed** — serves real Gutenberg text, honest empty state otherwise | ✅ |
+| **F-26a** | **Reading depth is measured against the excerpt, not the book.** `book_texts` holds ~11 opening pages (20,358 chars avg), so depth means "did the opening hold the reader", not "how much of the book was read". Normalised by excerpt length because against a 300-page book every reader would score ≤ ~4% | Needs whole-book text. When it lands: switch the denominator in `services/reading_depth.py` to the full page count, re-baseline, and expect depth scores to fall | **Phase 5** |
 | F-11 | Unmounted second frontend | Product owner deferred — OI-1 | Phase 7 |
 | F-20 | Full ML refit on every boot, no artefact persistence | Partially addressed in PR 1 (`limit` cap) | Phase 1 |
 
