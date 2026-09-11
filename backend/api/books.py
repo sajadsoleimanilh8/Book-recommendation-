@@ -96,6 +96,39 @@ def book_detail(book_id: int, user: OptionalUser, session: SessionDep):
 PAGE_CHARS = 1800
 
 
+def _record_page_turn(
+    book_pk: Optional[int],
+    page: int,
+    page_size: int,
+    *,
+    excerpt_pages: int,
+    had_content: bool,
+) -> None:
+    """One reading-page event — the raw material of F-26's relevance target.
+
+    Anonymous on purpose: this route takes no identity, and adding one now
+    would change its auth behaviour (a bad token 401s since OI-10) for no
+    gain, since the UI sends none. Attribution to a reader arrives with login
+    (OI-6); until then this measures which books hold readers, not which
+    reader. `page_size` is kept so aggregation can tell a genuine page turn
+    (the reader asks for 1) from a bulk fetch (the default 24).
+
+    Never raises — `events.record` swallows its own failures, so a logging
+    outage cannot break reading (F-42).
+    """
+    events.record(
+        events.READING_PAGE,
+        user_id=None,
+        book_id=book_pk,
+        context={
+            "page": page,
+            "page_size": page_size,
+            "excerpt_pages": excerpt_pages,
+            "had_content": had_content,
+        },
+    )
+
+
 @router.get("/api/books/{book_id}/pages")
 def book_pages_route(
     book_id: int,
@@ -118,6 +151,10 @@ def book_pages_route(
     record = session.get(models.BookText, book_pk) if book_pk is not None else None
 
     if record is None:
+        # F-26: logged even though it is not reading. A request for a book we
+        # hold no text for is a content gap someone tried to fill, and costs
+        # nothing to record. had_content=False keeps it out of depth.
+        _record_page_turn(book_pk, page, page_size, excerpt_pages=0, had_content=False)
         # Honest empty state rather than invented prose. Section 18's
         # principle applied to content: unknown is reported, never fabricated.
         return {
@@ -144,6 +181,14 @@ def book_pages_route(
 
     start = (page - 1) * page_size
     window = pages[start : start + page_size]
+
+    # F-26. The reader pages past the end of the excerpt freely — its pager
+    # uses the book's full length (`currentBook.pages || 100`), so it will ask
+    # for page 300 of an 11-page excerpt. Those requests come back empty and
+    # must not count as reading deeper; had_content is what excludes them.
+    _record_page_turn(
+        book_pk, page, page_size, excerpt_pages=len(pages), had_content=bool(window)
+    )
 
     return {
         "items": [

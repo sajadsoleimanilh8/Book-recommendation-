@@ -47,8 +47,12 @@ RECOMMEND = "recommend"
 FEEDBACK = "feedback"
 COMMENT = "comment"
 PROGRESS = "progress"
+# F-26's answer: one row per page the reader actually turned. The reader UI
+# requests `page_size=1` per turn, so each request is one turn. This is the
+# relevance target's raw material — see ml/reading_depth.py.
+READING_PAGE = "reading_page"
 
-EVENT_TYPES = {SEARCH, BOOK_VIEW, RECOMMEND, FEEDBACK, COMMENT, PROGRESS}
+EVENT_TYPES = {SEARCH, BOOK_VIEW, RECOMMEND, FEEDBACK, COMMENT, PROGRESS, READING_PAGE}
 
 # `context` is JSONB and tempting to overfill. Keep it to what a ranking model
 # could actually use, and never put a raw request body in it — that is how
