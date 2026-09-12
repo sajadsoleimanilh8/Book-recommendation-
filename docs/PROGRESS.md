@@ -441,6 +441,91 @@ onto them are separate commits on purpose: the first is additive and changes
 no behaviour, the second will move every ranking and needs the golden
 baselines read rather than regenerated.
 
+### F-48 · All 6,307 Gutenberg books were mislabelled `language='it'` — **FIXED**
+
+Every Gutenberg row in `site_ready_books.json` carries `language='it'`, which
+`normalize_language` renders as `"It"`. A function-word check on 600 books
+with stored text found 600 English, 0 Italian — the entire Gutenberg slice of
+the catalogue was mislabelled Italian. This blocked F-47's English-default
+language filter outright: applying it as written would have hidden the only
+6,307 books with real descriptions and reading text from every English
+reader, and every existing test would still have passed, because none of them
+know what language a Gutenberg book is actually in.
+
+**Fixed by asking Gutenberg, not by trusting the 600-book sample.** The
+sample was unambiguous, but 600 of 6,307 is still a sample, and Gutenberg does
+hold real non-English texts — bulk-setting everything to `en` on the strength
+of a sample would have replaced one wrong blanket label with a probably-right
+one, the same shape of shortcut that produced the bug. `scripts/
+gutendex_language.py` re-derives the true label per book from gutendex
+(Project Gutenberg's own API), keyed on the `external_id` every row already
+carries. A 640-book live dry run came back 640/640 `it -> en`, matching the
+function-word check exactly, before anything was written.
+
+**Result, live, all 6,307 books: 6,307 `en`, 0 remaining, 0 anomalies.**
+Every single change across the whole run was `it -> en` — no book resolved to
+any other language.
+
+**Two things broke mid-run, both fixed rather than worked around:**
+
+1. The first version of the fetch only read page one of gutendex's paginated
+   response (32 results/page), so a batch of 100 silently repaired ~32 and
+   miscounted the rest as "not in gutendex" — the same absent-as-negative
+   shape as F-29, found by measuring a live response (`count=100,
+   page_results=32, next=yes`) rather than by reading the code. Fixed by
+   following `next` links, and treating a partial-page failure as a
+   whole-batch failure so no partial writes can happen.
+2. Docker's engine — not just the containers, the whole daemon — stopped
+   completely twice during the live run, and the script had no protection
+   against it: one long-lived session for the entire run, no `except` around
+   the commit, so `OperationalError` propagated up uncaught and the process
+   vanished with nothing to show for it beyond the last flushed log line.
+   Fixed by mirroring the F-30 pattern already established in `scripts/
+   gutenberg_pass.py` — roll back, log how far it got, stop cleanly rather
+   than crash or burn gutendex's rate-limited budget against a database that
+   cannot receive the writes — plus a fresh session per batch instead of one
+   session for the whole run, and `only_unresolved=True` so a resume only
+   re-touches what is actually left. A watchdog wrapper (restart Docker,
+   re-invoke, repeat) then finished the remaining 2,115 books unattended
+   across two more automatic resumes. Verified by sabotage: swapping the
+   `except` clause to the wrong exception type makes the new regression test
+   fail exactly as expected.
+
+**A second database needed the same correction, and almost went unnoticed.**
+`tests/conftest.py` unconditionally sets `POSTGRES_DB=digikitab_test` at
+import time — every `pytest` invocation targets that database regardless of
+what `POSTGRES_DB` is set to in the environment. This means the entire test
+suite, including every "full suite green" check run earlier in this session,
+has only ever exercised `digikitab_test`, never the `digikitab` database the
+live repair actually wrote to. The first golden-baseline comparison after the
+fix passed with zero drift — not because the fix has no ranking effect, but
+because `digikitab_test.books.language` was untouched and still said `'it'`
+for all 6,307 rows. Caught by checking `LANGUAGE_OVERLAY`'s own report
+(`changed: 0`) rather than trusting a clean run.
+
+Fixed by applying the same, already-100%-verified `it -> en` mapping directly
+to `digikitab_test` (confirmed first: identical row count, identical
+`external_id` ordering, same seed) — a plain `UPDATE`, not a second gutendex
+run, since gutendex had already answered this question conclusively and
+re-asking would only spend its rate-limited capacity to reconfirm a known
+fact. Durable: `books` is explicitly excluded from the per-session
+`TRUNCATE`, and `_ensure_test_database()`'s ingest only re-runs when the table
+is empty, so this will not be silently reverted by normal test runs.
+
+**With both databases actually corrected, one golden baseline moved — by
+score only, not by ranking.** `recommend_thoughtful_mood` rank 8's score
+drifted 0.4904 → 0.4907 (0.0003, just past the 0.0001 tolerance). All 9 ranks'
+*titles* were checked and matched exactly, at every position — confirmed by
+diffing the regenerated file against its predecessor line by line, not by
+trusting the regeneration. This is the expected shape of change: correcting
+6,307 books' `language` shifts the `StandardScaler` statistics that feed
+`lang_enc` for the whole catalogue by a hair, which can nudge a downstream
+score without moving anything's rank. Regenerated through the project's own
+`GOLDEN_REGENERATE=1` mechanism, reviewed before committing, not to make a
+failure go away.
+
+Full suite after: see the commit this entry ships with.
+
 ### F-49 · `CSV_FALLBACKS` points at four files that have never existed — OPEN, not fixed
 
 Found during the structure cleanup, logged rather than fixed: removing a
