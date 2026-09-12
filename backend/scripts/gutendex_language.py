@@ -49,6 +49,7 @@ import urllib.error
 import urllib.request
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from db import SessionLocal
 from models import Book
@@ -121,7 +122,29 @@ def fetch_languages(ids: list[str]) -> dict[str, str] | None:
     return out
 
 
-def run(limit: int, dry_run: bool = False) -> dict:
+def run(limit: int, dry_run: bool = False, only_unresolved: bool = True) -> dict:
+    """Repair Gutenberg language labels, resiliently.
+
+    `only_unresolved` skips rows already `language='en'`. On a first pass
+    that is everything; on a resume after an interruption it is what makes
+    the resume cheap — re-fetching a book from gutendex only to find
+    "unchanged" spends the scarce resource (gutendex's own capacity) for
+    nothing.
+
+    Two session scopes, not one for the whole run. The initial read is a
+    snapshot; each batch's write is its own short-lived session, so a
+    connection lost mid-run cannot poison every batch after it with "this
+    session is dead" the way one long-lived session would.
+
+    Mirrors the F-30 pattern used elsewhere in this codebase (scripts/
+    gutenberg_pass.py): `OperationalError` means the database itself is
+    gone — every remaining batch would fail identically, so stop cleanly
+    and say how far it got, rather than either crashing with a traceback or
+    burning the rest of the gutendex-request budget against a dead
+    database. `db_lost` in the return value is exactly that signal; the
+    caller resumes with the same command once Postgres is back, and
+    `only_unresolved` means the resume only re-touches what is left.
+    """
     counts = {
         "checked": 0,
         "updated": 0,
@@ -130,52 +153,77 @@ def run(limit: int, dry_run: bool = False) -> dict:
         "batch_failed": 0,
     }
     changes: dict[str, int] = {}
+    db_lost = False
 
     with SessionLocal() as session:
-        rows = session.execute(
-            select(Book.id, Book.external_id, Book.language)
-            .where(Book.source == "gutenberg", Book.external_id.isnot(None))
-            .order_by(Book.id)
-            .limit(limit)
-        ).all()
-        log.info(f"{len(rows)} Gutenberg book(s) to check (dry_run={dry_run})")
+        query = select(Book.id, Book.external_id, Book.language).where(
+            Book.source == "gutenberg", Book.external_id.isnot(None)
+        )
+        if only_unresolved:
+            query = query.where(Book.language != "en")
+        rows = session.execute(query.order_by(Book.id).limit(limit)).all()
 
-        by_external = {str(ext).strip(): (pk, lang) for pk, ext, lang in rows}
-        ids = list(by_external)
+    log.info(
+        f"{len(rows)} Gutenberg book(s) to check "
+        f"(dry_run={dry_run}, only_unresolved={only_unresolved})"
+    )
+    by_external = {str(ext).strip(): (pk, lang) for pk, ext, lang in rows}
+    ids = list(by_external)
 
-        for start in range(0, len(ids), BATCH):
-            batch = ids[start : start + BATCH]
-            found = fetch_languages(batch)
-            counts["checked"] += len(batch)
+    for start in range(0, len(ids), BATCH):
+        batch = ids[start : start + BATCH]
+        found = fetch_languages(batch)
+        counts["checked"] += len(batch)
 
-            if found is None:
-                # Leave these rows alone. They will be retried next run.
-                counts["batch_failed"] += len(batch)
-                time.sleep(PAUSE_SECONDS)
-                continue
-
-            for ext in batch:
-                pk, current = by_external[ext]
-                truth = found.get(ext)
-                if truth is None:
-                    counts["not_in_gutendex"] += 1
-                    continue
-                if (current or "").strip().lower() == truth:
-                    counts["unchanged"] += 1
-                    continue
-                key = f"{current} -> {truth}"
-                changes[key] = changes.get(key, 0) + 1
-                counts["updated"] += 1
-                if not dry_run:
-                    session.get(Book, pk).language = truth
-
-            if not dry_run:
-                session.commit()
-            if (start // BATCH) % 10 == 0:
-                log.info(f"  {counts['checked']}/{len(ids)}  {counts}")
+        if found is None:
+            # Leave these rows alone. They will be retried next run.
+            counts["batch_failed"] += len(batch)
             time.sleep(PAUSE_SECONDS)
+            continue
 
-    return {**counts, "changes": changes}
+        batch_changes: dict[str, tuple[int, str]] = {}
+        for ext in batch:
+            pk, current = by_external[ext]
+            truth = found.get(ext)
+            if truth is None:
+                counts["not_in_gutendex"] += 1
+                continue
+            if (current or "").strip().lower() == truth:
+                counts["unchanged"] += 1
+                continue
+            key = f"{current} -> {truth}"
+            changes[key] = changes.get(key, 0) + 1
+            counts["updated"] += 1
+            batch_changes[ext] = (pk, truth)
+
+        if not dry_run and batch_changes:
+            try:
+                with SessionLocal() as session:
+                    for pk, truth in batch_changes.values():
+                        session.get(Book, pk).language = truth
+                    session.commit()
+            except OperationalError as exc:
+                # The database itself went away (container stopped, machine
+                # slept). Every remaining batch would fail identically, so
+                # stop and say so rather than burning the rest of the
+                # gutendex budget on writes that cannot land. This batch's
+                # "updated" count above already happened in-memory only —
+                # correct it back out, since nothing was actually persisted.
+                counts["updated"] -= len(batch_changes)
+                counts["batch_failed"] += len(batch_changes)
+                log.error(f"database unreachable after {counts['checked']} checked: {exc}")
+                db_lost = True
+                break
+            except Exception as exc:
+                counts["updated"] -= len(batch_changes)
+                counts["batch_failed"] += len(batch_changes)
+                log.warning(f"write failed for a batch of {len(batch_changes)}: {exc}")
+
+        if (start // BATCH) % 10 == 0:
+            log.info(f"  {counts['checked']}/{len(ids)}  {counts}")
+        time.sleep(PAUSE_SECONDS)
+
+    return {**counts, "changes": changes, "db_lost": db_lost}
 
 
 def report() -> dict[str, int]:
