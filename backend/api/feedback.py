@@ -56,9 +56,17 @@ def feedback(payload: FeedbackRequest) -> Dict[str, Any]:
 
     return {
         "ok": True,
-        "message": "Feedback recorded — taste model updated.",
+        # Waiting-on-you #3 (PROGRESS.md): this used to say "taste model
+        # updated" and report taste_vector_dim, which is always 0 —
+        # `UserProfile.taste_vector` is never assigned anywhere in the
+        # codebase (F-46). The claim described a feature that does not
+        # exist. What actually happens on a rating: the bandit's exploration
+        # rate adjusts (below) and the rating is logged durably
+        # (`events.record`, F-42) for future model training. Said plainly
+        # rather than removed silently, so a caller does not have to guess
+        # why the old fields disappeared.
+        "message": "Feedback recorded.",
         "exploration_rate": round(profile.exploration_rate, 4),
-        "taste_vector_dim": len(profile.taste_vector) if profile.taste_vector is not None else 0,
     }
 
 

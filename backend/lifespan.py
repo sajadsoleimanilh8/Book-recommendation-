@@ -101,7 +101,13 @@ def startup():
     # F-20 (partial): the limit=5000 cap silently truncated the catalogue to
     # 5000 of 29975 books. Configurable now, and unbounded by default.
     main.BOOKS = load_books_raw(limit=main.BOOK_LOAD_LIMIT)
-    main.DATA_SOURCE = "json" if DATA_FILE.exists() else ("csv_fallback" if main.BOOKS else "none")
+    # F-49: this used to have a third branch, "csv_fallback", for a CSV chain
+    # that never existed in this repository and always fell through to [] —
+    # so main.BOOKS could never actually be non-empty while DATA_FILE.exists()
+    # was False. Removed along with the dead branch in
+    # services.catalogue.load_books_raw rather than left here reporting a
+    # data source that could not occur.
+    main.DATA_SOURCE = "json" if DATA_FILE.exists() else "none"
 
     if not main.BOOKS:
         # F-03: this path used to be reached silently and reported as
@@ -135,7 +141,7 @@ def startup():
     #   F-26: attach reading-depth evidence, the relevance target's input.
     # Independent of each other; language first because it corrects the
     # catalogue itself.
-    if main.DATA_SOURCE in ("json", "csv_fallback"):
+    if main.DATA_SOURCE == "json":
         _overlay_db_languages()
         _attach_reading_depth()
 

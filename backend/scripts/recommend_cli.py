@@ -13,12 +13,13 @@ a bug, so it moves here rather than being deleted). Behaviour unchanged;
 only the invocation path changes, from `python engine.py` to
 `python -m scripts.recommend_cli`.
 
-Note the CSV filenames below are the same four `main.py`'s
-`CSV_FALLBACKS` names and are equally hypothetical — none has ever
-existed in this repository (see F-49 in PROGRESS.md). This script has
-always fallen straight through to `DataLoader._synthetic()` in practice;
-recorded here rather than fixed, per this restructure's no-behaviour-
-change rule.
+Note the CSV filenames below are the same four names the app's own
+now-deleted `CSV_FALLBACKS` chain used to carry (F-49, PROGRESS.md) — all
+hypothetical, none has ever existed in this repository. This script has
+always fallen straight through to `DataLoader._synthetic()` in practice.
+It is a standalone smoke test, not the app's ingestion path, so F-49's
+deletion did not touch it; left as-is per this restructure's
+no-behaviour-change rule.
 """
 
 from ml.data_loader import DataLoader

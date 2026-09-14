@@ -11,7 +11,7 @@ B-4), so it cannot move without breaking the module-state contract
 conftest.py depends on.
 
 Path constants below are the other half of this move (RESTRUCTURE-NOTES
-B-6): PROJECT_ROOT, BACKEND_DIR and CSV_FALLBACKS are all computed from
+B-6): PROJECT_ROOT and BACKEND_DIR are computed from
 `__file__`, and this module sits one directory deeper than main.py did.
 `.parent`/`.parents[1]` become `.parents[1]`/`.parents[2]` throughout —
 an import re-anchor, not a logic change. Proven identical below by
@@ -25,7 +25,6 @@ several are live module state read by name from tests (B-4).
 
 from __future__ import annotations
 
-import csv
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -50,19 +49,6 @@ DATA_FILE_CANDIDATES = [
     BACKEND_DIR / "data" / "site_ready_books.json",
 ]
 DATA_FILE = next((p for p in DATA_FILE_CANDIDATES if p.exists()), DATA_FILE_CANDIDATES[0])
-
-# F-49 (PROGRESS.md): none of these four files has ever existed in this
-# repository's history. load_books_raw falls through to [] when reached,
-# same as if this list were empty. Logged, not fixed — a structural move
-# is not the place to change what the app does when the catalogue is
-# missing.
-CSV_FALLBACKS = [
-    Path(__file__).resolve().parents[1] / "merged_complete_dataset.csv",
-    Path(__file__).resolve().parents[1] / "google_books_dataset.csv",
-    Path(__file__).resolve().parents[1] / "dataset_gutenberg.csv",
-    Path(__file__).resolve().parents[1] / "bookg.csv",
-]
-
 
 def _safe_float(v: Any, d: float = 0.0) -> float:
     try:
@@ -245,17 +231,15 @@ def load_books_raw(limit: Optional[int] = None) -> List[Dict[str, Any]]:
                             continue
         return [_row_to_book(i, r) for i, r in enumerate(rows[:limit])]
 
-    csv_path = next((p for p in CSV_FALLBACKS if p.exists()), None)
-    if not csv_path:
-        return []
-
-    books = []
-    with csv_path.open("r", encoding="utf-8", newline="") as f:
-        for i, row in enumerate(csv.DictReader(f)):
-            if limit is not None and i >= limit:
-                break
-            books.append(_row_to_book(i, row))
-    return books
+    # F-49: a CSV fallback chain used to live here, naming four files that
+    # have never existed in this repository's history (`git log --all
+    # --name-status -- '*.csv'` returns nothing). It was removed rather than
+    # fixed with a real path, on the product owner's decision — there is no
+    # CSV ingestion route to restore. `DATA_FILE` missing now falls straight
+    # through to the synthetic-data path in `lifespan.startup`, same as
+    # before, just without a dead branch in between reporting a
+    # `data_source: "csv_fallback"` that could never actually occur.
+    return []
 
 def _books_to_df(books: List[Dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame([{

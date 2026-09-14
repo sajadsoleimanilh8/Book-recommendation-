@@ -222,6 +222,103 @@ def test_health_reports_search_readiness_without_gating_on_it(client):
         assert body["search_error"], "search is unavailable and says nothing"
 
 
+# --------------------------------------------------------------------------
+# F-50 — the questionnaire page's own options endpoint now exists
+# --------------------------------------------------------------------------
+
+def test_questionnaire_options_is_reachable(client):
+    """frontend/js/questionnair.js has always fetched this path and 404'd
+    silently, falling back to its own hardcoded questions. This is the real
+    endpoint, not a client-side patch."""
+    r = client.get("/api/questionnaire/options")
+    assert r.status_code == 200
+    questions = r.json()["questions"]
+    ids = {q["id"] for q in questions}
+    assert {"genre", "mood", "pace", "language", "popularity", "favorite_author"} <= ids
+
+
+def test_questionnaire_options_values_are_the_ones_the_engine_understands():
+    """The values are not just UI copy — mood, pace and popularity are
+    matched against exact vocabularies downstream (MOOD_NORMALISE,
+    PACE_PAGE_MAP, the literal popular/underrated check). An option here
+    that isn't in those vocabularies would silently fall through to "any"
+    rather than error — the same silent-drift shape as F-16."""
+    import sys
+
+    sys.path.insert(0, str(BACKEND))
+    import main  # noqa: F401 — must import before api.questionnaire, or api.questionnaire's own `import main` triggers a circular re-entry into main.py before this module has defined `router`
+    from domain.entities import MOOD_GENRE_MAP
+    from services.recommendation import QuestionerEngine
+
+    from api.questionnaire import questionnaire_options
+
+    questions = {q["id"]: q["options"] for q in questionnaire_options()["questions"]}
+
+    for mood in questions["mood"]:
+        if mood != "any":
+            assert mood in MOOD_GENRE_MAP, f"{mood!r} is not a real mood key"
+
+    for pace in questions["pace"]:
+        assert pace in QuestionerEngine.PACE_PAGE_MAP or pace == "any"
+
+
+def test_questionnaire_options_genre_actually_exists_in_the_catalogue(client):
+    """Offered genres come from the live catalogue, not a guessed list that
+    might not exist in the data at all.
+
+    Checked against main.BOOKS directly rather than /api/books/filter-options:
+    that endpoint sorts alphabetically and caps at 200 of what turns out to be
+    thousands of distinct raw genre/shelf strings, so common genres like
+    "Fiction" are not guaranteed to survive its truncation — a mismatch there
+    would be a fact about that endpoint's own trade-off, not about whether
+    this option list is grounded in real data."""
+    import main
+
+    real_lower = {str(b.get("genre", "")).strip().lower() for b in main.BOOKS}
+
+    r = client.get("/api/questionnaire/options")
+    genres = next(q["options"] for q in r.json()["questions"] if q["id"] == "genre")
+    assert genres and genres[-1] == "any"
+    for g in genres[:-1]:
+        assert g.lower() in real_lower, f"{g!r} does not appear in the real catalogue"
+
+
+# --------------------------------------------------------------------------
+# Waiting-on-you #3 — /api/feedback no longer claims a taste model
+# --------------------------------------------------------------------------
+
+def test_feedback_does_not_claim_a_taste_model(client):
+    """taste_vector is never assigned anywhere (F-46), so "taste model
+    updated" and taste_vector_dim described a feature that does not exist."""
+    books = client.get("/api/books?limit=1").json()["items"]
+    book_id = books[0]["id"]
+
+    r = client.post(
+        "/api/feedback", json={"user_id": "t", "book_id": book_id, "rating": 4}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "taste model" not in body["message"].lower()
+    assert "taste_vector_dim" not in body
+
+
+# --------------------------------------------------------------------------
+# F-34 — an invalid token is rejected wherever OptionalUser is used, not
+# just on the search endpoint it was originally found on
+# --------------------------------------------------------------------------
+
+def test_an_invalid_token_401s_on_every_optionaluser_route_not_just_search(client):
+    """get_current_user_optional is the single shared dependency behind
+    OptionalUser (auth.py), already fixed for OI-10/F-34 on the search
+    endpoint. This proves the fix is at the shared dependency, not
+    per-route, by hitting a different OptionalUser route directly."""
+    r = client.get(
+        "/api/books/1", headers={"Authorization": "Bearer not-a-real-token"}
+    )
+    assert r.status_code == 401
+    assert r.json()["detail"]["code"] == "token_invalid"
+
+
 def test_search_readiness_is_known_before_the_first_search(client):
     """It is warmed at startup. If it only loaded on first use, /health would
     report `false` until somebody searched — a health check that lies until

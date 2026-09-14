@@ -46,7 +46,7 @@ def health():
         # ML engine. Reporting ok:True with ml_ready:False would hide a dead
         # recommender behind a green check — the same blind spot as F-03.
         "ok": (
-            main.DATA_SOURCE in ("json", "csv_fallback")
+            main.DATA_SOURCE == "json"
             and len(main.BOOKS) > 0
             and main.RECOMMENDER is not None
             and getattr(main.RECOMMENDER, "_fitted", False)
@@ -61,9 +61,11 @@ def health():
         # F-03: this used to report only "json" or "csv_fallback", so a boot
         # onto synthetic data was indistinguishable from a healthy one.
         # "synthetic" and "none" are now reportable, and `ok` is False for
-        # both — serving fabricated books is not a healthy state.
+        # both — serving fabricated books is not a healthy state. "csv_fallback"
+        # itself is gone (F-49): it named a CSV chain that never existed in
+        # this repository and could never actually be reached.
         "data_source": main.DATA_SOURCE,
-        "using_real_data": main.DATA_SOURCE in ("json", "csv_fallback"),
+        "using_real_data": main.DATA_SOURCE == "json",
         # F-21: this was int(main.RECOMMENDER.cluster), but `cluster` is the
         # ClusteringModel object, not a number — so /health raised a 500
         # TypeError on every call where the ML engine had actually fitted.

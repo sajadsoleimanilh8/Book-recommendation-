@@ -95,6 +95,35 @@ def test_load_limit_does_not_silently_truncate():
     )
 
 
+def test_csv_fallback_chain_is_gone_not_reintroduced():
+    """F-49: CSV_FALLBACKS named four files that never existed in this
+    repository's history, so it was deleted rather than pointed at a real
+    path. Guards against it quietly coming back — e.g. via a merge or a
+    copy-pasted pattern from load_books_raw's json branch."""
+    src = (BACKEND / "services" / "catalogue.py").read_text(encoding="utf-8")
+    assert "CSV_FALLBACKS" not in src
+    import sys
+
+    sys.path.insert(0, str(BACKEND))
+    from services.catalogue import load_books_raw
+
+    assert not hasattr(sys.modules["services.catalogue"], "CSV_FALLBACKS")
+
+
+def test_missing_catalogue_file_returns_empty_not_a_csv_read(tmp_path, monkeypatch):
+    """F-49's functional half: with DATA_FILE absent, load_books_raw must
+    fall straight through to [] — there is no CSV path left to attempt."""
+    import sys
+
+    sys.path.insert(0, str(BACKEND))
+    import services.catalogue as catalogue
+
+    fake_missing = tmp_path / "does_not_exist.json"
+    monkeypatch.setattr(catalogue, "DATA_FILE", fake_missing)
+
+    assert catalogue.load_books_raw() == []
+
+
 # --------------------------------------------------------------------------
 # Catalogue quality baseline — the Phase 2 starting line (F-15)
 # --------------------------------------------------------------------------

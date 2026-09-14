@@ -139,12 +139,31 @@ Explicitly **not** built now (§8): RTL layout, locale routing, translation pipe
 |---|---|---|---|
 | 1 | **Google Books quota** | Only you can request it. Submitted, pending review. | 22,858 records frozen at 0% description |
 | 2 | **What is a good recommendation?** | Product definition, not a technical choice. Engagement, completion, explicit rating, or return visits — the answer decides what replaces F-26's circular target. | The ranker can only learn popularity until it is answered |
-| 3 | **`POST /api/feedback` tells users something untrue** | User-facing copy. It answers *"taste model updated"* and reports `taste_vector_dim`, which is always 0 — `taste_vector` is never assigned anywhere. Options: remove the claim, or build the taste model it describes. | Users are told about a feature that does not exist |
-| 4 | **Branch name** | `phase-2-enrichment` now carries six commits of Phase 3 work. Rename, or branch fresh. Nothing is pushed and there is no remote, so it is free either way. | Cosmetic, but the history reads wrong |
-| 5 | **System clock / OI-8** | Host setting. The machine slept repeatedly and Docker died four times; `powercfg /change standby-timeout-ac 0` fixes the sleep. If the real date is later than the machine's, commit timestamps are wrong too. | More lost unattended runs |
+| ~~3~~ | ~~`POST /api/feedback` tells users something untrue~~ | **Decided 2026-09-15: remove the claim.** See the entry below. | ✅ |
+| ~~4~~ | ~~Branch name~~ | **Decided 2026-09-15: keep `phase-2-enrichment`.** Not worth the rename. | ✅ |
+| ~~5~~ | ~~System clock / OI-8~~ | **Handled 2026-09-15** — see OI-8. | ✅ |
 
 Decision 2 is the one that gates real progress. Everything below F-26 in this
 document is groundwork for it, and it cannot be answered from the code.
+
+### Waiting-on-you #3 · `POST /api/feedback`'s false claim — **FIXED 2026-09-15**
+
+Decided: remove the claim rather than build the taste model it described.
+`"message": "Feedback recorded — taste model updated."` and `taste_vector_dim`
+both described `UserProfile.taste_vector`, which F-46 already established is
+never assigned anywhere in the codebase — the field was always 0.
+
+`api/feedback.py` now returns `"Feedback recorded."` and drops
+`taste_vector_dim` entirely, rather than reporting a permanently-zero number
+next to a message that no longer claims anything about it.
+`GET /api/profile/{user_id}` was checked too and left alone: it already
+reports `has_taste_vector` / `taste_vector_dim` as plain, honest state
+(`False` / `0`) with no accompanying claim of an update — the same shape of
+problem was not present there.
+
+Guarded by `test_feedback_does_not_claim_a_taste_model`
+(`tests/test_app_boots.py`), sabotage-checked: reverting the message string
+fails exactly that test.
 
 ## Structure restructure — S (2026-09-10)
 
@@ -284,26 +303,23 @@ two new tests. `test_no_cap_still_returns_unknown_priced_books` holds the
 other side, so the fix cannot overshoot into hiding books nobody asked to
 filter.
 
-### F-38 · `/api/books` silently ignores unknown query parameters — OPEN, **NEEDS DECISION**
+### F-38 · `/api/books` silently ignores unknown query parameters — **DECIDED AND SHIPPED**
 
-Found while testing OI-11. `GET /api/books?max_price=5` returns **all 29,975
-books with HTTP 200**. Not because the filter is broken — because the route
-never declared `max_price`, and FastAPI discards undeclared query parameters
-without complaint.
+Found while testing OI-11. `GET /api/books?max_price=5` returned **all
+29,975 books with HTTP 200**. Not because the filter was broken — because the
+route never declared `max_price`, and FastAPI discards undeclared query
+parameters without complaint.
 
-This is the same failure shape as OI-11 itself, one layer up: the caller
-believes they filtered, the server says 200, and the data says otherwise. Any
-client typo (`ratingmin`, `max_pages`) behaves identically.
+Same failure shape as OI-11 itself, one layer up: the caller believes they
+filtered, the server says 200, and the data says otherwise. Any client typo
+(`ratingmin`, `max_pages`) behaved identically.
 
-I did **not** add `max_price` to the route — that would be adding a price
-filter on the same day you decided not to offer one. The open question is
-narrower and yours:
-
-**Should undeclared query parameters 422 instead of being ignored?** It is the
-honest behaviour, and it would break any existing client that sends a
-parameter this API never had. Low risk today (one frontend, no external
-consumers), higher later.
-
+**Decided (2026-09-15, reconfirmed): 422 undeclared query parameters.**
+Already implemented and live by the time this was reconfirmed — see the
+`api/middleware.py` entry further down this document for the full
+implementation writeup (per-route resolution, sub-dependency walking, cache
+busters tolerated, eight tests). This entry is kept only as the original
+discovery record; do not read it as still open.
 
 See F-36. `max_price` currently treats unknown as 0, so "under $5" returns
 everything. Excluding unknown-price books is accurate but returns an empty
@@ -526,13 +542,15 @@ failure go away.
 
 Full suite after: see the commit this entry ships with.
 
-### F-49 · `CSV_FALLBACKS` points at four files that have never existed — OPEN, not fixed
+### F-49 · `CSV_FALLBACKS` points at four files that have never existed — **FIXED, deleted 2026-09-15**
 
-Found during the structure cleanup, logged rather than fixed: removing a
+Found during the structure cleanup, logged rather than fixed then: removing a
 fallback branch changes what the app does when the catalogue is missing,
-which is a behaviour change, not a cleanup.
+which is a behaviour change, not a cleanup — that call belonged to the
+product owner, not a structural pass.
 
-`main.py:193` defines a fallback chain for catalogue loading:
+`main.py:193` (later `services/catalogue.py`) defined a fallback chain for
+catalogue loading:
 
 ```python
 CSV_FALLBACKS = [
@@ -547,17 +565,27 @@ CSV_FALLBACKS = [
 these four files has existed in any commit in this repository's history,
 and none is on disk. `load_books_raw` reaches the branch only when
 `site_ready_books.json` is absent, at which point it finds no CSV either
-and returns `[]` — so the effective behaviour is already the synthetic-data
+and returns `[]` — so the effective behaviour was already the synthetic-data
 path (F-03), just reached one dead branch later.
 
-Costless at runtime. It matters because it reads as a supported ingestion
-route: `DATA_SOURCE` can still be set to `"csv_fallback"` and `/health`
-would report it, describing a mode that cannot occur.
+**Decided (2026-09-15): delete, not restore.** There is no CSV ingestion
+route to bring back. `load_books_raw` now falls straight through to `[]`
+when `DATA_FILE` is missing, with no read attempt in between.
+`DATA_SOURCE` can no longer be `"csv_fallback"` — `lifespan.startup` and
+`/health` (`api/health.py`) both collapsed from a three-way
+`"json" / "csv_fallback" / "none"` check down to `"json" / "none"`, since the
+middle value could never actually occur. The unrelated CLI smoke test
+(`scripts/recommend_cli.py`) hardcodes the same four filenames independently
+and was left alone — it is not the app's ingestion path, and touching it
+would be a second, unasked-for change.
 
-**Decide:** delete the branch and the `csv_fallback` data source, or
-restore a real CSV path if one is wanted. Not for a structural pass.
+Guarded by two tests in `tests/test_data_loading.py`:
+`test_csv_fallback_chain_is_gone_not_reintroduced` (the symbol must not
+exist) and `test_missing_catalogue_file_returns_empty_not_a_csv_read` (the
+functional behaviour). Sabotage-checked: reintroducing a CSV read behind a
+fabricated single-file fallback fails the first test.
 
-### F-50 · The questionnaire page calls an endpoint that is not registered — OPEN, not fixed
+### F-50 · The questionnaire page calls an endpoint that is not registered — **FIXED, built 2026-09-15**
 
 `frontend/js/questionnair.js:72`:
 
@@ -565,15 +593,50 @@ restore a real CSV path if one is wanted. Not for a structural pass.
 const response = await fetch(`${API_BASE}/api/questionnaire/options`);
 ```
 
-`/api/questionnaire/options` is not among the 45 registered OpenAPI
-operations, and matches no route decorator in `main.py` — only
-`POST /api/questionnaire` exists. Every call returns 404.
+`/api/questionnaire/options` was not among the 45 registered OpenAPI
+operations, and matched no route decorator in `main.py` — only
+`POST /api/questionnaire` existed. Every call returned 404, silently: the
+client has its own try/catch that falls back to a hardcoded question set,
+which is why nobody noticed live.
 
 Same family as F-16 (drifted frontend/backend contracts), found the same
 way: reading the client against the route list rather than the client
-against itself. Whether the fix is a new endpoint or a client change is a
-product question about where the questionnaire's options should come from,
-so it is logged, not guessed at.
+against itself.
+
+**Decided (2026-09-15): build the real endpoint, do not patch the client.**
+`GET /api/questionnaire/options` (`api/questionnaire.py`) now exists,
+returning `{"questions": [...]}` in the exact shape the client already
+expects (`id`, `text`, `options`) — the client itself needed no change.
+
+**The values are not just UI copy.** `mood`, `pace`, `language` and
+`popularity` are matched against exact vocabularies downstream
+(`QuestionerEngine.MOOD_NORMALISE`, `.PACE_PAGE_MAP`, the literal
+`"popular"`/`"underrated"` checks in `_filter_df`, and the language column's
+two-letter codes) — an option that isn't in those vocabularies would not
+error, it would silently fall through to `"any"`, the same silent-drift
+shape F-16 already cost this project once. `mood`'s options are therefore
+built directly from `MOOD_GENRE_MAP`'s own keys, not a second hand-written
+list that could drift from it. `genre` is different — `_filter_df` matches
+it with a case-insensitive substring search, so any real string works — and
+is built from the ten most common non-`"Unknown"` genres actually present in
+`main.BOOKS`, rather than a guessed list.
+
+**A related, unfixed observation surfaced while verifying this against real
+data, not part of this fix.** Cross-checking the new genre list against
+`GET /api/books/filter-options` (F-16) found that endpoint's `uniq()` helper
+sorts genres alphabetically and truncates at 200 — and the catalogue holds
+thousands of distinct raw genre/shelf strings (Goodreads-style tags like
+`"35mm cameras"`, `"aboriginal australians"`), so common genres like
+`"Fiction"` are **not guaranteed to survive that truncation**. Not a defect
+in this fix — the new endpoint reads `main.BOOKS` directly, not through
+`filter-options` — but worth a look separately if `filter-options`'s genre
+list is ever relied on as complete.
+
+Guarded by three tests in `tests/test_app_boots.py`: reachability, that the
+returned mood/pace values are real members of the engine's own vocabulary
+constants, and that the returned genres actually exist in `main.BOOKS`.
+Sabotage-checked: injecting a mood value absent from `MOOD_GENRE_MAP` fails
+the vocabulary test.
 
 ### F-47 · `POST /api/recommend` cannot filter by language at all — **FIXED**
 
@@ -1100,13 +1163,14 @@ currently runs on TF-IDF+SVD, which works and cost nothing. Switching later is
 there. **Recommendation:** wait until that training run finishes, then install
 into a virtualenv rather than the global interpreter.
 
-### OI-8 · Windows sleep is the root cause of the lost runs — **HOST SETTING, NOT MINE TO CHANGE**
+### OI-8 · Windows sleep is the root cause of the lost runs — **HANDLED BY THE PRODUCT OWNER, 2026-09-15**
 The containers now restart with the daemon and a supervisor relaunches dead
 passes, but neither prevents the host from sleeping mid-run. Long unattended
 passes will keep being interrupted until the power plan is changed
 (`powercfg /change standby-timeout-ac 0`) or the runs move to a machine that
 stays awake. Flagged rather than changed: altering a developer's power
-settings is not a repository decision.
+settings is not a repository decision — the product owner applied it
+directly on the host.
 
 ### OI-7 · Google Books quota is the binding constraint — **NEEDS DECISION**
 Measured: ~1,000 queries/day against 12,786 remaining English records, one to
@@ -1561,25 +1625,41 @@ column was recording the model already (that was deliberate); nothing was
 than a test passing. This one was written to check authorization and found a
 correctness bug in ranking.*
 
-### F-34 · An invalid token silently becomes an anonymous request — OPEN, **NEEDS DECISION**
+### F-34 · An invalid token silently becomes an anonymous request — **CLOSED, was already covered by OI-10**
 
-`get_current_user_optional` returns `None` for a forged or expired token in
-exactly the same way it does for no token at all. So a caller with a bad token
-gets **200 with anonymous results** rather than 401.
+`get_current_user_optional` used to return `None` for a forged or expired
+token in exactly the same way it does for no token at all. So a caller with a
+bad token got **200 with anonymous results** rather than 401.
 
-For semantic search this is more than cosmetic: a user whose token expired
-silently stops seeing their own private passages, and nothing tells them why.
-The search looks like it worked and quietly returned less.
+For semantic search this was more than cosmetic: a user whose token expired
+silently stopped seeing their own private passages, and nothing told them why.
+The search looked like it worked and quietly returned less.
 
-Not fixed here, deliberately. `OptionalUser` is shared by every read endpoint,
-so changing it means expired tokens start returning 401 across the API and the
-frontend has to handle that — a product decision about session expiry
-behaviour, not a patch to make inside a search PR (§2, one deliberate change
-at a time).
+Not fixed at the time, deliberately: `OptionalUser` is shared by every read
+endpoint, so changing it meant expired tokens would start returning 401
+across the whole API — a product decision about session expiry behaviour,
+not a patch to make inside a search PR (§2, one deliberate change at a
+time). Logged as an `xfail(strict=True)` in `test_search_endpoint.py` and as
+OI-10.
 
-Logged as an `xfail(strict=True)` in `test_search_endpoint.py`, the same
-pattern used for F-22 and F-26: the moment somebody fixes it, the suite says
-so loudly. Logged as OI-10.
+**Checked 2026-09-15, per the product owner's instruction to verify OI-10's
+fix already covers this before applying anything new: it does, fully.**
+`get_current_user_optional` (`auth.py`) is the *single* shared dependency
+behind `OptionalUser`, used by every route that needs it — currently
+`api/search.py` (where this was first found and fixed) and
+`api/books.py::book_detail`. OI-10's fix lives at that one shared point, not
+per-route, so both call sites already raise 401 with `code: "token_invalid"`
+or `"token_expired"` rather than downgrading to anonymous. No code change was
+needed here; the `xfail` in `test_search_endpoint.py` was already converted
+to a real, passing regression test when OI-10 shipped.
+
+Added one more direct test,
+`test_an_invalid_token_401s_on_every_optionaluser_route_not_just_search`
+(`tests/test_app_boots.py`), hitting `/api/books/1` rather than search — to
+demonstrate the fix is genuinely at the shared dependency and not an
+accident of the one route it was first noticed on. Sabotage-checked:
+reverting `get_current_user_optional` to return `None` on any decode failure
+fails exactly that test.
 
 ### F-33 · This machine is running a second heavy ML workload — **CONTEXT, NEEDS AWARENESS**
 
