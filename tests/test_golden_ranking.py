@@ -191,7 +191,20 @@ def test_recommender_golden(recommender, name):
     profile = UserProfile(**PROFILE_SCENARIOS[name])
     results = recommender.recommend_by_profile(profile, n=N_RESULTS)
 
-    prefix = deterministic_prefix_length()
+    # F-47 follow-up (see the matching note in test_questionnaire_golden for
+    # the full story). "no_preferences" rank 9 was found, while reviewing
+    # F-47's diff, to return a *different* one of two near-tied books across
+    # separate fresh fits — while agreeing every time within one fit. Same
+    # affected pair ("Managing Tourism and Hospitality Services" /
+    # "Plant Nutrition — Molecular Biology and Genetics") as
+    # "popular_english"'s tail, so almost certainly the same root cause
+    # (most likely GPU floating-point non-determinism in the MiniLM
+    # embedding pass feeding a near-tied score, not anything F-47 changed
+    # directly). Ranks 1-8 were stable across every fresh-fit check
+    # performed; capped here rather than pinning a coin flip.
+    MAX_SAFE_PREFIX = {"no_preferences": 8}
+
+    prefix = min(deterministic_prefix_length(), MAX_SAFE_PREFIX.get(name, N_RESULTS))
     _compare(
         f"recommend_{name}",
         _fingerprint(results, prefix),
@@ -402,10 +415,56 @@ def test_questionnaire_golden(questioner, name):
     answers = QUESTIONNAIRE_SCENARIOS[name]
     results = questioner.recommend_from_answers(answers, n=N_RESULTS)
 
-    # recommend_from_answers calls recommend_by_profile(n=n*2) then filters,
-    # so how many survive is data-dependent. Pin whatever deterministic
-    # prefix the fixture recorded, capped at the split point for n*2.
-    prefix = min(len(results), deterministic_prefix_length(N_RESULTS * 2))
+    # recommend_from_answers calls recommend_by_profile(n=n*2) internally,
+    # then intersects the result with _filter_df's output and truncates to
+    # n. The bandit's exploration slots live at the TAIL of that internal
+    # n*2 list (deterministic_prefix_length(n*2)) — not the tail of this
+    # method's own n-item output. If enough of the internal deterministic
+    # items get removed by the title intersection, an exploration-random
+    # item could in principle be pulled forward into a position THIS
+    # method's visible output shows, at a rank the naive formula below does
+    # not predict. Calling twice and taking the agreed-upon prefix guards
+    # against exactly that — the same reasoning
+    # `test_recommender_is_deterministic_within_a_process` relies on for the
+    # simple case.
+    #
+    # It does NOT guard against a different, and initially confusing,
+    # instability found while regenerating "popular_english" after F-47:
+    # ranks 9-10 there returned a *different* pair of near-tied books
+    # across separate fresh fits (across pytest sessions / process
+    # restarts), while 15 repeated calls WITHIN one fit agreed every time.
+    # Calling twice, as this test does, cannot catch that — both calls run
+    # against the same fit, where the answer is deterministic by
+    # definition. The likely cause is KMeans clustering (which feeds
+    # cluster_match, one of the ranking features) not being seeded, so it
+    # settles into a different clustering solution on each fit; two
+    # candidates here are close enough (~0.0005-0.005 apart) that which one
+    # wins is sensitive to which solution that fit happened to find.
+    #
+    # F-47's language filter did not create this — it shifted which
+    # candidates land in this scenario's near-tied tail, which is what
+    # exposed a pre-existing gap. Properly fixing it means seeding every
+    # source of fit-time randomness, which touches the core ML fit and
+    # deserves its own review rather than a side effect of a language
+    # filter (logged as a separate finding, docs/PROGRESS.md). Until then,
+    # a manual, evidence-based cap: ranks 1-8 were stable across every
+    # check performed (the pre-F-47 baseline, multiple regenerations, and
+    # the 15-call repeat above); 9-10 were not, so they are not pinned.
+    MAX_SAFE_PREFIX = {"popular_english": 8}
+
+    repeat = questioner.recommend_from_answers(answers, n=N_RESULTS)
+    agreement = 0
+    for a, b in zip(results, repeat):
+        if a["title"] != b["title"]:
+            break
+        agreement += 1
+    prefix = min(
+        len(results),
+        agreement,
+        deterministic_prefix_length(N_RESULTS * 2),
+        MAX_SAFE_PREFIX.get(name, N_RESULTS),
+    )
+
     _compare(
         f"questionnaire_{name}",
         _fingerprint(results, prefix),

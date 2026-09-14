@@ -23,6 +23,16 @@ class UserProfile:
     preferred_genres: list[str] = field(default_factory=list)
     preferred_authors: list[str] = field(default_factory=list)
     mood: str = ""
+    # F-47. English by default; "any" opts out entirely. Before this,
+    # POST /api/recommend had no way to express a language preference at
+    # all — the questionnaire's own filter existed, but the direct
+    # recommend path was structurally missing the field. See
+    # services.recommendation.language_mask for how this is applied: it
+    # excludes only *confirmed* other-language books and lets
+    # unknown-language ones through, deliberately — see that docstring
+    # for why treating "unknown" as "not English" would be wrong (the
+    # same lesson OI-11 and F-29 already paid for elsewhere).
+    language: str = "en"
     rating_history: dict[str, float] = field(default_factory=dict)
     viewed_books: list[str] = field(default_factory=list)
     taste_vector: Optional[np.ndarray] = None

@@ -48,6 +48,12 @@ def recommend(payload: RecommendRequest) -> Dict[str, Any]:
     started = time.perf_counter()
     profile = main.get_profile(payload.user_id)
 
+    # F-47. Unconditional, unlike the fields below: RecommendRequest.language
+    # always carries a real value ("en" by default, "any" to opt out), so
+    # there is no "the caller didn't mention it" case to preserve a cached
+    # profile's prior value for, the way there is for mood/genre/author.
+    profile.language = payload.language
+
     if payload.feeling:
         profile.mood = payload.feeling.lower().strip()
     if payload.genre:

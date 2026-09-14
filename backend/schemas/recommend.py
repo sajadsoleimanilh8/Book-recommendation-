@@ -20,6 +20,12 @@ class FilterRequest(BaseModel):
 
 class RecommendRequest(BaseModel):
     user_id: str = "guest"
+    # F-47. English by default, matching the product decision recorded in
+    # docs/PROGRESS.md. "any" opts out. Confirmed non-English books are
+    # excluded; books with no language data recorded are not (see
+    # Recommender.recommend_by_profile) — absence of a language label is
+    # not evidence the book isn't English.
+    language: str = "en"
     max_price: Optional[float] = None
     genre: Optional[str] = None
     favorite_author: Optional[str] = None

@@ -575,7 +575,7 @@ against itself. Whether the fix is a new endpoint or a client change is a
 product question about where the questionnaire's options should come from,
 so it is logged, not guessed at.
 
-### F-47 · `POST /api/recommend` cannot filter by language at all — OPEN, **NEEDS DECISION**
+### F-47 · `POST /api/recommend` cannot filter by language at all — **FIXED**
 
 Surfaced by the F-26 diff review, not caused by it. `thoughtful_mood` rank 3
 became **아웃라이어** — Gladwell's *Outliers*, Korean edition. Semantically a
@@ -610,6 +610,110 @@ option is to make the parameter required, which breaks callers loudly rather
 than quietly.
 
 Not choosing that unilaterally. Logged with the evidence.
+
+**Decided (2026-09-14): default to English, "any" opts out.** Implementation:
+
+* `UserProfile.language: str = "en"` (`domain/entities.py`), `RecommendRequest.
+  language: str = "en"` (`schemas/recommend.py`), wired through in
+  `api/recommend.py`.
+* `services.recommendation.language_mask(column, requested)` — a free
+  function, not inlined, because `recommend_by_profile`'s actual candidate
+  pool is capped at ~150 by the ANN shortlist and then reshuffled by the
+  bandit's exploration slots, which makes testing the filter logic through
+  the full pipeline unreliable (see below). Tested directly against a plain
+  pandas Series instead.
+
+**The design decision that mattered: unknown language is not excluded.**
+32.8% of the catalogue (9,842 books, mostly Goodreads) carries no language
+label at all. The questionnaire's own pre-existing filter
+(`QuestionerEngine._filter_df`) excludes a book the instant its language is
+unrecorded, because `"unknown".startswith("en")` is `False` — fine as an
+*opt-in* filter a user deliberately reaches for, but copying that pattern into
+a filter that is now **on by default** would have silently dropped a third of
+the catalogue from every recommendation nobody asked to be filtered. That is
+the exact "unknown is not a negative signal" mistake OI-11 (price) and F-29
+(provider lookups) already cost this project real damage to learn — here it
+would have applied more broadly than either, since it runs unless the caller
+opts out. `language_mask` excludes a row only when its language is
+*confirmed* to be something else; a row with no language on record passes
+through un-filtered. Verified by sabotage: dropping the pass-through term
+fails exactly the two tests written for it and nothing else
+(`tests/test_language_filter.py`).
+
+**A second, unintended consequence found while reviewing the diff, before it
+shipped.** `UserProfile`'s new default is shared by every caller that
+constructs one — including `QuestionerEngine._build_profile`, which never set
+`profile.language` at all. That silently pulled the *new* on-by-default
+English filter into the questionnaire's ML-scored candidate generation, even
+when the questionnaire's own, separately-decided answer said `language: "any"`
+— contradicting `_filter_df`'s already-correct handling of that same answer
+one line later in the same method. Fixed by having `_build_profile` explicitly
+mirror `answers.get("language", "any")` into the profile, so F-47's new
+default reaches only the path it was scoped to (`/api/recommend`) and the
+questionnaire's pre-existing behaviour is untouched. Caught by running the
+golden suite and finding three questionnaire scenarios failing that had no
+business being affected by a change scoped to a different endpoint — not by
+reasoning about it in advance.
+
+**A test that would have passed either way, caught before it shipped.** The
+first version of `tests/test_language_filter.py` asserted end to end, through
+`recommend_by_profile(n=2000)`, that an unrecorded-language book's presence in
+the result set didn't change with the filter on vs. off. It passed — with the
+fix in place *and* with the fix deliberately removed. The pipeline never
+returns more than ~150 of the requested 2,000 results (the ANN shortlist cap),
+and which of those 150 include any given book is also reshuffled by the
+bandit's exploration slots, so an end-to-end sample this small proves nothing
+either way. Rewritten to test `language_mask` directly against a plain
+`pandas.Series` — deterministic, fast, and this time verified by sabotage to
+actually fail when the fix is removed.
+
+**A deeper, pre-existing instability found while reviewing the golden diff,
+out of scope to fix here.** Regenerating `questionnaire_popular_english`
+after this change returned a *different* random book at rank 10 on repeated
+regeneration — never the same one twice. Investigation (documented in the
+test file, `tests/test_golden_ranking.py::test_questionnaire_golden`) found
+the cause is not this filter: `recommend_from_answers` calls
+`recommend_by_profile(n=n*2)` internally, whose bandit exploration slots live
+at the tail of that internal list, then intersects the result with
+`_filter_df`'s separately-filtered set and truncates to `n`. If the language
+filter removes enough of the internal deterministic items, an
+exploration-random item can be pulled forward into a position the test's
+prefix formula does not predict — the formula was written for the simple,
+unfiltered case and never accounted for this method's extra filter-and-
+truncate step. A second, separate instability was also found — this one
+**not** call-to-call random but fit-to-fit: two near-tied candidates at
+`no_preferences` rank 9 and `popular_english`'s tail returned in different
+order across separate fresh model fits while agreeing every time within one
+fit, which rules out the bandit (its exploration is unseeded and would vary
+within a fit too) and rules out `MiniBatchKMeans` (`random_state=42` is
+already set). The likely cause is GPU floating-point non-determinism in the
+MiniLM embedding pass — not bit-for-bit reproducible across CUDA runs — since
+that is the one input to the ranking pipeline that is neither seeded nor
+cached across fits and would explain tiny score differences flipping a
+near-tied comparison's winner. Not investigated further or fixed: it touches
+the core ML fit and deserves its own review, not a side effect of a language
+filter that merely shifted which candidates land in a near-tied zone and
+exposed a gap that was already there. Both golden tests now use an
+evidence-based safe prefix (empirical agreement across two calls for the
+call-to-call case; a manually verified cap, `MAX_SAFE_PREFIX`, for the
+fit-to-fit case) rather than trusting the formula or a single regeneration —
+see the code comments at both sites for the full reasoning and the exact
+titles involved.
+
+*Process note, worth recording precisely because it cost real time: my own
+ad-hoc verification scripts for this investigation did not set
+`POSTGRES_DB=digikitab_test`, so they ran against the production `digikitab`
+database — which has materially different accumulated interaction/reading-
+depth data from this session's own earlier testing — rather than the clean
+`digikitab_test` database `tests/conftest.py` forces for the actual suite.
+This produced a substantially different, more alarming-looking ranking result
+for `thoughtful_mood` than what the real tests ever saw, and very nearly led
+to over-investigating a problem that didn't exist in the database that
+matters. `tests/conftest.py` forcing `POSTGRES_DB` regardless of the
+environment was already logged once this session (F-48's writeup) for
+exactly this reason; this is the second time it has cost real verification
+time, this time on the diagnosing side rather than the "which database did I
+just fix" side.*
 
 ### F-46 · `recommend_by_profile` had never used content similarity at all — **FIXED**
 
@@ -1854,6 +1958,7 @@ Carried deliberately, with the reason. Each has a closing phase.
 | **F-26a** | **Reading depth is measured against the excerpt, not the book.** `book_texts` holds ~11 opening pages (20,358 chars avg), so depth means "did the opening hold the reader", not "how much of the book was read". Normalised by excerpt length because against a 300-page book every reader would score ≤ ~4% | Needs whole-book text. When it lands: switch the denominator in `services/reading_depth.py` to the full page count, re-baseline, and expect depth scores to fall | **Phase 5** |
 | F-11 | Unmounted second frontend | Product owner deferred — OI-1 | Phase 7 |
 | F-20 | Full ML refit on every boot, no artefact persistence | Partially addressed in PR 1 (`limit` cap) | Phase 1 |
+| **F-51** | **Ranking is not reproducible across separate model fits, for near-tied candidates.** Found while reviewing F-47's golden diff: two candidates ~0.001-0.005 apart in score returned in different order across separate fresh fits of the identical code and data, while agreeing every time within one fit. Rules out the bandit (unseeded, would vary within a fit too) and `MiniBatchKMeans` (`random_state=42` already set). Suspected cause: GPU floating-point non-determinism in the MiniLM embedding pass — the one input to ranking that is neither seeded nor cached across fits. Currently worked around in the golden tests with an evidence-based safe prefix (`MAX_SAFE_PREFIX` in `test_golden_ranking.py`), not fixed at the source | Needs isolating the actual source (start by comparing raw MiniLM embedding output across two fresh fits on identical input, bit for bit) and either a deterministic CUDA mode or a documented, accepted tolerance. Touches the core ML fit; deserves its own review | Phase 8 (evaluation) |
 
 ---
 

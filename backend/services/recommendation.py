@@ -54,6 +54,43 @@ from services.reading import ReminderEngine
 log = logging.getLogger(__name__)
 
 
+def language_mask(column: pd.Series, requested: str) -> pd.Series:
+    """Which rows of `column` satisfy a language preference — F-47.
+
+    English by default (`requested="en"`); `"any"` opts out entirely. Prefix
+    match against `services.catalogue.normalize_language`'s output, mirroring
+    the questionnaire's own filter (`QuestionerEngine._filter_df`) — but NOT
+    copying it exactly. That filter excludes a book the instant its language
+    is unrecorded, because `"unknown".startswith("en")` is `False`. 32.8% of
+    this catalogue (9,842 books, mostly Goodreads) carries no language label
+    at all — copying that pattern into a filter that is now *on by default*
+    would silently drop a third of the catalogue from every recommendation
+    nobody asked to be filtered. That is the exact "unknown is not a negative
+    signal" mistake OI-11 (price) and F-29 (provider lookups) already cost
+    this project real damage to learn.
+
+    So: exclude a row only when its language is *confirmed* to be something
+    else. A row with no language on record passes through un-filtered — we
+    simply do not know, and "do not know" must not be read as "not English".
+
+    A free function, not inlined into `recommend_by_profile`, on purpose:
+    that method's actual candidate pool is capped at ~150 by the ANN
+    shortlist and then further shuffled by the bandit's exploration slots, so
+    testing this logic through the full pipeline is unreliable — the same
+    profile and filter can appear to include or exclude a given book from one
+    call to the next for reasons that have nothing to do with the filter
+    itself. Tested directly, against the full column, instead.
+    """
+    requested = (requested or "").strip().lower()
+    if not requested or requested == "any":
+        return pd.Series(True, index=column.index)
+
+    normalized = column.astype(str).str.lower()
+    matches_requested = normalized.str.startswith(requested, na=False)
+    unrecorded = normalized == "unknown"
+    return matches_requested | unrecorded
+
+
 class Recommender:
     WEIGHTS = {"content": 0.28, "cf": 0.24, "ltr": 0.32, "bandit": 0.16}
 
@@ -170,6 +207,8 @@ class Recommender:
         if profile.disliked_keywords:
             mask &= ~self.df["description"].apply(
                 lambda d: any(k.lower() in d.lower() for k in profile.disliked_keywords))
+
+        mask &= language_mask(self.df["language"], profile.language)
 
         candidates = self.df[mask]
         if len(candidates) < 5:
@@ -525,6 +564,22 @@ class QuestionerEngine:
         author = answers.get("favorite_author", "").strip()
         if author:
             profile.preferred_authors = [author]
+
+        # F-47, applied here deliberately rather than left at the dataclass
+        # default. `recommend_from_answers` passes this profile into
+        # `recommend_by_profile`, whose language filter would otherwise
+        # silently default to "en" — even when this method's OWN, separately
+        # decided `_filter_df` (a few lines below) is applying the
+        # questionnaire's actual answer, which defaults to "any". Without
+        # this line, a user who answers "any" (or never sees a language
+        # question at all) would still have the ML-scored half of this
+        # method's results narrowed to English, contradicting the filtered
+        # candidate set they were told to draw from. Explicitly mirroring
+        # `_filter_df`'s own default keeps the two halves of this method in
+        # agreement, and leaves the questionnaire's pre-existing, separately
+        # decided behaviour (opt-in language filtering) untouched by F-47 —
+        # which is scoped to the direct /api/recommend path, not this one.
+        profile.language = answers.get("language", "any").strip().lower() or "any"
 
         return profile
 

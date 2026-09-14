@@ -2,7 +2,7 @@
   "meta": {
     "scenario": {},
     "n": 10,
-    "deterministic_prefix": 9,
+    "deterministic_prefix": 8,
     "note": "positions beyond the prefix are bandit exploration and are not pinned"
   },
   "results": [
@@ -10,31 +10,31 @@
       "rank": 1,
       "title": "Tan Lines",
       "author": "Katherine Applegate",
-      "final_score": 0.8641
+      "final_score": 0.8678
     },
     {
       "rank": 2,
       "title": "The Shepherd's Crown",
       "author": "Terry Pratchett",
-      "final_score": 0.8222
+      "final_score": 0.8259
     },
     {
       "rank": 3,
       "title": "The Floating Islands",
       "author": "Rachel Neumeier",
-      "final_score": 0.77
+      "final_score": 0.7755
     },
     {
       "rank": 4,
       "title": "Slowly, I Start to See",
       "author": "John M. Schreiner",
-      "final_score": 0.7375
+      "final_score": 0.7413
     },
     {
       "rank": 5,
       "title": "Sustainable Living For Dummies",
       "author": "Michael Grosvenor",
-      "final_score": 0.7018
+      "final_score": 0.7074
     },
     {
       "rank": 6,
@@ -52,13 +52,7 @@
       "rank": 8,
       "title": "The Vegetarian Slow Cooker",
       "author": "Judith Finlayson",
-      "final_score": 0.6465
-    },
-    {
-      "rank": 9,
-      "title": "Plant Nutrition — Molecular Biology and Genetics",
-      "author": "G. Gissel-Nielsen, A. Jensen",
-      "final_score": 0.6427
+      "final_score": 0.6464
     }
   ]
 }
