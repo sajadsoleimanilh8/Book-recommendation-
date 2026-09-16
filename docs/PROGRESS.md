@@ -1172,11 +1172,95 @@ stays awake. Flagged rather than changed: altering a developer's power
 settings is not a repository decision — the product owner applied it
 directly on the host.
 
-### OI-7 · Google Books quota is the binding constraint — **NEEDS DECISION**
-Measured: ~1,000 queries/day against 12,786 remaining English records, one to
-two queries each. That is two to four weeks of wall-clock at the current
-allowance. See F-31. If the increase does not land, the choice is between
-Open Library-only coverage for the English set or a standing ~800/day job.
+### OI-7 · Google Books quota is the binding constraint — **DECIDED AND SHIPPED, 2026-09-16**
+
+Measured: ~1,000 queries/day against 12,671 remaining English records (of
+22,818 pending overall), one to two queries each. That is two to four weeks
+of wall-clock at the current allowance. See F-31.
+
+**Decision: run the standing job at the current quota now, rather than wait
+idle for the increase request to land.** If the increase never lands, this
+still makes steady, real progress instead of zero. If it lands, the job
+accelerates automatically — deliberately not by adding logic that detects
+the new ceiling, but by not needing to: `scripts.enrich` already stops a run
+the instant Google's real daily limit is hit (`QuotaExceeded`,
+`services/providers/base.py`, existing since Phase 2). The standing job's
+`--limit` is set to 25,000 — far above both the current ~1,000/day quota and
+the entire remaining pending count — so `QuotaExceeded` is what actually
+paces the job every day, at whatever the real ceiling happens to be that
+day. A larger quota just means it fires later in the same run. No code
+changes are needed when the increase lands; there is nothing to switch on.
+
+**What was built:**
+
+* `scripts/run_daily_enrichment.ps1` — the wrapper Task Scheduler invokes.
+  Its job is narrower than pacing: this machine's Docker Desktop does not
+  survive a reboot or a sleep (F-30, OI-8), and `scripts.enrich` has no
+  reachability check of its own — pointed at a database that isn't there
+  yet, it raises a raw `psycopg.errors.ConnectionTimeout` traceback rather
+  than a clean message (confirmed live while building this). The wrapper
+  launches Docker Desktop if it isn't running, starts the two `digikitab-*`
+  containers specifically (this machine also runs an unrelated project,
+  finmentor, on the same Docker daemon — never touched), polls
+  `pg_isready`, and only then runs `scripts.enrich`. If the datastores never
+  come up within two minutes it logs why and exits non-zero rather than
+  hanging or crashing raw.
+* A Windows Scheduled Task, `DigiKitabDailyEnrichment`
+  (`scripts/DigiKitabDailyEnrichment.xml`), daily at 04:00, `StartWhenAvailable`
+  so a missed run (machine off or asleep at 4am) catches up the next time the
+  machine is on rather than silently skipping a day. Registered
+  `InteractiveToken` / least-privilege, not `S4U` or a stored password —
+  Docker Desktop is a GUI app tied to the logged-in session, so the task can
+  only run "when the user is logged on," which is the honest constraint of
+  this machine, not a workaround.
+* `logs/enrichment/run_<timestamp>.log` per run, plus a running
+  `logs/enrichment/history.log` — one line per run with exit code and the
+  `processed` / `ok` / `partial` / `quota_exhausted` / `description_coverage`
+  counts, so whether the job is actually accelerating when the quota changes
+  is visible at a glance without opening Task Scheduler's history.
+
+**A real, non-cosmetic bug found and fixed while building the wrapper, not
+part of the standing-job feature itself.** The first version piped the
+Python subprocess's output through PowerShell with `2>&1`. PowerShell 5.1
+wraps a native process's stderr lines — which is where Python's `logging`
+module writes by default, so every `[INFO]` line — in `NativeCommandError`
+objects when captured that way, which showed up as spurious error noise in
+the log even on a real exit code of 0. Fixed by using `Start-Process` with
+explicit `-RedirectStandardOutput`/`-RedirectStandardError` files, which
+redirect at the OS level and never route through PowerShell's own error
+stream. Verified by comparing the same run's log before and after: identical
+`run:`/`catalogue:` summary content, zero `NativeCommandError` noise after.
+
+**Verified live, twice, through two different paths, before being
+considered done** — this project's standing discipline (F-48's dry run,
+F-45's "a test that can pass without executing the code under test is not a
+test," etc.) applied to infrastructure rather than code this time:
+
+1. A direct 15-book run against the real key and real database: 7 `ok`
+   (full description), 8 `partial`, 0 failed, 0 throttled — confirming the
+   new `GOOGLE_BOOKS_API_KEY` (received 2026-09-16, credentials table below)
+   actually works. It briefly returned `503 backendFailed` on the first few
+   probe requests, which is not a quota or auth failure — this project's own
+   F-31 documented the identical error shape on the previously-issued key
+   for the same reason: Google Books' search backend is intermittently
+   flaky under any key. A direct volume lookup and a plainer query both
+   succeeded immediately; the exact `intitle:`/`inauthor:` structured query
+   `enrich_one` actually uses succeeded on a bare retry. `fetch_json`'s
+   existing retry ladder (`RETRY_STATUS` includes 503) already absorbs this
+   in production; nothing needed changing.
+2. The wrapper script invoked directly (containers already up, then
+   containers deliberately stopped first to confirm the auto-restart path),
+   and separately triggered through `schtasks /Run` — the actual mechanism
+   the 04:00 trigger will use, not a proxy for it — with the containers
+   stopped beforehand. Both: Docker/Postgres came back automatically,
+   `scripts.enrich` ran, exit code 0, correct summary in both log files.
+
+**Not done, deliberately:** no attempt to detect or react to the quota
+increase landing — see above, there is nothing to detect. No auto-stop of
+the containers after the run; they are lightweight and the product owner's
+own dev workflow likely wants Postgres available during the day anyway, so
+the job leaves them running rather than tearing down infrastructure that
+was already a deliberate `restart: unless-stopped` decision (PR 2).
 
 ### OI-6 · Frontend needs a login UI — OPEN, **NEXT MEANINGFUL UNLOCK** (not started)
 Comments, progress and reminders all require a token now, so the existing
@@ -2046,7 +2130,7 @@ Carried deliberately, with the reason. Each has a closing phase.
 
 | Key | Status | Notes |
 |---|---|---|
-| `GOOGLE_BOOKS_API_KEY` | **Received** 2026-08-19 | Currently at `D:\final\.env` — **must move to the project root**. Nothing loads env vars yet; `python-dotenv` arrives in PR 1 commit 3. |
+| `GOOGLE_BOOKS_API_KEY` | **In place and verified working**, 2026-09-16 | The 2026-08-19 key was never found at the `D:\final\.env` path this table originally pointed to — neither there nor at the project root when checked on 2026-09-16 (OI-7 setup). Rather than guess whether it was lost, moved, or expired, the product owner issued a fresh key. Placed at `D:\final\final\final_clean\.env` (the path `core/config.py`'s `load_dotenv` actually reads) and confirmed live: a direct volume lookup, a plain search, and the exact `intitle:`/`inauthor:` query `enrich.py` uses all succeeded. Now driving the OI-7 standing job. |
 | LLM provider | Not requested yet | Phase 2 |
 | Embedding provider | Not requested yet | Phase 2 |
 | TTS provider | Not requested yet | Phase 6 |

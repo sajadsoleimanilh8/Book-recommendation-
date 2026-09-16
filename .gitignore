@@ -29,3 +29,7 @@ Thumbs.db
 # and far too large to version (48 MB and growing with the corpus).
 backend/model_artifacts/
 .venv
+
+# Operational logs from the OI-7 standing enrichment job (docs/PROGRESS.md).
+# Grows one file per day, unbounded, machine-local — no reason to version it.
+logs/enrichment/
