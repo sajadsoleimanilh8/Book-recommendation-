@@ -1255,6 +1255,32 @@ test," etc.) applied to infrastructure rather than code this time:
    stopped beforehand. Both: Docker/Postgres came back automatically,
    `scripts.enrich` ran, exit code 0, correct summary in both log files.
 
+**Hardened 2026-09-16 for a laptop that isn't always on at 4am.**
+`StartWhenAvailable` (Task Scheduler's "run as soon as possible after a
+missed start") was already set from the first version — verified live on
+the registered task, not assumed from the XML — so a missed 04:00 already
+caught up at the next opportunity Task Scheduler itself checks for one
+(service start, resume from sleep). Added a second trigger, `LogonTrigger`
+scoped to this user, so catch-up also fires deterministically the moment the
+laptop is actually turned on and logged into, rather than only on whatever
+cadence Task Scheduler's own missed-trigger sweep uses.
+`MultipleInstancesPolicy=IgnoreNew` (already set) means the two triggers
+landing close together — e.g. logging in right around 4am — can never cause
+a double-run; `scripts.enrich` is idempotent by design either way (only
+`pending` rows are selected).
+
+Two power-setting facts checked, not assumed, since a wrong assumption here
+would silently defeat the whole point: `powercfg` shows this machine already
+never sleeps on AC (`STANDBYIDLE` = 0, the OI-8 fix), so the job survives
+being plugged in and idle; on battery it still sleeps after 3 minutes, which
+is fine — catch-up doesn't need the machine to stay awake, only to notice
+once it's next on. `WakeToRun` is deliberately left off: it would make Task
+Scheduler try to wake the laptop from sleep *at* 4am on its own, which is a
+different, larger ask (needs AC power and BIOS/OS wake-timer support most
+laptops disable on battery) than the one made — "catch up when I turn it on
+or it wakes up [myself]" — so it was not built. Flagged as an available
+option, not assumed to be wanted.
+
 **Not done, deliberately:** no attempt to detect or react to the quota
 increase landing — see above, there is nothing to detect. No auto-stop of
 the containers after the run; they are lightweight and the product owner's
