@@ -90,6 +90,8 @@
             background: rgba(95, 194, 255, 0.12);
             border-color: rgba(95, 194, 255, 0.35);
         }
+        /* OI-6: rendered by auth.js's mountAuthNav() into #auth-slot. */
+        .auth-user { padding: 10px 14px; color: var(--muted); }
 
         /* Hero */
         .hero { padding: 42px 0 24px; }
@@ -278,6 +280,7 @@
                 <a href="#">Library</a>
                 <a href="#">Audio</a>
                 <a href="#">Settings</a>
+                <span id="auth-slot"></span>
             </nav>
         </div>
     </div>
@@ -364,6 +367,7 @@
     </div>
 
     <!-- JavaScript Logic -->
+    <script src="./js/auth.js"></script>
     <script>
         const API_BASE = 'http://localhost:8000';
         const quizData = [

@@ -1288,25 +1288,101 @@ own dev workflow likely wants Postgres available during the day anyway, so
 the job leaves them running rather than tearing down infrastructure that
 was already a deliberate `restart: unless-stopped` decision (PR 2).
 
-### OI-6 · Frontend needs a login UI — OPEN, **NEXT MEANINGFUL UNLOCK** (not started)
+### OI-6 · Frontend needs a login UI — **SHIPPED, 2026-09-17**
+
 Comments, progress and reminders all require a token now, so the existing
-pages get 401. Expected and accepted; lands with the Express retirement.
+pages got 401. This is the fix.
 
 **Re-prioritised 2026-09-11, alongside F-26's answer.** Reading depth is now
-the relevance target, and it is **book-level only**: with no login and no
-visitor id, a page turn cannot be attributed to a reader. Login is what turns
-it into personalisation. Concretely, it would make reachable:
+the relevance target, and it was **book-level only**: with no login and no
+visitor id, a page turn could not be attributed to a reader. Login is what
+turns it into personalisation. Concretely, it makes reachable:
 
-| Unlocked by login | Today |
+| Unlocked by login | Before |
 |---|---|
 | per-reader depth — *this* reader's furthest page | only aggregate, via the survival curve |
-| Reading DNA (§25), derived from a reader's own history | no history can be attributed |
-| explicit ratings — `comments.rating`, `POST /api/feedback` | both exist; neither reachable |
-| progress and completion — `reading_progress` | exists; nothing writes it |
+| Reading DNA (§25), derived from a reader's own history | no history could be attributed |
+| explicit ratings — `comments.rating`, `POST /api/feedback` | both existed; neither reachable |
+| progress and completion — `reading_progress` | existed; nothing wrote it |
 | impression -> click attribution | no identity to join on |
 
-**Not started, by the product owner's instruction.** Do not begin without
-explicit go-ahead.
+**Scope, decided before writing anything.** Two questions were asked and
+answered before implementation, because both change the shape of the work:
+
+1. *How does the login UI reach the backend?* **Directly, at
+   `http://127.0.0.1:8000`** — the same convention `questionnair.js` already
+   used — rather than through `server.js`'s proxy. Investigation found the
+   proxy does not forward the `Authorization` header at all, so a login flow
+   routed through it would silently 401 on every protected call regardless
+   of a valid token. Fixing the proxy, or retiring Express (which PROGRESS.md
+   had loosely bundled with OI-6 in the note above), were both explicitly
+   declined as separate, larger decisions — not something a login-UI task
+   should absorb by default.
+2. *How is a `token_expired` response handled, given no refresh endpoint
+   exists?* **Re-prompt for login.** `POST /api/auth/refresh` was not built.
+   Tokens last 7 days by default (`JWT_EXPIRE_MINUTES`), so re-authenticating
+   on the rare expiry is an acceptable trade against adding a new endpoint
+   nobody asked for yet.
+
+**What shipped — frontend only, zero backend changes.** `register`/`login`/
+`GET /api/auth/me` already existed, fully working, since PR 2 (F-07) and
+OI-10 — this was a frontend gap, not a backend one.
+
+* `frontend/js/auth.js` — the one shared module every page includes.
+  Token storage, `authFetch()` (attaches `Authorization` automatically and
+  clears the session on any `401` — `token_expired`, `token_invalid`,
+  `account_inactive` all mean the same thing to a caller: log in again),
+  `login()`/`register()`/`logout()`, and `mountAuthNav()`, which renders into
+  a `<span id="auth-slot">` placeholder added to each page's nav. There is no
+  shared header/nav include in this frontend (six standalone HTML files,
+  each with its own copy of the topbar markup) — introducing one was out of
+  scope for a login feature, so the placeholder-element approach was used
+  instead: one small, identical edit per page rather than a restructure.
+* `frontend/login.html` — a combined login/register page, reusing
+  `styles.css`'s existing `.card`/`.btn`/`.input` classes rather than
+  inventing new ones. Redirects to a `?next=` path after success, rejecting
+  anything that isn't a same-site relative path (`/…` or `./…`) to close an
+  open-redirect vector before it existed.
+* `index.html`, `filter.html`, `Audiobook.html`, `questionnair.html`,
+  `user.html` — each gained the `auth-slot` nav element and an `auth.js`
+  `<script>` include. `chatbot.html` was left untouched: it has no nav
+  markup of any kind (a pre-existing gap, not something to fix inside this
+  task).
+* `user.html`'s comment and reminder handlers were rewritten to use
+  `AUTH.authFetch` and to check `AUTH.isLoggedIn()` before firing a request,
+  showing a plain "log in to do this" prompt instead of a silent failure.
+
+**A real bug found and fixed while wiring this up, not a hypothetical.**
+`user.html`'s comment handler sent `{user_id, book_id, comment, rating}` —
+but `CommentRequest` dropped `user_id` and added `extra="forbid"` back when
+F-07 closed this hole (the author is always the token holder now). That
+field was never removed from the frontend when the backend changed, so the
+call was broken two independent ways at once: no `Authorization` header
+(401) *and* a body shape the schema now rejects outright (422, confirmed
+live: `"Extra inputs are not permitted"`). Comments could not have been
+posted from this page since F-07 shipped, silently — `if (response.ok)`
+gated the success path and did nothing visible otherwise. Verified fixed
+live, end to end, against the real backend and real Postgres: register →
+`/api/auth/me` → post a comment (200) → set a reminder (200) → list
+reminders (200) → the same comment call with no token (401) → the old
+broken body shape (422, confirming the bug was real) — then the two test
+users and their rows deleted from `digikitab` before finishing, since this
+was exercised against the real dev database, not a disposable one.
+
+**CORS checked, not assumed.** `auth.js` calling `:8000` from a page served
+at `:3000` is a cross-origin request, and attaching `Authorization` forces a
+preflight. Verified live: `OPTIONS /api/comments` from `Origin:
+http://127.0.0.1:3000` returns the right `Access-Control-Allow-*` headers,
+and an authenticated `GET /api/auth/me` from that origin succeeds — `main.py`
+already allowed `:3000` by default, so this needed confirming, not building.
+
+**Not done, deliberately:** no refresh endpoint (see the scope decision
+above); `server.js`'s proxy still does not forward `Authorization` (not
+touched, by the same decision — every new call bypasses it entirely);
+`chatbot.html` still has no navigation. `GET /api/profile/{user_id}` exists
+and is now reachable with a real login, but no page's UI reads it yet —
+logging in unlocks the backend capability this table describes; building a
+profile page around it is a follow-on, not part of "add a login UI."
 
 ### OI-5 · Rate limit required before any deployment — **BLOCKING**
 **Status (2026-08-19):** product owner confirmed the app is **local-only until further notice**, so the rate limit was deliberately **excluded from PR 1**.
@@ -2117,10 +2193,14 @@ until login exists.
    page 300 through an 11-page excerpt. Each of those empty pages would
    otherwise log as reading deeper. Only pages that returned content count.
 
-**Next meaningful unlock: login (OI-6).** It turns this from book-level
-relevance into personalisation — attributing depth to a reader, building
-Reading DNA (§25) from their own history, and making ratings and progress
-reachable at all. Flagged, **not started**, pending the product owner.
+**Login shipped (OI-6, 2026-09-17).** Comments, reminders and progress are
+now reachable through the UI with a real account. That is not the same as
+per-reader depth attribution being wired yet — `_record_page_turn`
+(`api/books.py`) is still deliberately anonymous, by design, until a page
+actually attributes a page turn to the logged-in reader rather than logging
+it identity-free. Login is the prerequisite that OI-6 closed; turning book-
+level relevance into personalisation by wiring that attribution through is
+the remaining, separate step.
 
 
 

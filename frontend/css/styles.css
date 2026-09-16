@@ -76,6 +76,14 @@ body {
     color: #fff;
 }
 
+/* OI-6: rendered by auth.js's mountAuthNav() into <span id="auth-slot">,
+   which each page places as the last item inside .nav. */
+.auth-user {
+    padding: 8px 16px;
+    color: #91a0c7;
+    font-size: 14px;
+}
+
 /* ========== BUTTONS ========== */
 .btn {
     padding: 10px 20px;

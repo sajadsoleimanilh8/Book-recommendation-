@@ -54,6 +54,8 @@
         .nav { display: flex; gap: 10px; }
         .nav a { padding: 8px 12px; border-radius: 999px; color: var(--muted); border: 1px solid var(--line); font-size: 0.9em; }
         .nav a:hover, .nav a.active { color: var(--text); background: rgba(95, 194, 255, 0.12); border-color: rgba(95, 194, 255, 0.35); }
+        /* OI-6: rendered by auth.js's mountAuthNav() into #auth-slot. */
+        .auth-user { padding: 8px 12px; color: var(--muted); font-size: 0.9em; }
 
         /* Audiobook Player Styles */
         .player-container {
@@ -185,6 +187,7 @@
             <nav class="nav">
                 <a href="index.html">Discover</a>
                 <a href="#" class="active">Listen</a>
+                <span id="auth-slot"></span>
             </nav>
         </div>
     </div>
@@ -270,6 +273,7 @@
     <!-- Hidden Audio Element for Real Files -->
     <audio id="realAudio"></audio>
 
+    <script src="./js/auth.js"></script>
     <script>
         const API_BASE = 'http://localhost:8000';
         let currentBook = null;

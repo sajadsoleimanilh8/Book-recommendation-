@@ -50,6 +50,7 @@
                 <a href="./chatbot.html">Chat</a>
                 <a href="./Audiobook.html">Audio</a>
                 <a href="./user.html" class="active">Workspace</a>
+                <span id="auth-slot"></span>
             </div>
         </div>
 
@@ -130,14 +131,35 @@
         </div>
     </div>
 
+    <script src="./js/auth.js"></script>
     <script>
         const API_BASE = 'http://127.0.0.1:8000';
         let currentBookId = null;
         let currentPage = 1;
         let totalPages = 0;
         let currentBook = null;
-        let userId = localStorage.getItem('userId') || 'guest_' + Math.random().toString(36).substr(2, 8);
-        localStorage.setItem('userId', userId);
+        // OI-6: comments and reminders are authenticated server-side (F-07) —
+        // the author/owner is derived from the JWT, never from a client-
+        // supplied id. The old fake `guest_xxxxx` localStorage id is gone for
+        // those; AUTH.isLoggedIn()/AUTH.authFetch() are used directly instead.
+        //
+        // Chat (below) is a separate, unrelated identity concept: `/api/chat`
+        // is not auth-protected — it takes a free-text user_id the same way
+        // /api/recommend and /api/questionnaire do, to key the in-memory
+        // UserProfile/bandit state (main.get_profile), which predates real
+        // auth and is not part of it. Prefer the real logged-in id so that
+        // state carries across devices/sessions for an authenticated user;
+        // fall back to the pre-existing anonymous localStorage id otherwise.
+        function chatUserId() {
+            const user = AUTH.getCachedUser();
+            if (user) return String(user.id);
+            let anon = localStorage.getItem('dk_anon_id');
+            if (!anon) {
+                anon = 'guest_' + Math.random().toString(36).substr(2, 8);
+                localStorage.setItem('dk_anon_id', anon);
+            }
+            return anon;
+        }
 
         const urlParams = new URLSearchParams(window.location.search);
         const bookId = urlParams.get('book');
@@ -276,29 +298,37 @@
         }
 
         document.getElementById('postCommentBtn')?.addEventListener('click', async () => {
+            if (!AUTH.isLoggedIn()) {
+                alert('Log in to post a comment.');
+                window.location.href = './login.html?next=' + encodeURIComponent(window.location.pathname + window.location.search);
+                return;
+            }
             if (!currentBookId) { alert('Select a book first'); return; }
-            
+
             const text = document.getElementById('commentText').value;
             const rating = document.getElementById('commentRating').value;
-            
+
             if (!text.trim()) { alert('Please enter a comment'); return; }
-            
+
             try {
-                const response = await fetch(`${API_BASE}/api/comments`, {
+                // No user_id field: CommentRequest forbids it (extra="forbid")
+                // — the author is always the authenticated caller (F-07).
+                const response = await AUTH.authFetch('/api/comments', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        user_id: userId,
                         book_id: currentBookId,
                         comment: text,
                         rating: rating ? parseInt(rating) : null
                     })
                 });
-                
+
                 if (response.ok) {
                     document.getElementById('commentText').value = '';
                     document.getElementById('commentRating').value = '';
                     await loadComments();
+                } else if (response.status === 401) {
+                    alert('Your session has ended. Please log in again.');
                 }
             } catch (error) {
                 alert('Failed to post comment');
@@ -306,15 +336,21 @@
         });
 
         // ========== REMINDERS ==========
+        // Requires login (backend: CurrentUser, F-07) — a reminder belongs to
+        // whoever the token says it is, never to a client-supplied id.
         async function loadReminders() {
+            const container = document.getElementById('remindersList');
+            if (!AUTH.isLoggedIn()) {
+                container.innerHTML = '<div class="muted">Log in to see your reading reminders.</div>';
+                return;
+            }
             try {
-                const response = await fetch(`${API_BASE}/api/reminders?user_id=${userId}`);
+                const response = await AUTH.authFetch('/api/reminders');
                 if (!response.ok) throw new Error();
-                
+
                 const data = await response.json();
                 const reminders = data.reminders || [];
-                const container = document.getElementById('remindersList');
-                
+
                 if (reminders.length === 0) {
                     container.innerHTML = '<div class="muted">No reminders set.</div>';
                 } else {
@@ -327,32 +363,38 @@
                     `).join('');
                 }
             } catch (error) {
-                document.getElementById('remindersList').innerHTML = '<div class="muted">Reminders not available.</div>';
+                container.innerHTML = '<div class="muted">Reminders not available.</div>';
             }
         }
 
         document.getElementById('setReminderBtn')?.addEventListener('click', async () => {
+            if (!AUTH.isLoggedIn()) {
+                alert('Log in to set a reading reminder.');
+                window.location.href = './login.html?next=' + encodeURIComponent(window.location.pathname + window.location.search);
+                return;
+            }
             if (!currentBookId) { alert('Select a book first'); return; }
-            
+
             const remindAt = document.getElementById('reminderDate').value;
             if (!remindAt) { alert('Please set a date/time'); return; }
-            
+
             try {
-                const response = await fetch(`${API_BASE}/api/reminder`, {
+                const response = await AUTH.authFetch('/api/reminder', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        user_id: userId,
                         book_id: currentBookId,
                         enabled: true
                     })
                 });
-                
+
                 if (response.ok) {
                     document.getElementById('reminderDate').value = '';
                     document.getElementById('reminderNote').value = '';
                     await loadReminders();
                     alert('Reminder set!');
+                } else if (response.status === 401) {
+                    alert('Your session has ended. Please log in again.');
                 }
             } catch (error) {
                 alert('Failed to set reminder');
@@ -374,7 +416,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         message: message,
-                        user_id: userId,
+                        user_id: chatUserId(),
                         book_id: currentBookId
                     })
                 });

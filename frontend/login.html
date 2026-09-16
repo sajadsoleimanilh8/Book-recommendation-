@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Log in - DigiKitab</title>
+  <link rel="stylesheet" href="./css/styles.css" />
+  <style>
+    .auth-wrap { max-width: 420px; margin: 60px auto; }
+    .auth-toggle { display: flex; gap: 8px; margin-bottom: 20px; }
+    .auth-toggle button { flex: 1; }
+    .auth-form { display: none; }
+    .auth-form.active { display: block; }
+    .field-label { display: block; margin-bottom: 6px; font-size: 14px; }
+    .auth-error { display: none; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <a class="brand" href="./index.html"><span class="brand-badge">DK</span><span>DigiKitab Next</span></a>
+      <nav class="nav">
+        <a href="./index.html">Home</a>
+        <a href="./filter.html">Library</a>
+        <a href="./chatbot.html">Chat</a>
+        <a href="./Audiobook.html">Audio</a>
+        <a href="./user.html">Workspace</a>
+        <span id="auth-slot"></span>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container auth-wrap">
+    <div class="card">
+      <div class="auth-toggle">
+        <button type="button" class="btn btn-primary" id="showLoginBtn">Log in</button>
+        <button type="button" class="btn btn-secondary" id="showRegisterBtn">Create account</button>
+      </div>
+
+      <div class="error auth-error" id="authError"></div>
+
+      <form id="loginForm" class="auth-form active">
+        <label class="field-label" for="loginEmail">Email</label>
+        <input class="input" type="email" id="loginEmail" required autocomplete="email">
+        <label class="field-label" for="loginPassword">Password</label>
+        <input class="input" type="password" id="loginPassword" required autocomplete="current-password">
+        <button type="submit" class="btn btn-primary" id="loginSubmitBtn" style="width:100%;">Log in</button>
+      </form>
+
+      <form id="registerForm" class="auth-form">
+        <label class="field-label" for="registerName">Display name (optional)</label>
+        <input class="input" type="text" id="registerName" autocomplete="name">
+        <label class="field-label" for="registerEmail">Email</label>
+        <input class="input" type="email" id="registerEmail" required autocomplete="email">
+        <label class="field-label" for="registerPassword">Password</label>
+        <input class="input" type="password" id="registerPassword" required minlength="8" autocomplete="new-password">
+        <p class="muted">At least 8 characters.</p>
+        <button type="submit" class="btn btn-primary" id="registerSubmitBtn" style="width:100%;">Create account</button>
+      </form>
+    </div>
+  </main>
+
+  <script src="./js/auth.js"></script>
+  <script>
+    const loginForm = document.getElementById('loginForm');
+    const registerForm = document.getElementById('registerForm');
+    const errorBox = document.getElementById('authError');
+    const showLoginBtn = document.getElementById('showLoginBtn');
+    const showRegisterBtn = document.getElementById('showRegisterBtn');
+
+    function showForm(which) {
+      loginForm.classList.toggle('active', which === 'login');
+      registerForm.classList.toggle('active', which === 'register');
+      showLoginBtn.className = which === 'login' ? 'btn btn-primary' : 'btn btn-secondary';
+      showRegisterBtn.className = which === 'register' ? 'btn btn-primary' : 'btn btn-secondary';
+      errorBox.style.display = 'none';
+    }
+
+    showLoginBtn.addEventListener('click', () => showForm('login'));
+    showRegisterBtn.addEventListener('click', () => showForm('register'));
+
+    function redirectAfterAuth() {
+      const next = new URLSearchParams(window.location.search).get('next');
+      // Only accept a same-site relative path (starts with "/" or ".") as a
+      // redirect target — anything else (e.g. an absolute "http://…" URL)
+      // is an open-redirect vector and falls back to the home page instead.
+      const safeNext = next && (next.startsWith('/') || next.startsWith('.')) ? next : './index.html';
+      window.location.href = safeNext;
+    }
+
+    // If a session already exists, there is nothing for this page to do.
+    if (AUTH.isLoggedIn()) {
+      redirectAfterAuth();
+    }
+
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const submitBtn = document.getElementById('loginSubmitBtn');
+      submitBtn.disabled = true;
+      errorBox.style.display = 'none';
+
+      const email = document.getElementById('loginEmail').value.trim();
+      const password = document.getElementById('loginPassword').value;
+      const result = await AUTH.login(email, password);
+
+      submitBtn.disabled = false;
+      if (!result.ok) {
+        errorBox.textContent = result.error;
+        errorBox.style.display = 'block';
+        return;
+      }
+      redirectAfterAuth();
+    });
+
+    registerForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const submitBtn = document.getElementById('registerSubmitBtn');
+      submitBtn.disabled = true;
+      errorBox.style.display = 'none';
+
+      const displayName = document.getElementById('registerName').value.trim();
+      const email = document.getElementById('registerEmail').value.trim();
+      const password = document.getElementById('registerPassword').value;
+      const result = await AUTH.register(email, password, displayName);
+
+      submitBtn.disabled = false;
+      if (!result.ok) {
+        errorBox.textContent = result.error;
+        errorBox.style.display = 'block';
+        return;
+      }
+      redirectAfterAuth();
+    });
+  </script>
+</body>
+</html>
