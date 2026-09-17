@@ -2221,7 +2221,9 @@ ranking/ML work. The decomposition held up under investigation:
   was scoped as its own future decision rather than folded in here.
 * **"Reading DNA (§25)"**, the other unlock this table names, was checked
   against the rest of this document and found to have no specification
-  beyond this one row — flagged rather than guessed at.
+  beyond this one row — flagged rather than guessed at. Logged as OI-12
+  below: needs a product decision before it is buildable, the same
+  treatment F-26 got before reading depth itself was decided.
 
 **Decided alongside: also build a "continue reading" UI (the natural first
 consumer of attribution that touches neither ranking nor ML), and also wire
@@ -2276,6 +2278,26 @@ from `digikitab` afterward, the same discipline as OI-6 itself.
 Full suite: 317 passed, 3 xfailed (was 313 before this — 4 new tests, all
 passing). Golden ranking baselines untouched, as expected: nothing about
 book-level aggregation changed.
+
+### OI-12 · Reading DNA (§25) — OPEN, **NEEDS A PRODUCT DECISION**
+
+Named in F-26's original "unlocked by login" table (2026-09-11) as one of
+two things OI-6 would make reachable. The other, per-reader depth
+attribution, is done (above). This one is not, because it turned out to
+have no specification anywhere in this document beyond that single table
+row — no definition of what "Reading DNA" actually is, what data it draws
+on beyond reading depth, what it outputs, or where a reader would see it.
+
+**Same shape as F-26 before 2026-09-11's decision: logged rather than
+guessed at.** Building a placeholder version would repeat exactly the
+mistake F-26 spent most of Phase 3 correcting — a feature that superficially
+works but is built on an undefined target, discovered to be hollow only
+after real use. The data it would need now exists (per-reader page-turn
+attribution, per-reader progress, comments, ratings), so this is no longer
+blocked on data — only on the product owner defining what it is.
+
+**Not started, by the product owner's instruction (2026-09-17).** Do not
+begin without a specification to build against.
 
 
 
