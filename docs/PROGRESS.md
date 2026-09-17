@@ -2194,13 +2194,88 @@ until login exists.
    otherwise log as reading deeper. Only pages that returned content count.
 
 **Login shipped (OI-6, 2026-09-17).** Comments, reminders and progress are
-now reachable through the UI with a real account. That is not the same as
-per-reader depth attribution being wired yet — `_record_page_turn`
-(`api/books.py`) is still deliberately anonymous, by design, until a page
-actually attributes a page turn to the logged-in reader rather than logging
-it identity-free. Login is the prerequisite that OI-6 closed; turning book-
-level relevance into personalisation by wiring that attribution through is
-the remaining, separate step.
+now reachable through the UI with a real account.
+
+**Per-reader page-turn attribution shipped (OI-6 follow-through, 2026-09-17.)**
+`_record_page_turn` (`api/books.py`) was scoped and reported on before
+writing anything, since "wire up per-reader depth attribution" could mean
+either a small, contained data-plumbing step or something that fans out into
+ranking/ML work. The decomposition held up under investigation:
+
+* **Attributing the event is small and schema-ready.** `interaction_events
+.user_id` has been nullable, FK'd to `users`, and indexed since PR 2 —
+  no migration needed. `/api/books/{book_id}/pages` now takes `OptionalUser`
+  (it did not take *any* identity parameter before, not even optionally) and
+  threads `user.id` into `_record_page_turn`, the same shape `book_detail`'s
+  `BOOK_VIEW` event already used one function above it. Anonymous reading is
+  unaffected — `OptionalUser` tolerates both, and an anonymous page turn
+  still records `user_id=None`, which remains meaningful signal, not a gap.
+* **Using per-reader depth as a ranking feature is a different, larger
+  problem, and was explicitly declined for now.** `reading_depth`/
+  `reading_depth_n` are the LTR's training *label*, not a feature —
+  `test_depth_never_reaches_the_feature_matrix` exists specifically to keep
+  it that way, because a column that is both label and input would let the
+  model learn nothing but "relevance equals this column." A per-reader
+  ranking signal needs a genuinely new mechanism (a request-time join of a
+  user's history into candidate scoring), not a tweak to `_relevance()`, and
+  was scoped as its own future decision rather than folded in here.
+* **"Reading DNA (§25)"**, the other unlock this table names, was checked
+  against the rest of this document and found to have no specification
+  beyond this one row — flagged rather than guessed at.
+
+**Decided alongside: also build a "continue reading" UI (the natural first
+consumer of attribution that touches neither ranking nor ML), and also wire
+up `POST /api/progress`.** The second was a related, adjacent gap found
+during scoping: fully built and authenticated server-side since PR 2/F-12,
+with zero frontend callers anywhere in the codebase.
+
+What shipped:
+
+* `frontend/user.html`'s `loadPage()` now calls `AUTH.authFetch` instead of
+  plain `fetch` (attaches the token when one exists, identical behaviour
+  otherwise), and posts to `POST /api/progress` after every successful page
+  load when logged in.
+* A "Continue Reading" card in the workspace sidebar, populated from
+  `GET /api/progress`, hidden entirely for anonymous visitors or when
+  nothing is in progress — reading has never required an account and this
+  does not change that. Clicking an entry resumes at the saved page via a
+  new `startPage` parameter on `loadBook()`.
+* `_progress_payload` (`api/reading.py`) enriched with `title`/`author`/
+  `thumbnail` — the same pattern `_reminder_payload` already used — since
+  the continue-reading list renders this response directly and a bare
+  `book_id` is not something a UI can show. `store.progress_for_user` now
+  orders by `updated_at desc`, since nothing previously cared about order
+  and a reader expects their most recent book first.
+
+**A real, live bug found while wiring the first real caller of
+`POST /api/progress`, not a hypothetical.** `page` was being stored as
+`int(payload.total_pages or 0)` — the book's page *count* written verbatim
+into the column meant to hold the page *reached*. Concretely:
+`progress=0.5, total_pages=200` stored `page=200` (the endpoint) instead of
+100 (where the reader actually was), and the exact shape
+`test_progress_is_scoped_to_the_caller` already sent —
+`{"book_id": 1, "progress": 0.5}`, no `total_pages` — stored a flat `page=0`
+regardless of progress. Invisible until now because nothing read `row.page`
+back; the continue-reading feature is the first thing that does. Fixed to
+derive it: `page = round(progress * total_pages)`.
+
+Guarded by four new tests in `tests/test_auth.py`
+(`test_a_page_turn_is_attributed_to_the_logged_in_reader`,
+`test_an_anonymous_page_turn_still_records_no_user`,
+`test_progress_page_is_derived_from_the_fraction_not_the_page_count`,
+`test_progress_response_is_enriched_with_book_details`), each sabotage-
+checked by reverting the fix and confirming the matching test fails and
+nothing else does. Verified live end to end against the real backend and
+real Postgres — not just the suite — before and after: register → read a
+page while authenticated → confirm the `interaction_events` row carries the
+real `user_id` → post progress at `progress=0.5, total_pages=200` → confirm
+the stored `page` is 100, not 200 or 0 → `GET /api/progress` returns the
+enriched, title-bearing list — then the test account and its rows deleted
+from `digikitab` afterward, the same discipline as OI-6 itself.
+
+Full suite: 317 passed, 3 xfailed (was 313 before this — 4 new tests, all
+passing). Golden ranking baselines untouched, as expected: nothing about
+book-level aggregation changed.
 
 
 

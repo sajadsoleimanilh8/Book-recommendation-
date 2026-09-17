@@ -108,23 +108,34 @@ def progress(payload: ProgressRequest, user: CurrentUser, session: SessionDep) -
                 "Book is not in the persistent catalogue.", status.HTTP_404_NOT_FOUND
             )
 
+        total_pages = payload.total_pages or b.get("pages", 0)
+
         try:
             result = main.RECOMMENDER.reminder.update_progress(
                 user_id=owner_id,
                 book_id=payload.book_id,
                 progress=payload.progress,
-                total_pages=payload.total_pages or b.get("pages", 0),
+                total_pages=total_pages,
                 profile=profile,
             )
         except Exception as e:
             return main.error_response(f"Progress update error: {str(e)}")
 
+        # OI-6 follow-through: `page` used to be `int(payload.total_pages or
+        # 0)` — the book's page COUNT written into the column meant to hold
+        # the page REACHED. Harmless while nothing read `row.page` back (no
+        # page called this endpoint at all until the continue-reading UI),
+        # but it means `progress=0.5` with no `total_pages` given (the exact
+        # shape `test_progress_is_scoped_to_the_caller` sends) stored `page`
+        # as a flat 0 regardless of progress. Derived from the fraction and
+        # the real page count instead, so "continue reading" resumes at the
+        # actual page rather than always page 0.
         store.save_progress(
             session,
             user_id=user.id,
             book_pk=book_pk,
             progress=payload.progress,
-            page=int(payload.total_pages or 0),
+            page=round(payload.progress * total_pages) if total_pages else 0,
         )
         # F-42. Section 24 lists chapter completion and abandonment as
         # behavioural signals; both are read off a series of these. A single
@@ -163,14 +174,24 @@ def _reminder_payload(session, user) -> List[Dict[str, Any]]:
 
 
 def _progress_payload(session, user) -> Dict[str, Any]:
-    """Read progress from Postgres, mapped back to the API's positional ids."""
+    """Read progress from Postgres, mapped back to the API's positional ids.
+
+    Enriched with title/author/thumbnail — the same pattern
+    `_reminder_payload` already uses — because the "continue reading" UI
+    (per-reader depth follow-through, OI-6) renders this list directly. Rows
+    are already ordered most-recent-first by `store.progress_for_user`.
+    """
     items = []
     for row in store.progress_for_user(session, user.id):
         book_idx = main.BOOK_IDX_BY_PK.get(row.book_id)
+        book = main.BOOKS[book_idx] if book_idx is not None and book_idx < len(main.BOOKS) else None
         items.append(
             {
                 # book_idx is the DataFrame row; the API exposes id = idx + 1.
                 "book_id": (book_idx + 1) if book_idx is not None else None,
+                "title": book["title"] if book else None,
+                "author": book["author"] if book else None,
+                "thumbnail": book.get("thumbnail") if book else None,
                 "progress": row.progress,
                 "percent": int(row.progress * 100),
                 "page": row.page,

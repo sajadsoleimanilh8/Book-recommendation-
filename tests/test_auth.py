@@ -308,6 +308,81 @@ def test_progress_is_scoped_to_the_caller(client, alice, bob):
     assert theirs["items"] == [], "Bob can see Alice's reading progress"
 
 
+def test_progress_page_is_derived_from_the_fraction_not_the_page_count(client, alice):
+    """OI-6 follow-through, found while wiring the first real caller of this
+    endpoint (the continue-reading UI): `page` used to be stored as
+    `int(payload.total_pages or 0)` — the book's page COUNT written
+    verbatim into the column meant to hold the page REACHED. With
+    total_pages=200 that stored page=200 regardless of progress; sending no
+    total_pages at all (test_progress_is_scoped_to_the_caller's exact shape)
+    stored a flat 0 regardless of progress. Neither was noticed because
+    nothing read `row.page` back until now."""
+    r = client.post(
+        "/api/progress", headers=auth_header(alice),
+        json={"book_id": 1, "progress": 0.5, "total_pages": 200},
+    )
+    assert r.status_code == 200
+
+    items = client.get("/api/progress", headers=auth_header(alice)).json()["items"]
+    assert items[0]["page"] == 100, "page should be progress * total_pages, not total_pages itself"
+
+
+def test_progress_response_is_enriched_with_book_details(client, alice):
+    """The continue-reading UI renders this list directly — it needs a
+    title to show, not just a bare book_id."""
+    client.post(
+        "/api/progress", headers=auth_header(alice),
+        json={"book_id": 1, "progress": 0.3, "total_pages": 100},
+    )
+    items = client.get("/api/progress", headers=auth_header(alice)).json()["items"]
+    assert items[0]["title"], "continue-reading needs a title to display"
+
+
+# --------------------------------------------------------------------------
+# Per-reader page-turn attribution — OI-6 follow-through, F-26
+# --------------------------------------------------------------------------
+
+def _last_reading_page_event(user_id=None):
+    import events
+
+    from db import SessionLocal
+    from models import InteractionEvent
+
+    with SessionLocal() as session:
+        q = session.query(InteractionEvent).filter(
+            InteractionEvent.event_type == events.READING_PAGE
+        )
+        if user_id is not None:
+            q = q.filter(InteractionEvent.user_id == user_id)
+        return q.order_by(InteractionEvent.id.desc()).first()
+
+
+def test_a_page_turn_is_attributed_to_the_logged_in_reader(client, alice):
+    """`/api/books/{id}/pages` used to take no identity at all — not even
+    optionally — so a page turn could never be credited to a real reader.
+    `_record_page_turn` now receives `OptionalUser`'s id when one exists."""
+    r = client.get(
+        "/api/books/1/pages", params={"page": 1, "page_size": 1},
+        headers=auth_header(alice),
+    )
+    assert r.status_code == 200
+
+    row = _last_reading_page_event(user_id=alice["id"])
+    assert row is not None, "the page turn was not attributed to the logged-in reader"
+
+
+def test_an_anonymous_page_turn_still_records_no_user(client):
+    """The other half: an anonymous reader must not be silently attributed
+    to whichever token happens to be lying around, and must not start
+    401ing now that the route accepts a token — OptionalUser tolerates both."""
+    r = client.get("/api/books/1/pages", params={"page": 1, "page_size": 1})
+    assert r.status_code == 200
+
+    row = _last_reading_page_event()
+    assert row is not None
+    assert row.user_id is None
+
+
 def test_reminders_are_scoped_to_the_caller(client, alice, bob):
     assert client.post(
         "/api/reminder", headers=auth_header(alice),

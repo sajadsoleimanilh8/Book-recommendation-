@@ -66,6 +66,13 @@
                     <button class="btn" id="saveBookBtn" style="width:100%; margin-top:15px;">💾 Save to Library</button>
                 </div>
 
+                <div class="card" id="continueReadingCard" style="display:none;">
+                    <h3>📖 Continue Reading</h3>
+                    <div id="continueReadingList" class="list">
+                        <div class="muted">Loading…</div>
+                    </div>
+                </div>
+
                 <div class="card">
                     <h3>Saved Books</h3>
                     <div id="savedBooksList" class="list">
@@ -163,35 +170,36 @@
 
         const urlParams = new URLSearchParams(window.location.search);
         const bookId = urlParams.get('book');
-        
+
         if (bookId) {
             loadBook(parseInt(bookId));
         }
 
         loadSavedBooks();
+        loadContinueReading();
 
-        async function loadBook(bookId) {
+        async function loadBook(bookId, startPage) {
             currentBookId = bookId;
-            currentPage = 1;
-            
+            currentPage = startPage && startPage > 0 ? startPage : 1;
+
             try {
                 const response = await fetch(`${API_BASE}/api/books/${bookId}`);
                 if (!response.ok) throw new Error('Book not found');
-                
+
                 currentBook = await response.json();
-                
+
                 document.getElementById('bookTitle').innerText = currentBook.title;
                 document.getElementById('bookAuthor').innerHTML = `by ${currentBook.author}`;
                 document.getElementById('bookPages').innerHTML = currentBook.pages || '?';
                 document.getElementById('bookRating').innerHTML = `★ ${currentBook.rating || 'N/A'}`;
-                
+
                 totalPages = currentBook.pages || 100;
-                
+
                 await loadPage();
                 await loadComments();
                 await loadReminders();
                 checkIfSaved();
-                
+
             } catch (error) {
                 document.getElementById('readerPage').innerHTML = '<div class="error">Failed to load book. Make sure backend is running on port 8000.</div>';
             }
@@ -200,10 +208,15 @@
         async function loadPage() {
             const container = document.getElementById('readerPage');
             container.innerHTML = '<div class="loading">Loading page...</div>';
-            
+
             try {
-                const response = await fetch(`${API_BASE}/api/books/${currentBookId}/pages?page=${currentPage}&page_size=1`);
-                
+                // AUTH.authFetch, not plain fetch: /api/books/{id}/pages takes
+                // OptionalUser now (per-reader depth attribution, OI-6
+                // follow-through) — attaching the token when one exists lets
+                // a page turn be credited to whoever is actually reading it,
+                // while an anonymous visitor is served identically either way.
+                const response = await AUTH.authFetch(`/api/books/${currentBookId}/pages?page=${currentPage}&page_size=1`);
+
                 if (response.ok) {
                     const data = await response.json();
                     if (data.items && data.items.length > 0) {
@@ -214,11 +227,62 @@
                 } else {
                     container.innerHTML = `<div>Page ${currentPage} - 📖 You are reading page ${currentPage} of "${currentBook?.title}".</div>`;
                 }
-                
+
                 document.getElementById('pageInfo').innerText = `Page ${currentPage} of ${totalPages}`;
-                
+                await saveProgress();
+
             } catch (error) {
                 container.innerHTML = `<div>📖 Page ${currentPage} - Reading "${currentBook?.title}", page ${currentPage} of ${totalPages}.</div>`;
+            }
+        }
+
+        // ========== CONTINUE READING ==========
+        // Persists position via POST /api/progress (already fully built
+        // server-side, F-12/F-07 — no page called it until now) and reads it
+        // back via GET /api/progress for the "continue reading" list. Silent
+        // no-op when logged out: reading itself has never required an
+        // account, and this is purely additive personalization on top of it.
+        async function saveProgress() {
+            if (!AUTH.isLoggedIn() || !currentBookId || !totalPages) return;
+            try {
+                await AUTH.authFetch('/api/progress', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        book_id: currentBookId,
+                        progress: Math.min(1, currentPage / totalPages),
+                        total_pages: totalPages,
+                    }),
+                });
+            } catch (error) {
+                // Reading must never break because progress-tracking failed.
+            }
+        }
+
+        async function loadContinueReading() {
+            const card = document.getElementById('continueReadingCard');
+            const container = document.getElementById('continueReadingList');
+            if (!AUTH.isLoggedIn()) { card.style.display = 'none'; return; }
+
+            try {
+                const response = await AUTH.authFetch('/api/progress');
+                if (!response.ok) { card.style.display = 'none'; return; }
+
+                const data = await response.json();
+                const items = (data.items || []).filter(i => i.book_id && i.percent < 100);
+
+                if (items.length === 0) { card.style.display = 'none'; return; }
+
+                card.style.display = '';
+                container.innerHTML = items.slice(0, 5).map(item => `
+                    <div class="list-item" style="cursor:pointer;" onclick="loadBook(${item.book_id}, ${item.page || 1})">
+                        <strong>${escapeHtml(item.title || 'Untitled')}</strong><br>
+                        <small class="muted">${escapeHtml(item.author || '')}</small><br>
+                        <small>${item.percent}% read · ${new Date(item.updated_at).toLocaleDateString()}</small>
+                    </div>
+                `).join('');
+            } catch (error) {
+                card.style.display = 'none';
             }
         }
 

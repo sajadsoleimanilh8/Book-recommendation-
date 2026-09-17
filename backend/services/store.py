@@ -161,9 +161,14 @@ def save_progress(
 
 
 def progress_for_user(session: Session, user_id: int) -> list[ReadingProgress]:
+    # Most-recently-read first — the "continue reading" UI (OI-6 follow
+    # through) shows this list as-is, and a reader expects their most recent
+    # book at the top, not database insertion order.
     return list(
         session.scalars(
-            select(ReadingProgress).where(ReadingProgress.user_id == user_id)
+            select(ReadingProgress)
+            .where(ReadingProgress.user_id == user_id)
+            .order_by(ReadingProgress.updated_at.desc())
         )
     )
 

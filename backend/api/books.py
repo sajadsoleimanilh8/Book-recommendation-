@@ -103,14 +103,15 @@ def _record_page_turn(
     *,
     excerpt_pages: int,
     had_content: bool,
+    user_id: Optional[int] = None,
 ) -> None:
     """One reading-page event — the raw material of F-26's relevance target.
 
-    Anonymous on purpose: this route takes no identity, and adding one now
-    would change its auth behaviour (a bad token 401s since OI-10) for no
-    gain, since the UI sends none. Attribution to a reader arrives with login
-    (OI-6); until then this measures which books hold readers, not which
-    reader. `page_size` is kept so aggregation can tell a genuine page turn
+    `user_id` is optional, the same shape as `book_detail`'s `BOOK_VIEW`
+    event above: a logged-in reader's page turns are now attributed to them
+    (OI-6 follow-through), an anonymous one still records `None` — anonymous
+    is signal, not noise (`interaction_events.user_id` is nullable on
+    purpose). `page_size` is kept so aggregation can tell a genuine page turn
     (the reader asks for 1) from a bulk fetch (the default 24).
 
     Never raises — `events.record` swallows its own failures, so a logging
@@ -118,7 +119,7 @@ def _record_page_turn(
     """
     events.record(
         events.READING_PAGE,
-        user_id=None,
+        user_id=user_id,
         book_id=book_pk,
         context={
             "page": page,
@@ -132,6 +133,7 @@ def _record_page_turn(
 @router.get("/api/books/{book_id}/pages")
 def book_pages_route(
     book_id: int,
+    user: OptionalUser,
     session: SessionDep,
     page: int = Query(1, ge=1),
     page_size: int = Query(24, ge=1, le=100),
@@ -142,6 +144,10 @@ def book_pages_route(
 
     Text is currently public-domain Gutenberg only (§11), and bounded to the
     opening chapters. Whole-book reading is Phase 5.
+
+    `OptionalUser`, not `CurrentUser`: reading itself has never required an
+    account (§12) and still does not — this only lets a page turn be
+    attributed to whoever is reading it, when someone is logged in.
     """
     b = main.BOOK_BY_ID.get(book_id)
     if not b:
@@ -149,12 +155,15 @@ def book_pages_route(
 
     book_pk = store.resolve_book_pk(session, b)
     record = session.get(models.BookText, book_pk) if book_pk is not None else None
+    user_id = user.id if user else None
 
     if record is None:
         # F-26: logged even though it is not reading. A request for a book we
         # hold no text for is a content gap someone tried to fill, and costs
         # nothing to record. had_content=False keeps it out of depth.
-        _record_page_turn(book_pk, page, page_size, excerpt_pages=0, had_content=False)
+        _record_page_turn(
+            book_pk, page, page_size, excerpt_pages=0, had_content=False, user_id=user_id
+        )
         # Honest empty state rather than invented prose. Section 18's
         # principle applied to content: unknown is reported, never fabricated.
         return {
@@ -187,7 +196,12 @@ def book_pages_route(
     # for page 300 of an 11-page excerpt. Those requests come back empty and
     # must not count as reading deeper; had_content is what excludes them.
     _record_page_turn(
-        book_pk, page, page_size, excerpt_pages=len(pages), had_content=bool(window)
+        book_pk,
+        page,
+        page_size,
+        excerpt_pages=len(pages),
+        had_content=bool(window),
+        user_id=user_id,
     )
 
     return {
