@@ -1865,7 +1865,7 @@ processes kept that condition true while our passes were dead.
 provider-bound, it is host-bound. Running more passes in parallel makes things
 worse, not better. Two gentle passes now, rather than three aggressive ones.
 
-### F-31 · The Google pass is quota-bound, not code-bound — **NEEDS PRODUCT DECISION**
+### F-31 · The Google pass is quota-bound, not code-bound — **DECIDED VIA OI-7**
 
 Probed the API directly rather than inferring from the failure logs:
 
@@ -1885,10 +1885,10 @@ This is not something more engineering can fix. Both circuit breakers now stop
 cleanly and save progress, which is the correct behaviour — but the ceiling is
 the quota, and the quota increase request is the only thing that moves it.
 
-**Decision needed:** if the increase is declined or slow, the fallback is to
-accept Open Library-only coverage for the English set (weaker on modern
-titles) or to pace Google at ~800 books/day as a standing background job.
-Logged as OI-7.
+**Decided (2026-09-16, OI-7): run the standing job at the current quota
+now** rather than wait idle for the increase, accelerating automatically
+if/when it lands. See OI-7 for the full decision record and
+implementation — this entry is kept only as the original discovery record.
 
 ### Both new guards proved themselves within 9 minutes of shipping
 
