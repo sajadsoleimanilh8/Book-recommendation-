@@ -130,6 +130,9 @@ def semantic_search_route(
         hits = search_chunks(session, vector, user_id=user_id, limit=limit, **filters)
         items = [h.as_dict() for h in hits]
     else:
+        # search_books now queries book_vectors (F-44), which covers the
+        # whole catalogue — not search_chunks collapsed to one row per book,
+        # which could only ever find the ~23% of books with a chunk.
         items = search_books(session, vector, user_id=user_id, limit=limit, **filters)
 
     # F-42. Search queries are the clearest statement of intent a reader ever
@@ -154,8 +157,11 @@ def semantic_search_route(
         # Named so a caller can tell which vector space produced the ranking;
         # comparing scores across backends is meaningless.
         "backend": encoder.name,
-        # Honest about scope: an empty list means nothing matched, not that
-        # the book does not exist. Only part of the catalogue is embedded.
-        "scope": "embedded passages only",
+        # Honest about scope, and no longer the same answer for both modes:
+        # passage search still only covers books with a chunk (~23% of the
+        # catalogue, growing as OI-7's enrichment fills it in); book-level
+        # search now covers all of it via book_vectors (F-44). An empty list
+        # means nothing matched, never that the book does not exist.
+        "scope": "embedded passages only" if by_passage else "full catalogue",
     }
 

@@ -35,7 +35,7 @@ from typing import Sequence
 from sqlalchemy import Select, and_, false, or_, select
 from sqlalchemy.orm import Session
 
-from db.models import Book, BookChunk
+from db.models import Book, BookChunk, BookVector
 
 log = logging.getLogger(__name__)
 
@@ -183,29 +183,98 @@ def search_chunks(
     return hits
 
 
+@dataclass(frozen=True)
+class BookHit:
+    """A book-level semantic match — F-44's `book_vectors`, not a passage.
+
+    Deliberately not `SearchHit`: there is no chunk, no ordinal, no passage
+    text, and forcing this into that shape would mean inventing placeholder
+    values for fields that do not apply. `has_description` says whether the
+    vector saw real description text or only title/author/genre — the same
+    "thin vs rich" distinction `book_vectors` itself records, useful for a
+    caller (or an LLM grounding on this) to know how much to trust a match.
+    """
+
+    book_id: int
+    title: str
+    author: str | None
+    similarity: float
+    has_description: bool
+
+    def as_dict(self) -> dict:
+        return {
+            "book_id": self.book_id,
+            "title": self.title,
+            "author": self.author,
+            "similarity": round(self.similarity, 4),
+            "has_description": self.has_description,
+        }
+
+
 def search_books(
     session: Session,
     query_vector: Sequence[float],
     *,
     user_id: int | None = None,
     limit: int = DEFAULT_LIMIT,
+    min_similarity: float = MIN_SIMILARITY,
+    embedding_model: str | None = None,
     **filters,
 ) -> list[dict]:
-    """Chunk hits collapsed to one row per book, keeping the best passage.
+    """Nearest books by `book_vectors` — one embedding per book, F-44.
 
-    A reader searching for a theme does not want six passages from the same
-    novel occupying the whole first page. Over-fetching and then collapsing
-    keeps the ranking honest: the book's score is its single best passage,
-    not an average diluted by the rest of the text.
+    Replaces the earlier "collapse `search_chunks` to one row per book"
+    approach (kept as `search_chunks`/`search_by_passage` for passage-level
+    callers). That approach could only ever find the 23.3% of the catalogue
+    that has a chunk — a book with no description and no stored text was
+    invisible to book-level search regardless of how well it matched,
+    silently, since an empty result looks identical to "nothing matched."
+    `book_vectors` covers the whole catalogue (100%, F-44) with a uniform
+    recipe, so this covers every book, not just the ones with rich text.
+
+    `user_id` is accepted but unused: `book_vectors` has no per-user rows to
+    authorize (unlike `book_chunks`, which carries private uploads, §22) —
+    every book vector is derived from the public catalogue. Kept in the
+    signature so callers do not need to branch between this and
+    `search_chunks`.
     """
-    hits = search_chunks(
-        session, query_vector, user_id=user_id, limit=min(MAX_LIMIT, limit * 4), **filters
+    limit = max(1, min(int(limit), MAX_LIMIT))
+
+    distance = BookVector.embedding.cosine_distance(list(query_vector))
+    stmt = (
+        select(
+            BookVector.book_id,
+            BookVector.has_description,
+            Book.title,
+            Book.author,
+            distance.label("distance"),
+        )
+        .join(Book, Book.id == BookVector.book_id)
+        .where(BookVector.embedding.isnot(None))
     )
+    if embedding_model:
+        stmt = stmt.where(BookVector.embedding_model == embedding_model)
+    stmt = _apply_filters(
+        stmt,
+        language=filters.get("language"),
+        genre=filters.get("genre"),
+        min_year=filters.get("min_year"),
+        max_year=filters.get("max_year"),
+    )
+    stmt = stmt.order_by(distance).limit(limit)
 
-    best: dict[int, SearchHit] = {}
-    for hit in hits:
-        if hit.book_id not in best or hit.similarity > best[hit.book_id].similarity:
-            best[hit.book_id] = hit
-
-    ordered = sorted(best.values(), key=lambda h: h.similarity, reverse=True)
-    return [h.as_dict() for h in ordered[:limit]]
+    hits: list[dict] = []
+    for row in session.execute(stmt):
+        similarity = 1.0 - float(row.distance)
+        if similarity < min_similarity:
+            continue
+        hits.append(
+            BookHit(
+                book_id=row.book_id,
+                title=row.title,
+                author=row.author,
+                similarity=similarity,
+                has_description=row.has_description,
+            ).as_dict()
+        )
+    return hits

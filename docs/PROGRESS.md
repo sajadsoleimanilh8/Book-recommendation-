@@ -452,10 +452,48 @@ skipped_empty           0
 Seconds on the GPU. Both populations exist and are counted, so the coverage
 is demonstrably not accidental.
 
-**Not yet wired into ranking.** Building the vectors and switching `content_s`
-onto them are separate commits on purpose: the first is additive and changes
-no behaviour, the second will move every ranking and needs the golden
-baselines read rather than regenerated.
+**Wired into ranking the same day, F-46.** Building the vectors and switching
+`content_s` onto them were separate commits on purpose: this one is additive
+and changed no behaviour; F-46 is the one that moved every ranking, with the
+golden baselines read rather than regenerated.
+
+**Wired into book-level semantic search, 2026-09-18 (F-44 follow-through).**
+`GET /api/search/semantic`'s book-level mode (`by_passage=false`, the
+default) queried `book_chunks` collapsed to one row per book, same as
+passage search — which meant it inherited passage search's coverage limit
+(~23% of the catalogue, chunks only) for no reason: nothing about "find a
+book like X" needs a passage, only a book-level vector, and one already
+existed with 100% coverage. `services/search.py::search_books` now queries
+`book_vectors` directly. Verified live against the real catalogue: queries
+for "overcoming grief and loss" and "philosophy of science" both returned
+five coherent, on-topic books, every one of them `has_description: false` —
+i.e. every result came from a book that would have been invisible to the old
+chunk-based book search, matched purely on title/author/genre. Guarded by
+three new tests in `tests/test_search.py`, sabotage-checked
+(`test_book_level_search_finds_a_book_with_no_chunk_at_all` is the one that
+proves the coverage claim directly, not just by inspection).
+
+Passage search (`by_passage=true`) is untouched and still `book_chunks`-based
+— deliberately: `book_chunks` and `book_vectors` are built from different
+text (a real passage vs. `title. author. genre. description`), so their
+similarity scores are not comparable and were never merged into one ranked
+list (the same principle F-39 already established: comparable vectors need
+comparable construction, not merely the same model).
+
+**A real bug in the test fixtures, found and fixed before it could land.**
+The first version of the new tests' `book_vectors` fixtures deleted a real
+catalogue book's `book_vectors` row in setup and only deleted it again in
+teardown — never restoring the original. `book_chunks` fixtures already do
+exactly this delete-and-leave-empty pattern safely, because nothing depends
+on every chunk existing. `book_vectors` is different: `load_content_vectors`
+(`services/store.py`) is all-or-nothing — one missing book_vectors row falls
+the *entire* ML fit back to TF-IDF, moving every golden ranking score. Caught
+by running the full suite, not just the new tests: `tests/test_golden_ranking
+.py` failed 10 ways after the search tests ran and left `digikitab_test`
+short two rows. Fixed by snapshotting the original row before deleting it and
+restoring it in teardown, and the already-damaged test database was repaired
+(`book_vector_pass` regenerated the 2 missing rows) before trusting a green
+run again.
 
 ### F-48 · All 6,307 Gutenberg books were mislabelled `language='it'` — **FIXED**
 
@@ -2326,6 +2364,7 @@ Carried deliberately, with the reason. Each has a closing phase.
 | F-11 | Unmounted second frontend | Product owner deferred — OI-1 | Phase 7 |
 | F-20 | Full ML refit on every boot, no artefact persistence | Partially addressed in PR 1 (`limit` cap) | Phase 1 |
 | **F-51** | **Ranking is not reproducible across separate model fits, for near-tied candidates.** Found while reviewing F-47's golden diff: two candidates ~0.001-0.005 apart in score returned in different order across separate fresh fits of the identical code and data, while agreeing every time within one fit. Rules out the bandit (unseeded, would vary within a fit too) and `MiniBatchKMeans` (`random_state=42` already set). Suspected cause: GPU floating-point non-determinism in the MiniLM embedding pass — the one input to ranking that is neither seeded nor cached across fits. Currently worked around in the golden tests with an evidence-based safe prefix (`MAX_SAFE_PREFIX` in `test_golden_ranking.py`), not fixed at the source | Needs isolating the actual source (start by comparing raw MiniLM embedding output across two fresh fits on identical input, bit for bit) and either a deterministic CUDA mode or a documented, accepted tolerance. Touches the core ML fit; deserves its own review | Phase 8 (evaluation) |
+| **F-52** | **`test_every_priced_result_actually_has_a_known_price` fails intermittently — a `KeyError: 'availability'`.** Found while verifying the F-44 book-vectors search wiring did not regress anything else; reproduced on unmodified `main` too via `git stash`, so it is unrelated to that change and pre-existing. `_recommend(client, max_price=5)` — no genre filter, unlike its two sibling tests which both pass `genre="Fiction"` — occasionally returns at least one item with no `availability` key at all. 3 isolated re-runs: 2 failed, 1 passed, so it is genuinely intermittent, not a one-off fluke or a fixture-ordering artefact. Not investigated further or fixed — out of scope for the change it was found during | Needs reproducing deliberately (seed the bandit's exploration slot, or log which book triggers it) and tracing why an unfiltered `/api/recommend` call can surface an item shaped differently from a filtered one | Phase 3 (ranking work already owns this endpoint) |
 
 ---
 

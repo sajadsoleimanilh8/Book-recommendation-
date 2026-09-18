@@ -26,7 +26,7 @@ pytestmark = pytest.mark.skipif(
 
 from db import SessionLocal  # noqa: E402
 from embeddings import get_backend  # noqa: E402
-from models import Book, BookChunk, User  # noqa: E402
+from models import Book, BookChunk, BookVector, User  # noqa: E402
 
 ENCODER = get_backend("hashing")
 PUBLIC_TEXT = "a public passage about whales harpoons and the wide grey ocean"
@@ -68,7 +68,36 @@ def seeded(client):
         owner_id = session.scalar(
             select(User.id).where(User.email == "carol.search@example.com")
         )
+        # `load_content_vectors` (services/store.py) is all-or-nothing: one
+        # book in the whole catalogue missing a book_vectors row falls the
+        # ML fit back to TF-IDF for everything, moving every golden ranking
+        # score. Snapshotting the real row and restoring it in teardown,
+        # rather than deleting and leaving it empty, is what stops this
+        # fixture from breaking the golden suite the next time it runs
+        # against this database.
+        original = session.scalar(
+            select(BookVector).where(BookVector.book_id == book_id)
+        )
+        original_snapshot = (
+            {
+                "embedding": original.embedding,
+                "embedding_model": original.embedding_model,
+                "has_description": original.has_description,
+                "source_chars": original.source_chars,
+            }
+            if original is not None
+            else None
+        )
+        if original is not None:
+            # The bulk `Table.delete()` below deletes the row at the DB level
+            # but does not expire this already-loaded ORM object from the
+            # session's identity map — without expunging it, adding a new
+            # BookVector for the same book_id later in this function raises a
+            # SQLAlchemy identity-map warning (two objects, one primary key).
+            session.expunge(original)
+
         session.execute(BookChunk.__table__.delete().where(BookChunk.book_id == book_id))
+        session.execute(BookVector.__table__.delete().where(BookVector.book_id == book_id))
         session.add_all(
             [
                 BookChunk(
@@ -83,6 +112,18 @@ def seeded(client):
                     embedding=ENCODER.encode([SECRET_TEXT])[0].tolist(),
                     embedding_model="hashing",
                 ),
+                # Book-level search (by_passage=False, the default) now
+                # queries book_vectors, not a chunk collapse (F-44) — without
+                # this row these tests would silently exercise zero items on
+                # that path, since the real catalogue's book_vectors are all
+                # "minilm" and this fixture pins the query encoder to
+                # "hashing" for determinism.
+                BookVector(
+                    book_id=book_id,
+                    embedding=ENCODER.encode([PUBLIC_TEXT])[0].tolist(),
+                    embedding_model="hashing",
+                    has_description=True,
+                ),
             ]
         )
         session.commit()
@@ -91,6 +132,9 @@ def seeded(client):
 
     with SessionLocal() as session:
         session.execute(BookChunk.__table__.delete().where(BookChunk.book_id == book_id))
+        session.execute(BookVector.__table__.delete().where(BookVector.book_id == book_id))
+        if original_snapshot is not None:
+            session.add(BookVector(book_id=book_id, **original_snapshot))
         session.commit()
 
 

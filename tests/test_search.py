@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(
 
 from db import SessionLocal  # noqa: E402
 from embeddings import get_backend  # noqa: E402
-from models import Book, BookChunk, User  # noqa: E402
+from models import Book, BookChunk, BookVector, User  # noqa: E402
 from search import search_books, search_chunks, visible_chunks  # noqa: E402
 
 ENCODER = get_backend("hashing")
@@ -86,6 +86,81 @@ def corpus():
 
 def _passages(hits):
     return {h.passage for h in hits}
+
+
+@pytest.fixture
+def book_vector_corpus():
+    """Two books: one with a chunk (findable the old way), one deliberately
+    without (the case `search_books` used to be blind to, F-44's whole
+    point) — both get a `book_vectors` row, since that is what book-level
+    search now queries.
+
+    `book_vectors` is not like `book_chunks`: `load_content_vectors`
+    (services/store.py) is all-or-nothing — if even one book in the whole
+    catalogue is missing a vector, the ML fit falls back to TF-IDF for
+    *everything*, moving every golden ranking score. A delete-and-leave-empty
+    teardown (the pattern the chunk fixtures use, safely, since nothing reads
+    "all chunks exist") would silently break the golden suite the next time
+    it runs against this database. So the original row is snapshotted first
+    and put back, not just deleted.
+    """
+    with SessionLocal() as session:
+        books = list(session.scalars(select(Book).limit(2)))
+        assert len(books) == 2, "test catalogue needs at least two books"
+        with_chunk, chunkless = books[0].id, books[1].id
+
+        original = {
+            row.book_id: row
+            for row in session.scalars(
+                select(BookVector).where(BookVector.book_id.in_([with_chunk, chunkless]))
+            )
+        }
+        original_snapshot = {
+            book_id: {
+                "embedding": row.embedding,
+                "embedding_model": row.embedding_model,
+                "has_description": row.has_description,
+                "source_chars": row.source_chars,
+            }
+            for book_id, row in original.items()
+        }
+        # See test_search_endpoint.py's `seeded` fixture for why this
+        # expunge matters: the bulk delete below does not expire these
+        # already-loaded ORM objects from the identity map, so re-adding a
+        # BookVector for the same book_id later raises a SQLAlchemy warning.
+        for row in original.values():
+            session.expunge(row)
+
+        session.execute(BookChunk.__table__.delete().where(BookChunk.book_id == with_chunk))
+        session.execute(BookVector.__table__.delete().where(
+            BookVector.book_id.in_([with_chunk, chunkless])
+        ))
+
+        session.add(BookChunk(
+            book_id=with_chunk, user_id=None, visibility="public", ordinal=0,
+            content=PUBLIC_TEXT, char_count=len(PUBLIC_TEXT),
+            embedding=_vec(PUBLIC_TEXT), embedding_model="hashing",
+        ))
+        session.add_all([
+            BookVector(
+                book_id=with_chunk, embedding=_vec(PUBLIC_TEXT),
+                embedding_model="hashing", has_description=True,
+            ),
+            BookVector(
+                book_id=chunkless, embedding=_vec(PUBLIC_TEXT),
+                embedding_model="hashing", has_description=False,
+            ),
+        ])
+        session.commit()
+        yield {"with_chunk": with_chunk, "chunkless": chunkless}
+
+        session.execute(BookChunk.__table__.delete().where(BookChunk.book_id == with_chunk))
+        session.execute(BookVector.__table__.delete().where(
+            BookVector.book_id.in_([with_chunk, chunkless])
+        ))
+        for book_id, fields in original_snapshot.items():
+            session.add(BookVector(book_id=book_id, **fields))
+        session.commit()
 
 
 # -- authorization ---------------------------------------------------------
@@ -165,12 +240,48 @@ def test_nonsense_query_returns_nothing_rather_than_a_bad_guess(corpus):
         assert hits == []
 
 
-def test_book_level_search_collapses_duplicate_books(corpus):
-    """Six passages from one novel must not fill the whole first page."""
+def test_book_level_search_returns_each_book_once(book_vector_corpus):
+    """`book_vectors` is one row per book by construction (primary key), but
+    prove it rather than trust the schema silently."""
     with SessionLocal() as session:
-        rows = search_books(session, _vec(PUBLIC_TEXT), user_id=corpus["alice"], limit=10)
+        rows = search_books(
+            session, _vec(PUBLIC_TEXT), limit=10, embedding_model="hashing"
+        )
         book_ids = [r["book_id"] for r in rows]
         assert len(book_ids) == len(set(book_ids))
+
+
+def test_book_level_search_finds_a_book_with_no_chunk_at_all(book_vector_corpus):
+    """F-44's whole point, proven directly: the old `search_books` (collapsed
+    `search_chunks`) could only ever find the ~23% of the catalogue with a
+    chunk — a book with no description and no stored text was invisible to
+    it regardless of how well it matched, silently, since an empty result
+    looks identical to "nothing matched." `book_vectors` covers every book,
+    so the chunkless one must be findable too."""
+    with SessionLocal() as session:
+        rows = search_books(
+            session, _vec(PUBLIC_TEXT), limit=10, min_similarity=0.0,
+            embedding_model="hashing",
+        )
+        book_ids = {r["book_id"] for r in rows}
+        assert book_vector_corpus["chunkless"] in book_ids, (
+            "a book with no chunk was invisible to book-level search"
+        )
+        assert book_vector_corpus["with_chunk"] in book_ids
+
+
+def test_book_level_search_reports_whether_the_vector_saw_a_description(book_vector_corpus):
+    """`has_description` is what lets a caller (or an LLM grounding on this)
+    tell a vector built from real description text apart from one built from
+    title/author/genre alone."""
+    with SessionLocal() as session:
+        rows = search_books(
+            session, _vec(PUBLIC_TEXT), limit=10, min_similarity=0.0,
+            embedding_model="hashing",
+        )
+        by_id = {r["book_id"]: r for r in rows}
+        assert by_id[book_vector_corpus["with_chunk"]]["has_description"] is True
+        assert by_id[book_vector_corpus["chunkless"]]["has_description"] is False
 
 
 def test_limit_is_clamped_not_trusted(corpus):
