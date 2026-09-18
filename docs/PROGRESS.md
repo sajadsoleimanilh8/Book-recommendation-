@@ -1456,7 +1456,7 @@ This is very likely why F-03 survived so long: the one diagnostic that would
 have shown `books_loaded: 3000` was itself unusable in the healthy case.
 Fixed to read `.best_k`.
 
-### F-22 · The chatbot never returns recommendations — OPEN, PR 2
+### F-22 · The chatbot never returns recommendations — **IN PROGRESS, phased (2026-09-18)**
 `ChatbotEngine.respond()` initialises `response["books"] = []` and never
 populates it, for any intent. It classifies intent correctly
 (`"recommend me a dark thriller"` → `recommend`, confidently) then returns a
@@ -1465,8 +1465,93 @@ classifier with hardcoded replies and no connection to the recommender.**
 
 Covered by `test_chatbot_returns_recommendations`, marked `xfail(strict=True)`
 so it will fail loudly the moment it starts working and the marker can be
-removed. Wiring it to `recommend_by_profile` is small — deferred only to keep
-PR 1 to verified-safe changes.
+removed.
+
+**The original note here said wiring it to `recommend_by_profile` "is small."
+That is still true of the narrow fix and no longer the goal.** The product
+owner's intent (2026-09-18) is the AI Librarian of prmpt.md §28 — a model that
+actually converses and composes tool calls against the catalogue, not a
+classifier that finally returns a `books` list. Scoped before building (a
+new subsystem, not a patch: provider abstraction, agentic tool loop,
+fallback design, conversation state, and a search-coverage gap surfaced
+along the way), then sequenced into five independently shippable phases,
+each confirmed with the product owner before the next starts:
+
+| Phase | What | State |
+|---|---|---|
+| A | Wire `book_vectors` into book-level search (100% catalogue coverage, was ~23%) | **Done**, `a861994` |
+| B | `LLMProvider` interface + local-model fallback chain | **Done** — below |
+| C | The tool loop: `search_catalog`, `check_availability`, `check_user_library`, `get_reading_profile` wired into `ChatbotEngine.respond()` | Not started |
+| D | Conversation history (client- vs server-side; `ChatbotRequest` has no history field, and `chatbot.html` declares `state.history` but never uses it) | Not started |
+| E | Resolve the `xfail(strict=True)` above; real coverage for the tool loop and fallback path | Not started |
+
+**Decided: local model, not API-based.** Ollama was already installed on this
+machine (0.33.2) and already held `qwen2.5:7b` and `qwen2.5:3b` — no API key,
+no per-call cost, stays consistent with the app's local-only posture. The
+real risk of a local model is reliability at the multi-step tool composition
+§28 asks for, so it was measured before being chosen, not assumed:
+
+| Model | VRAM (`ollama ps`: 100% GPU) | §28's own worked example |
+|---|---|---|
+| `qwen2.5:7b` | 4.7 GB | correct tool (`search_catalog`), query extracted, exclusion (`James Clear`) extracted |
+| `qwen2.5:3b` | 2.2 GB | same, ~0.3s |
+
+GPU: RTX 5070 Ti Laptop, 12.8 GB total, ~10 GB free at the time (the rest is
+ordinary desktop compositing — browsers, shell, Docker Desktop — not a
+competing ML workload; `torch 2.11.0+cu128` correctly recognises it as
+`sm_120`/Blackwell). Both models fit alongside MiniLM's ~90 MB with room to
+spare.
+
+**Phase B — built.** `backend/services/providers/llm.py`, next to the
+`BookProvider` adapters and following the same §10 principle ("every external
+dependency must sit behind an interface"): `LLMProvider` (a `Protocol`),
+`OllamaProvider(model)`, `FallbackLLM([...])`, `get_llm_provider()` returning
+`qwen2.5:7b` then `qwen2.5:3b` (overridable via `LLM_MODEL` /
+`LLM_FALLBACK_MODEL` / `OLLAMA_BASE_URL`), and one specific exception,
+`LLMUnavailable`, raised only once every tier has failed.
+
+Two design decisions worth recording rather than leaving implicit:
+
+* **The classifier is not a tier in this chain.** The scoping request framed
+  the fallback as "qwen2.5:3b or the existing classifier." The classifier has
+  no chat shape — no free-form generation, no messages/tools abstraction —
+  so wrapping it as a fake `LLMProvider` would be the wrong abstraction. The
+  full §12 chain is 7b → 3b (this module) → `LLMUnavailable` → `ChatbotEngine`'s
+  existing classify-and-template behaviour (Phase C wires that last step;
+  this module's job ends at raising one catchable exception).
+* **`FallbackLLM` catches `LLMUnavailable` only, not `Exception`.** A bug in
+  a provider (a `KeyError` in response parsing, say) falling silently through
+  to the next model would hide a real defect behind a working fallback.
+  Sabotage-checked: widening the `except` fails exactly
+  `test_a_non_llm_error_is_not_swallowed_as_unavailability`.
+
+Not built on `providers.base.fetch_json`: that helper is GET-only and tuned
+for the metadata backfill's retry ladder and `QuotaExceeded`; a chat call is
+one POST with a JSON body against an endpoint with no daily quota. Sharing it
+would have meant bending it, not reusing it.
+
+Thirteen tests (`tests/test_llm_provider.py`), in two deliberately separate
+groups: the chain's own logic against fake providers (deterministic, no
+Ollama needed), and the real wiring against the actual local models,
+skipped-not-failed when Ollama is unreachable — the same convention as
+`database_reachable()`, since a green run on a machine that cannot run the
+model would be exactly the "test that can pass without executing the code
+under test" F-45 named. The live group uses *real* failures rather than
+mocked ones: a request for a model that was never pulled (Ollama answers
+`404 {"error": "model '…' not found"}`, verified against this instance before
+the test was written) and a port with nothing listening. Three sabotages,
+each caught by exactly the intended tests and no others: breaking the
+fallthrough (3 failures, including the live fallback test), widening the
+`except` (1), and letting raw `URLError`/`HTTPError` escape instead of
+converting them (4).
+
+**Measured, not assumed:** ~0.3s warm for either model on a short answer
+(the ~2.4s figure from the scoping run was true cold start with the model
+unloaded), and a dead primary costs ~nothing to fall past — the failed
+attempt is a fast 404. One thing noticed and left alone: `qwen2.5:7b`'s free
+text on one probe began with a stray `">` — a cosmetic model quirk on prose,
+irrelevant to tool calls, but a reason Phase C should look at real generated
+answers rather than assume they render cleanly.
 
 ### F-23 · pandas 3 / Arrow broke the entire ML engine — FIXED
 Under pandas 3, `df["genre"].astype(str).values` returns an
@@ -2373,7 +2458,7 @@ Carried deliberately, with the reason. Each has a closing phase.
 | Key | Status | Notes |
 |---|---|---|
 | `GOOGLE_BOOKS_API_KEY` | **In place and verified working**, 2026-09-16 | The 2026-08-19 key was never found at the `D:\final\.env` path this table originally pointed to — neither there nor at the project root when checked on 2026-09-16 (OI-7 setup). Rather than guess whether it was lost, moved, or expired, the product owner issued a fresh key. Placed at `D:\final\final\final_clean\.env` (the path `core/config.py`'s `load_dotenv` actually reads) and confirmed live: a direct volume lookup, a plain search, and the exact `intitle:`/`inauthor:` query `enrich.py` uses all succeeded. Now driving the OI-7 standing job. |
-| LLM provider | Not requested yet | Phase 2 |
+| LLM provider | **Not needed** — local, decided 2026-09-18 | `qwen2.5:7b` primary, `qwen2.5:3b` fallback, via the Ollama already installed on this machine (F-22 Phase B). No API key, no cost. An API-based provider would slot in behind the same `LLMProvider` interface without touching callers, if that ever changes. |
 | Embedding provider | Not requested yet | Phase 2 |
 | TTS provider | Not requested yet | Phase 6 |
 | Object storage | Not requested yet | Phase 6 |
