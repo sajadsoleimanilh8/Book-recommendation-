@@ -187,16 +187,43 @@ def test_audiobook_stream_404s_for_ungenerated_book(client):
     assert r.status_code == 404
 
 
-@pytest.mark.xfail(
-    reason="F-22: ChatbotEngine.respond never populates response['books'] "
-    "for any intent — the chatbot is an intent classifier with canned "
-    "replies. Pre-existing; tracked for PR 2.",
-    strict=True,
-)
 def test_chatbot_returns_recommendations(client):
-    r = client.post(
-        "/api/chat", json={"user_id": "t", "message": "recommend me a dark thriller"}
-    )
+    """F-22, was xfail(strict=True) while the chatbot was an intent classifier
+    with canned replies. Now driven through the real app with a scripted model
+    (deterministic — the live model is exercised separately in
+    tests/test_librarian.py and by hand): the model asks the real catalogue
+    search for books and quotes what comes back.
+
+    Pulled forward from Phase E because Phase C is exactly the change that
+    flips this test — leaving a strict xfail in place would have failed the
+    suite the moment the fix worked, which is what strict is for."""
+    import json
+
+    import main
+    from services.providers.llm import LLMResponse, ToolCall
+
+    class SearchesThenQuotes:
+        name = "scripted"
+        calls = 0
+
+        def chat(self, messages, *, tools=None):
+            self.calls += 1
+            if self.calls == 1:
+                return LLMResponse(content="", tool_calls=[
+                    ToolCall(id="", name="search_catalog", arguments={"query": "dark thriller"})
+                ])
+            tool = json.loads(next(m for m in reversed(messages) if m["role"] == "tool")["content"])
+            return LLMResponse(content=f'Try "{tool["results"][0]["title"]}".')
+
+    engine = main.RECOMMENDER.chatbot
+    original = engine.librarian.llm
+    engine.librarian.llm = SearchesThenQuotes()
+    try:
+        r = client.post(
+            "/api/chat", json={"user_id": "t", "message": "recommend me a dark thriller"}
+        )
+    finally:
+        engine.librarian.llm = original
     assert r.json()["recommendations"], "chatbot returned no books"
 
 

@@ -83,7 +83,7 @@ class LLMProvider(Protocol):
 
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         tools: Optional[list[dict[str, Any]]] = None,
     ) -> LLMResponse: ...
@@ -113,7 +113,7 @@ class OllamaProvider:
 
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         tools: Optional[list[dict[str, Any]]] = None,
     ) -> LLMResponse:
@@ -180,7 +180,7 @@ class FallbackLLM:
 
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         tools: Optional[list[dict[str, Any]]] = None,
     ) -> LLMResponse:

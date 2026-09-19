@@ -27,6 +27,8 @@ from sklearn.pipeline import Pipeline
 from domain.entities import MOOD_GENRE_MAP, UserProfile
 from services.audio import AudiobookEngine
 from services.comments import CommentEngine
+from services.librarian import Librarian, default_deps
+from services.providers.llm import LLMUnavailable, get_llm_provider
 
 if TYPE_CHECKING:
     from services.recommendation import Recommender
@@ -103,6 +105,11 @@ class ChatbotEngine:
         self.classifier: Optional[Pipeline] = None
         self._train_classifier()
 
+        # F-22 Phase C: the LLM tool loop sits in front of the classifier.
+        # Set to None to run classifier-only (tests do; so does anyone who
+        # wants the pre-F-22 behaviour back).
+        self.librarian: Optional[Librarian] = Librarian(get_llm_provider(), default_deps())
+
     def _train_classifier(self):
         texts, labels = zip(*CHATBOT_CORPUS)
         self.classifier = Pipeline([
@@ -164,6 +171,7 @@ class ChatbotEngine:
         user_id: str = "guest",
         profile: Optional[UserProfile] = None,
         book_idx: Optional[int] = None,
+        account_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         intent, confidence = self.classify_intent(user_message)
         slots = self._extract_slots(user_message)
@@ -175,7 +183,27 @@ class ChatbotEngine:
             "books": [],
             "message": "",
             "action": None,
+            "mode": "classifier",
         }
+
+        if self.librarian is not None:
+            try:
+                result = self.librarian.answer(
+                    user_message, account_id=account_id, profile=profile
+                )
+            except LLMUnavailable as exc:
+                # Section 12: every model in the chain is down. Say so in the
+                # log and carry on with the deterministic reply below.
+                log.warning(f"librarian unavailable, using classifier fallback: {exc}")
+            else:
+                response.update(
+                    message=result.message,
+                    books=result.books,
+                    mode="llm",
+                    llm={"model": result.model, "steps": result.steps,
+                         "grounded": result.grounded},
+                )
+                return response
 
         if intent == "recommend":
             response["message"] = "I can help with book recommendations!"

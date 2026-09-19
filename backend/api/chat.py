@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 import main
+from auth import OptionalUser
 from schemas.chat import ChatbotRequest
 
 router = APIRouter()
@@ -17,7 +18,7 @@ router = APIRouter()
 
 @router.post("/chatbot")
 @router.post("/api/chat")
-def chatbot(payload: ChatbotRequest):
+def chatbot(payload: ChatbotRequest, user: OptionalUser):
     if not main.RECOMMENDER or not getattr(main.RECOMMENDER, 'chatbot', None):
         return main.error_response("Chatbot engine not ready.")
 
@@ -28,6 +29,10 @@ def chatbot(payload: ChatbotRequest):
             user_id=payload.user_id,
             profile=profile,
             book_idx=payload.book_id,
+            # The real account, never `payload.user_id`: that is a free-text
+            # profile key anyone can send, and the librarian's library tool
+            # reads private reading history (F-07).
+            account_id=user.id if user else None,
         )
     except Exception as e:
         return main.error_response(f"Chatbot error: {str(e)}")

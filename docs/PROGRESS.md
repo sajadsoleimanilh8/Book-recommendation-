@@ -1456,7 +1456,9 @@ This is very likely why F-03 survived so long: the one diagnostic that would
 have shown `books_loaded: 3000` was itself unusable in the healthy case.
 Fixed to read `.best_k`.
 
-### F-22 · The chatbot never returns recommendations — **IN PROGRESS, phased (2026-09-18)**
+### F-22 · The chatbot never returns recommendations — **FIXED 2026-09-19**
+*(the finding itself is closed; the librarian it grew into still has one
+phase left — conversation history, D below)*
 `ChatbotEngine.respond()` initialises `response["books"] = []` and never
 populates it, for any intent. It classifies intent correctly
 (`"recommend me a dark thriller"` → `recommend`, confidently) then returns a
@@ -1481,9 +1483,9 @@ each confirmed with the product owner before the next starts:
 |---|---|---|
 | A | Wire `book_vectors` into book-level search (100% catalogue coverage, was ~23%) | **Done**, `a861994` |
 | B | `LLMProvider` interface + local-model fallback chain | **Done** — below |
-| C | The tool loop: `search_catalog`, `check_availability`, `check_user_library`, `get_reading_profile` wired into `ChatbotEngine.respond()` | Not started |
+| C | The tool loop: `search_catalog`, `check_availability`, `check_user_library`, `get_reading_profile` wired into `ChatbotEngine.respond()` | **Done** — below |
 | D | Conversation history (client- vs server-side; `ChatbotRequest` has no history field, and `chatbot.html` declares `state.history` but never uses it) | Not started |
-| E | Resolve the `xfail(strict=True)` above; real coverage for the tool loop and fallback path | Not started |
+| ~~E~~ | ~~Resolve the `xfail(strict=True)`; real coverage for the tool loop and fallback path~~ | **Folded into C** — the xfail is `strict`, so the suite fails the moment the fix works. Leaving it for a later phase was never an option once C landed. |
 
 **Decided: local model, not API-based.** Ollama was already installed on this
 machine (0.33.2) and already held `qwen2.5:7b` and `qwen2.5:3b` — no API key,
@@ -1553,7 +1555,60 @@ text on one probe began with a stray `">` — a cosmetic model quirk on prose,
 irrelevant to tool calls, but a reason Phase C should look at real generated
 answers rather than assume they render cleanly.
 
-### F-23 · pandas 3 / Arrow broke the entire ML engine — FIXED
+**Phase C — built.** `backend/services/librarian.py`: the tool loop, the four
+§28 tools, and the grounding guards. `ChatbotEngine.respond()` calls it first
+and falls back to its own classifier on `LLMUnavailable`; the response now
+carries `mode` (`"llm"` / `"classifier"`) so which path answered is visible
+rather than guessed at.
+
+Three structural decisions:
+
+* **No tool takes a user id.** §28's sketch has `check_user_library(user_id)`.
+  Here identity comes from the authenticated request and nowhere else — a
+  model that can pass a `user_id` can be talked into passing someone else's,
+  and "what has user 7 been reading" is exactly the read F-07's authz sweep
+  closed. `/api/chat` now takes `OptionalUser`, never `payload.user_id` (a
+  free-text profile key anyone can send). Sabotage-checked both tools that
+  read a library.
+* **Book data reaches the reader from tool results, never from the prose.**
+  The `books` list is assembled from catalogue rows the tools returned, then
+  narrowed to the ones the answer actually mentions, so caption and cards
+  agree. The model's text is a caption on that list, not a source for it.
+* **A bug in the loop is not an outage.** Only `LLMUnavailable` triggers the
+  classifier fallback. Swallowing everything would be F-30's
+  `except Exception: continue` again — one error quietly becoming all of them.
+
+**Every guard in this file exists because a real run produced the failure it
+catches.** None were designed in advance:
+
+| Real output | Guard |
+|---|---|
+| `"a price tag of $35.00 and is currently available"` — for a book whose price is unknown, after one search and no availability check | `_facts_problem`: a currency amount must match one `check_availability` returned; price/availability *wording* requires the tool to have been called at all; any other figure (years, ratings) must appear in tool output or the reader's own message |
+| `"rated 4.0035747133"`, `"similarity score of 0.753"` | raw scores are no longer shown to the model — rating is rounded, similarity is not sent |
+| `"I couldn't find any dark thriller books"` — zero results, because the model passed `genre: "thriller"` and 39.9% of the catalogue is genre-`Unknown` | the `genre` parameter is gone from the schema; an argument that sneaks in anyway does not filter |
+| flagged `"Atomic Habits"` as invented — the reader had named it in their own message | quoted spans the reader used are exempt |
+| `"A narrative exploring the enigmatic life of Jay Gatsby…"` — a description invented for a book with none | placeholder descriptions are never offered as summaries, and the model is told to say the catalogue holds none |
+
+An answer that fails any guard is replaced by a deterministic sentence built
+from the tool rows, and `grounded: false` is reported. The title guard's limit
+is written down in the code rather than papered over: it only catches titles
+written the way the prompt asks for them (in quotes), which is *why* the
+`books` list never depends on the prose.
+
+**The `">` quirk, measured rather than left as an anecdote:** 1 of 32 bare
+one-sentence answers from `qwen2.5:7b`, 0 of 32 from the 3b, and none in any
+tool-loop answer read while building this. Cosmetic — the title survives intact
+and the guards normalise punctuation — but it would render on screen, so
+`_clean()` strips exactly that pattern (a quote fused to a `>` before a word
+character) and nothing else. **Not more than cosmetic.**
+
+28 tests in `tests/test_librarian.py`, all deterministic (fake model, fake
+catalogue) plus four against the real app. Six sabotages; two initially passed
+— the reader-named exemption and the smuggled-`user_id` guard were both being
+proved by tests too weak to fail, so the tests were tightened until each
+sabotage failed exactly its own test. F-22's `xfail(strict=True)` in
+`test_app_boots.py` is now a real passing test: `strict` means the suite fails
+the moment the fix works, so Phase E's "resolve the xfail" could not wait.
 Under pandas 3, `df["genre"].astype(str).values` returns an
 `ArrowStringArray`, not a numpy array. It has no `.flatten()`, so
 `FeatureEngineer.fit_transform` raised immediately and `startup()` swallowed
