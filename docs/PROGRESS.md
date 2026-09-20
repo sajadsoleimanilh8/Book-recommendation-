@@ -1457,8 +1457,7 @@ have shown `books_loaded: 3000` was itself unusable in the healthy case.
 Fixed to read `.best_k`.
 
 ### F-22 · The chatbot never returns recommendations — **FIXED 2026-09-19**
-*(the finding itself is closed; the librarian it grew into still has one
-phase left — conversation history, D below)*
+*(all five phases landed; the librarian is complete as scoped)*
 `ChatbotEngine.respond()` initialises `response["books"] = []` and never
 populates it, for any intent. It classifies intent correctly
 (`"recommend me a dark thriller"` → `recommend`, confidently) then returns a
@@ -1484,7 +1483,7 @@ each confirmed with the product owner before the next starts:
 | A | Wire `book_vectors` into book-level search (100% catalogue coverage, was ~23%) | **Done**, `a861994` |
 | B | `LLMProvider` interface + local-model fallback chain | **Done** — below |
 | C | The tool loop: `search_catalog`, `check_availability`, `check_user_library`, `get_reading_profile` wired into `ChatbotEngine.respond()` | **Done** — below |
-| D | Conversation history (client- vs server-side; `ChatbotRequest` has no history field, and `chatbot.html` declares `state.history` but never uses it) | Not started |
+| D | Conversation history (server-side, Redis) | **Done** — below |
 | ~~E~~ | ~~Resolve the `xfail(strict=True)`; real coverage for the tool loop and fallback path~~ | **Folded into C** — the xfail is `strict`, so the suite fails the moment the fix works. Leaving it for a later phase was never an option once C landed. |
 
 **Decided: local model, not API-based.** Ollama was already installed on this
@@ -1609,6 +1608,55 @@ proved by tests too weak to fail, so the tests were tightened until each
 sabotage failed exactly its own test. F-22's `xfail(strict=True)` in
 `test_app_boots.py` is now a real passing test: `strict` means the suite fails
 the moment the fix works, so Phase E's "resolve the xfail" could not wait.
+
+**Phase D — built.** `backend/core/conversations.py`: the transcript lives
+server-side in Redis (already in the stack for the rate limiter), not in the
+request. A browser carrying the whole transcript grows every request as the
+chat goes on, and lets a client rewrite what it claims to have been told.
+
+**The key is the load-bearing decision here, not the storage.**
+
+    signed in   ->  the account id, and nothing else
+    anonymous   ->  an opaque 128-bit token this module mints, the client echoes
+
+`ChatbotRequest.user_id` is *not* usable as a key: it is free text any caller
+can set (`"guest"` by default), so keying a private transcript on it would
+rebuild F-07's hole — anyone reads anyone's chat by guessing a name. A
+signed-in caller's key comes from their token and a supplied `conversation_id`
+is ignored, so it cannot hand them someone else's thread either; `_valid_token`
+rejects anything that is not one of ours, without which
+`conversation_id="u:5"` would read account 5's history. Bounded on every axis
+that a client can push: 12 messages, 2000 characters each, a one-hour TTL, and
+a capped in-process fallback for when Redis is down (degrade and warn, never
+500 — the rate limiter's precedent).
+
+**A regression this introduced, caught by a live multi-turn probe rather than
+by reasoning.** With history in place, the first three follow-ups in a real
+conversation all came back *"I couldn't find anything in the catalogue
+matching that."* — `"who wrote the first one?"` was rejected because
+`ctx.seen` only knew the tools called *this* turn, and the book had been
+grounded a turn earlier. Fixed by carrying the grounded book ids forward with
+the assistant turn (not shown to the model; they exist so the next turn knows
+those rows came from a tool). Only an assistant turn may carry them — a client
+declaring `book_ids` on its own message must not be able to assert a book into
+being grounded.
+
+The same probe confirmed the guards still bite with history in play: two later
+turns were rejected for inventing *"13 Things I Learned about Death and
+Dying"* and *"Pride and Prejudice"*, both true positives, both replaced with
+tool-grounded answers.
+
+`chatbot.html` now carries the token in `sessionStorage` and sends it back;
+its `state.history = []`, declared and never used since the page was written,
+is gone — the server keeps the transcript now.
+
+39 tests across `tests/test_conversations.py` and the history section of
+`tests/test_librarian.py`, run against both the in-process store and a real
+Redis. Eight sabotages. **One initially passed:** removing the Redis `ltrim`
+failed nothing, because the test asserted on `load()` — which reads only the
+last N regardless, so the stored list could grow forever and the test would
+still be green. The same weak-test shape as Phase C's two; the test now
+asserts on `llen`, what Redis actually holds.
 Under pandas 3, `df["genre"].astype(str).values` returns an
 `ArrowStringArray`, not a numpy array. It has no `.flatten()`, so
 `FeatureEngineer.fit_transform` raised immediately and `startup()` swallowed

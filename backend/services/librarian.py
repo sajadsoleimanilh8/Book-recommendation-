@@ -375,12 +375,28 @@ class Librarian:
         *,
         account_id: Optional[int] = None,
         profile: Any = None,
+        history: Optional[list[dict[str, str]]] = None,
+        prior_book_ids: Optional[list[int]] = None,
     ) -> LibrarianResult:
         ctx = _Context(account_id=account_id, profile=profile)
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": message},
-        ]
+        # Books a tool returned in an earlier turn of this same conversation.
+        # Without this, "who wrote the first one?" is rejected as invented:
+        # the title is real and was grounded when it was produced, but no tool
+        # returned it *this* turn. Found by a live multi-turn probe, not by
+        # reasoning about it — the first three follow-ups all came back as
+        # "I couldn't find anything in the catalogue matching that."
+        for book_id in (prior_book_ids or []):
+            book = self.deps.book_by_id(book_id)
+            if book is not None:
+                ctx.seen[book["id"]] = book
+        # Prior turns go between the system prompt and the new question, as
+        # plain user/assistant text. Tool calls and their results are
+        # deliberately not replayed: they are this turn's working, they can be
+        # long, and a stale search result read as current is exactly the kind
+        # of ungrounded fact the guards exist to stop.
+        messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages.extend(history or [])
+        messages.append({"role": "user", "content": message})
 
         text, model, steps = "", "", 0
         for steps in range(1, MAX_STEPS + 1):

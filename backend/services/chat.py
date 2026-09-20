@@ -172,6 +172,8 @@ class ChatbotEngine:
         profile: Optional[UserProfile] = None,
         book_idx: Optional[int] = None,
         account_id: Optional[int] = None,
+        history: Optional[list] = None,
+        prior_book_ids: Optional[list] = None,
     ) -> Dict[str, Any]:
         intent, confidence = self.classify_intent(user_message)
         slots = self._extract_slots(user_message)
@@ -189,7 +191,8 @@ class ChatbotEngine:
         if self.librarian is not None:
             try:
                 result = self.librarian.answer(
-                    user_message, account_id=account_id, profile=profile
+                    user_message, account_id=account_id, profile=profile,
+                    history=history, prior_book_ids=prior_book_ids,
                 )
             except LLMUnavailable as exc:
                 # Section 12: every model in the chain is down. Say so in the

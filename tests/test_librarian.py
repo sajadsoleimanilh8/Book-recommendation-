@@ -466,3 +466,79 @@ def test_a_forged_token_on_the_chat_route_is_rejected_not_treated_as_anonymous(r
     )
 
     assert response.status_code == 401
+
+
+# -- conversation history (Phase D) ----------------------------------------------------
+
+
+def test_prior_turns_are_sent_to_the_model_before_the_new_question():
+    llm = Script(saying("ok"))
+    history = [
+        {"role": "user", "content": "something about grief"},
+        {"role": "assistant", "content": 'Try "Notes on Grief".'},
+    ]
+    Librarian(llm, FakeDeps().build()).answer(
+        "something shorter?", history=history
+    )
+    roles = [(m["role"], m["content"]) for m in llm.sent[0][0]]
+
+    assert roles[0][0] == "system"
+    assert roles[1:3] == [(h["role"], h["content"]) for h in history]
+    assert roles[-1] == ("user", "something shorter?")
+
+
+def test_no_history_still_sends_system_then_question():
+    llm = Script(saying("ok"))
+    run(llm, message="hello")
+
+    assert [m["role"] for m in llm.sent[0][0]] == ["system", "user"]
+
+
+def test_tool_calls_from_earlier_turns_are_not_replayed_as_context():
+    """A stale search result read as current is exactly the ungrounded fact the
+    guards exist to stop, so history carries prose only."""
+    llm = Script(saying("ok"))
+    Librarian(llm, FakeDeps().build()).answer(
+        "and shorter?",
+        history=[{"role": "user", "content": "grief"}, {"role": "assistant", "content": "a"}],
+    )
+
+    assert all("tool_calls" not in m and m["role"] != "tool" for m in llm.sent[0][0])
+
+
+def test_a_book_grounded_in_an_earlier_turn_is_not_flagged_as_invented():
+    """Found by a live multi-turn probe, not by reasoning: "who wrote the
+    first one?" was rejected three times running, because ctx.seen only knew
+    this turn's tool results. The book was real and *was* grounded when it was
+    produced — a turn earlier."""
+    llm = Script(saying('"Notes on Grief" is by Chimamanda Ngozi Adichie.'))
+    result = Librarian(llm, FakeDeps().build()).answer(
+        "who wrote the first one?",
+        history=[{"role": "assistant", "content": 'Try "Notes on Grief".'}],
+        prior_book_ids=[1],
+    )
+
+    assert result.grounded, result.message
+    assert [b["title"] for b in result.books] == ["Notes on Grief"]
+
+
+def test_carrying_a_book_forward_does_not_excuse_inventing_a_new_one():
+    """The carry-forward widens what counts as grounded; it must not blank the
+    guard. A title no tool ever returned is still rejected."""
+    llm = Script(saying('Also try "The Year of Magical Thinking".'))
+    result = Librarian(llm, FakeDeps().build()).answer(
+        "anything else?", prior_book_ids=[1]
+    )
+
+    assert not result.grounded
+
+
+def test_only_real_catalogue_ids_are_carried_forward():
+    """A stored id that no longer resolves (book removed, stale conversation)
+    must be skipped, not crash the turn."""
+    llm = Script(saying("Nothing to add."))
+    result = Librarian(llm, FakeDeps().build()).answer(
+        "hello", prior_book_ids=[1, 999_999]
+    )
+
+    assert result.grounded

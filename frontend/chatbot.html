@@ -413,8 +413,13 @@
         const API_BASE = 'http://localhost:8000';
         const state = {
             userId: _getUserId(),
-            bookId: null, 
-            history: [], 
+            bookId: null,
+            // F-22 Phase D: the transcript lives server-side (Redis), keyed by
+            // account when signed in. This is only the opaque token an
+            // anonymous caller echoes back to stay on the same thread — it is
+            // minted by the server, never by us. `history: []` used to sit
+            // here, declared and never used; the server keeps it now.
+            conversationId: sessionStorage.getItem('digikitab_conversation') || null,
             isTyping: false,
         };
         function _getUserId() {
@@ -626,6 +631,7 @@
                         message,
                         user_id: state.userId,
                         book_id: state.bookId ?? undefined,
+                        conversation_id: state.conversationId ?? undefined,
                     }),
                 });
                 if (!res.ok) {
@@ -633,6 +639,12 @@
                     throw new Error(err?.error?.message || `Server error ${res.status}`);
                 }
                 const data = await res.json();
+                if (data.conversation_id) {
+                    state.conversationId = data.conversation_id;
+                    // sessionStorage, not localStorage: a conversation is a
+                    // visit, and the server expires it after an hour anyway.
+                    sessionStorage.setItem('digikitab_conversation', data.conversation_id);
+                }
                 hideTyping();
                 _handleResponse(data);
             } catch (err) {
