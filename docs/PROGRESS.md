@@ -137,14 +137,20 @@ Explicitly **not** built now (§8): RTL layout, locale routing, translation pipe
 
 | # | Decision | Why it is yours | Cost of waiting |
 |---|---|---|---|
-| 1 | **Google Books quota** | Only you can request it. Submitted, pending review. | 22,858 records frozen at 0% description |
-| 2 | **What is a good recommendation?** | Product definition, not a technical choice. Engagement, completion, explicit rating, or return visits — the answer decides what replaces F-26's circular target. | The ranker can only learn popularity until it is answered |
+| ~~1~~ | ~~Google Books quota~~ | **Decided 2026-09-16 (OI-7): run the standing job at the current quota** rather than wait. It accelerates automatically if the increase ever lands. | ✅ |
+| ~~2~~ | ~~What is a good recommendation?~~ | **Decided 2026-09-11 (F-26): reading depth.** Shipped, and per-reader attribution followed on 2026-09-17. | ✅ |
 | ~~3~~ | ~~`POST /api/feedback` tells users something untrue~~ | **Decided 2026-09-15: remove the claim.** See the entry below. | ✅ |
 | ~~4~~ | ~~Branch name~~ | **Decided 2026-09-15: keep `phase-2-enrichment`.** Not worth the rename. | ✅ |
 | ~~5~~ | ~~System clock / OI-8~~ | **Handled 2026-09-15** — see OI-8. | ✅ |
 
-Decision 2 is the one that gates real progress. Everything below F-26 in this
-document is groundwork for it, and it cannot be answered from the code.
+Every row in this table is now closed. The live open decision is **OI-12**
+(Reading DNA), logged separately below.
+
+*Housekeeping note, because it keeps happening: this table, F-38, F-31 and
+F-44 all carried a "still open" or "not yet done" status after the work had
+actually landed somewhere else in this document. A stale status is worse than
+no status — it sends the next reader to redo something. Reconciled each time
+it was found; worth a skim whenever a phase closes.*
 
 ### Waiting-on-you #3 · `POST /api/feedback`'s false claim — **FIXED 2026-09-15**
 
@@ -973,6 +979,16 @@ can pass without executing the code under test is not a test of that code.**
 When a change should move something and the suite is green, suspect the
 harness before believing the result.*
 
+*The corollary, earning its own line because it has now happened three times
+(F-22 Phase C twice, Phase D once): **a sabotage that fails nothing means the
+test is too weak, not that the code is fine.** Each time, a guard that
+genuinely worked was being "proved" by an assertion that would have held
+either way — a reader-named-book exemption, a smuggled `user_id`, and a Redis
+`ltrim` whose absence was hidden because the test read through a capped
+`load()` rather than checking what was stored. Worth watching for: when a
+deliberate break comes back green, tighten the test before trusting the
+guard.*
+
 **Known limitation, deliberately accepted:** the test database has
 `with_description = 0`, so its vectors are all metadata-only, while production
 has 6,998 richer ones. The baselines therefore pin *deterministic behaviour*,
@@ -1545,6 +1561,12 @@ each caught by exactly the intended tests and no others: breaking the
 fallthrough (3 failures, including the live fallback test), widening the
 `except` (1), and letting raw `URLError`/`HTTPError` escape instead of
 converting them (4).
+
+**Three days blocked, 2026-09-17 → 2026-09-20 — see F-53.** Google returned
+`403 (blocked, not a miss)` and the circuit breaker did exactly what F-29
+built it to do: stop after three consecutive throttles, leave the rows
+`pending`, save progress. The job exited 0 each time and nothing said the
+catalogue had not moved. The block lifted on its own.
 
 **Measured, not assumed:** ~0.3s warm for either model on a short answer
 (the ~2.4s figure from the scoping run was true cold start with the model
@@ -2552,6 +2574,7 @@ Carried deliberately, with the reason. Each has a closing phase.
 | F-11 | Unmounted second frontend | Product owner deferred — OI-1 | Phase 7 |
 | F-20 | Full ML refit on every boot, no artefact persistence | Partially addressed in PR 1 (`limit` cap) | Phase 1 |
 | **F-51** | **Ranking is not reproducible across separate model fits, for near-tied candidates.** Found while reviewing F-47's golden diff: two candidates ~0.001-0.005 apart in score returned in different order across separate fresh fits of the identical code and data, while agreeing every time within one fit. Rules out the bandit (unseeded, would vary within a fit too) and `MiniBatchKMeans` (`random_state=42` already set). Suspected cause: GPU floating-point non-determinism in the MiniLM embedding pass — the one input to ranking that is neither seeded nor cached across fits. Currently worked around in the golden tests with an evidence-based safe prefix (`MAX_SAFE_PREFIX` in `test_golden_ranking.py`), not fixed at the source | Needs isolating the actual source (start by comparing raw MiniLM embedding output across two fresh fits on identical input, bit for bit) and either a deterministic CUDA mode or a documented, accepted tolerance. Touches the core ML fit; deserves its own review | Phase 8 (evaluation) |
+| **F-53** | **The standing enrichment job ran green for three days while doing nothing.** Found while pulling numbers for a status summary, not by any alert. Every run 2026-09-17 → 2026-09-20 logged `processed 0, throttled True`, exit code 0, Task Scheduler "Last Result: 0". The cause was Google answering `HTTP 403 (blocked, not a miss)` and the F-29 circuit breaker stopping cleanly after 3 consecutive throttles — correct behaviour, rows left `pending` rather than falsely `not_found`, nothing corrupted. But the *outcome* was 72 hours of zero progress that looked identical to success from every angle a human would check. The block lifted on its own; the 10:59 run on 2026-09-20 is enriching normally again | `history.log` records `processed` per run but nothing reads it. A streak of zero-progress runs should be visible without opening a log — the same "silence and success look identical" family as F-30, F-43 and F-45. Needs a decision on where it surfaces (a non-zero exit after N barren runs? a line in `/health`?) before building | Not scheduled |
 | **F-52** | **`test_every_priced_result_actually_has_a_known_price` fails intermittently — a `KeyError: 'availability'`.** Found while verifying the F-44 book-vectors search wiring did not regress anything else; reproduced on unmodified `main` too via `git stash`, so it is unrelated to that change and pre-existing. `_recommend(client, max_price=5)` — no genre filter, unlike its two sibling tests which both pass `genre="Fiction"` — occasionally returns at least one item with no `availability` key at all. 3 isolated re-runs: 2 failed, 1 passed, so it is genuinely intermittent, not a one-off fluke or a fixture-ordering artefact. Not investigated further or fixed — out of scope for the change it was found during | Needs reproducing deliberately (seed the bandit's exploration slot, or log which book triggers it) and tracing why an unfiltered `/api/recommend` call can surface an item shaped differently from a filtered one | Phase 3 (ranking work already owns this endpoint) |
 
 ---
