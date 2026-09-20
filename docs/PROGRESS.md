@@ -1460,10 +1460,33 @@ profile page around it is a follow-on, not part of "add a login UI."
 - ~~authentication (F-07)~~ — **done in PR 2**
 - ~~read-authz sweep~~ — **done in PR 3**
 - ~~per-IP rate limit on `/api/audiobook/generate`~~ — **done**, 3/min/IP
-- move generation to a background job (F-19) — still open
+- ~~move generation to a background job (F-19)~~ — **done 2026-08-30**, 202 +
+  poll with a bounded registry. (This line read "still open" until
+  2026-09-20: a stale status, three weeks after the work landed.)
 - `JWT_SECRET` set in the environment (config refuses to boot without it
   when `ENV=production`; the `.dev-jwt-secret` fallback is development-only)
-- token revocation (still no denylist) — accepted risk, revisit with Redis
+- token revocation (still no denylist) — accepted risk when written, and now
+  **revisitable**: Redis is no longer hypothetical, it runs the rate limiter
+  and conversation history
+
+**Re-scoped 2026-09-20. Three gates this list predates, all created since it
+was written:**
+
+- **`POST /api/chat` has no rate limit, and is now the most expensive
+  unauthenticated endpoint in the app.** It takes `OptionalUser`, so anonymous
+  callers are supported by design, and each request can drive up to
+  `MAX_STEPS = 4` local-model calls plus catalogue searches on the single GPU.
+  That is a strictly worse denial-of-service lever than
+  `/api/audiobook/generate` — the endpoint OI-5 was written about, and the only
+  one `core/ratelimit.py` protects (`main.py`'s sole middleware is CORS).
+  F-22 Phases B–D created this; it needs a rate limit before the app is
+  reachable from any network.
+- **`CORS_ORIGINS` defaults to `localhost:3000/8000`.** Correct for local
+  development, wrong the moment the app has a real origin.
+- **Single worker, still.** F-19's job registry is deliberately in-process, so
+  a second worker cannot see jobs the first accepted and polling 404s.
+  Conversation history is Redis-backed and multi-worker safe; the audiobook
+  registry is not.
 
 Do not deploy, port-forward, expose via tunnel, or demo over a network until these land.
 
@@ -2581,13 +2604,14 @@ Carried deliberately, with the reason. Each has a closing phase.
 | F-18 | Server-side desktop notifications (`plyer`) | Needs a real delivery channel + queue | Phase 6 |
 | ~~F-13~~ | ~~LTR trained on constant features, circular target~~ | **Closed** — skew fixed (F-26), target replaced by reading depth (2026-09-11) | ✅ |
 | ~~F-26~~ | ~~7/10 LTR features zero importance~~ | **Closed** — skew fixed; target decided and shipped as reading depth (2026-09-11) | ✅ |
-| F-14 | "CF" is popularity, not collaborative filtering | Needs real interaction data | Phase 3 |
+| **F-14** | **"CF" was not collaborative filtering — renamed 2026-09-20, real CF deferred.** Measured before deciding: **0 registered users, 8 interaction events ever inserted** (4 remain, none carrying a `user_id`), 0 `reading_progress`, 0 `comments`, 0 `reminders`. The moat (F-42) has never collected anything, because nobody uses the app — it is local-only and OI-5 blocks deployment. CF is a *user*-item factorisation; with zero users it is undefined, not merely hard. The code was also worse than F-14 said: `ml/collaborative.py` factorised a `genre x book` matrix of `average_rating * log1p(ratings_count)` — no user dimension anywhere — so F-26 feature-importance tables read `cf_s` as evidence about collaborative filtering when it was evidence about genre popularity, at 0.24 of the blend. Renamed to `GenrePopularityFactors` / `genre_pop_s` / `WEIGHTS["genre_pop"]`, weight and formula untouched; golden baselines verified byte-identical before and after | **Unblock condition, stated so it is checkable: enough distinct accounts with overlapping book engagement to form a user-item matrix.** That needs real usage, which needs deployment (OI-5). Building CF against synthetic interactions first would repeat F-13/F-26 exactly: a model that looks trained and has learned nothing | Blocked on OI-5 |
 | ~~F-17~~ | ~~Book "pages" return placeholder strings~~ | **Closed** — serves real Gutenberg text, honest empty state otherwise | ✅ |
 | **F-26a** | **Reading depth is measured against the excerpt, not the book.** `book_texts` holds ~11 opening pages (20,358 chars avg), so depth means "did the opening hold the reader", not "how much of the book was read". Normalised by excerpt length because against a 300-page book every reader would score ≤ ~4% | Needs whole-book text. When it lands: switch the denominator in `services/reading_depth.py` to the full page count, re-baseline, and expect depth scores to fall | **Phase 5** |
 | F-11 | Unmounted second frontend | Product owner deferred — OI-1 | Phase 7 |
 | F-20 | Full ML refit on every boot, no artefact persistence | Partially addressed in PR 1 (`limit` cap) | Phase 1 |
 | **F-51** | **Ranking is not reproducible across separate model fits, for near-tied candidates.** Found while reviewing F-47's golden diff: two candidates ~0.001-0.005 apart in score returned in different order across separate fresh fits of the identical code and data, while agreeing every time within one fit. Rules out the bandit (unseeded, would vary within a fit too) and `MiniBatchKMeans` (`random_state=42` already set). Suspected cause: GPU floating-point non-determinism in the MiniLM embedding pass — the one input to ranking that is neither seeded nor cached across fits. Currently worked around in the golden tests with an evidence-based safe prefix (`MAX_SAFE_PREFIX` in `test_golden_ranking.py`), not fixed at the source | Needs isolating the actual source (start by comparing raw MiniLM embedding output across two fresh fits on identical input, bit for bit) and either a deterministic CUDA mode or a documented, accepted tolerance. Touches the core ML fit; deserves its own review | Phase 8 (evaluation) |
 | **F-53** | **The standing enrichment job ran green for three days while doing nothing.** Found while pulling numbers for a status summary, not by any alert. Every run 2026-09-17 → 2026-09-20 logged `processed 0, throttled True`, exit code 0, Task Scheduler "Last Result: 0". The cause was Google answering `HTTP 403 (blocked, not a miss)` and the F-29 circuit breaker stopping cleanly after 3 consecutive throttles — correct behaviour, rows left `pending` rather than falsely `not_found`, nothing corrupted. But the *outcome* was 72 hours of zero progress that looked identical to success from every angle a human would check. The block lifted on its own; the 10:59 run on 2026-09-20 is enriching normally again | **Decided 2026-09-20: after 3 consecutive barren runs (zero processed, clean exit), surface a warning in `/health`.** Deliberately nothing more — not a non-zero exit (the run genuinely succeeded; lying about that trades one wrong signal for another), not alerting infrastructure. `/health` is already where this project reports capabilities that are degraded but not down (search_ready, F-03/F-21's lesson), so a barren-streak warning belongs beside them. Needs the run history readable from the app, which today lives only in `logs/enrichment/history.log` | Next enrichment touch |
+| **F-54** | **`cf_sim` and `content_sim` have always been `0.0` for every book.** Found while renaming F-14. Both are read in `_to_api` as `round(_safe_float(b.get("cf_sim")), 3)`, and **nothing anywhere assigns them** — so `_safe_float(None)` returns 0.0 and the API reports two similarity scores that are structurally constant. Same family as the `taste_vector_dim: 0` claim removed from `/api/feedback` (Waiting-on-you #3): a field describing a measurement that never happens. No consumer found — neither name appears in the frontend | Removing them is an API contract change, so it is a decision rather than an obvious patch: drop both fields, or populate them honestly from values the ranker already computes (`content_s` and `genre_pop_s` are both in scope at scoring time) | Needs a decision |
 | **F-52** | **`test_every_priced_result_actually_has_a_known_price` fails intermittently — a `KeyError: 'availability'`.** Found while verifying the F-44 book-vectors search wiring did not regress anything else; reproduced on unmodified `main` too via `git stash`, so it is unrelated to that change and pre-existing. `_recommend(client, max_price=5)` — no genre filter, unlike its two sibling tests which both pass `genre="Fiction"` — occasionally returns at least one item with no `availability` key at all. 3 isolated re-runs: 2 failed, 1 passed, so it is genuinely intermittent, not a one-off fluke or a fixture-ordering artefact. Not investigated further or fixed — out of scope for the change it was found during | Needs reproducing deliberately (seed the bandit's exploration slot, or log which book triggers it) and tracing why an unfiltered `/api/recommend` call can surface an item shaped differently from a filtered one | Phase 3 (ranking work already owns this endpoint) |
 
 ---

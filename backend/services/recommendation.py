@@ -33,7 +33,7 @@ import pandas as pd
 from domain.entities import MOOD_GENRE_MAP, UserProfile
 from ml.bandit import ContextualBandit
 from ml.clustering import ClusteringModel
-from ml.collaborative import CollaborativeFilter
+from ml.genre_popularity import GenrePopularityFactors
 from ml.features import FeatureEngineer
 from ml.ranking import LearningToRank
 from ml.similarity import SimilarityEngine
@@ -92,7 +92,7 @@ def language_mask(column: pd.Series, requested: str) -> pd.Series:
 
 
 class Recommender:
-    WEIGHTS = {"content": 0.28, "cf": 0.24, "ltr": 0.32, "bandit": 0.16}
+    WEIGHTS = {"content": 0.28, "genre_pop": 0.24, "ltr": 0.32, "bandit": 0.16}
 
     def __init__(self, df: pd.DataFrame):
         self.df = df.reset_index(drop=True)
@@ -101,7 +101,7 @@ class Recommender:
         self.engineer = FeatureEngineer()
         self.cluster = ClusteringModel()
         self.ann = SimilarityEngine()
-        self.cf = CollaborativeFilter()
+        self.genre_pop = GenrePopularityFactors()
         self.ltr = LearningToRank()
         self.bandit = ContextualBandit()
 
@@ -156,7 +156,7 @@ class Recommender:
             self.ann.fit(self._X)
             self.content_space = "tfidf_svd"
             log.info("content similarity: TF-IDF + SVD (fallback)")
-        self.cf.fit(self.df)
+        self.genre_pop.fit(self.df)
 
         X_ltr, y_ltr = self._ltr_training_set()
         self.ltr.train(X_ltr, y_ltr)
@@ -182,9 +182,9 @@ class Recommender:
 
         seed_idx = int(matches.index[0])
         ann_idx, ann_sims = self.ann.query(seed_idx, k=min(100, len(self.df) - 1))
-        cf_idx = self.cf.similar_items(seed_idx, k=100)
+        genre_pop_idx = self.genre_pop.similar_items(seed_idx, k=100)
 
-        cand_list = list(dict.fromkeys(list(ann_idx) + list(cf_idx)))[:150]
+        cand_list = list(dict.fromkeys(list(ann_idx) + list(genre_pop_idx)))[:150]
         return self._rank(seed_idx, cand_list, ann_idx, ann_sims, profile, n)
 
     def recommend_by_profile(self, profile: UserProfile, n: int = 10) -> list[dict]:
@@ -241,7 +241,7 @@ class Recommender:
 
     # ----------------------------------------------------------------
     # F-26. Five of the ten LTR features are query-dependent: content_s,
-    # cf_s, cluster_match and mood_match only mean anything *relative to a
+    # genre_pop_s, cluster_match and mood_match only mean anything *relative to a
     # seed*, and comment_score is zero for every book at fit time because no
     # book has a comment yet.
     #
@@ -320,9 +320,9 @@ class Recommender:
             if len(idx) == 0:
                 continue
 
-            cf_top = self.cf.similar_items(seed, k=200)
-            cf_rank = {int(j): 1.0 - r / max(len(cf_top), 1) for r, j in enumerate(cf_top)}
-            cf_s = np.array([cf_rank.get(int(j), 0.0) for j in idx])
+            genre_pop_top = self.genre_pop.similar_items(seed, k=200)
+            genre_pop_rank = {int(j): 1.0 - r / max(len(genre_pop_top), 1) for r, j in enumerate(genre_pop_top)}
+            genre_pop_s = np.array([genre_pop_rank.get(int(j), 0.0) for j in idx])
 
             cands = self.df.loc[list(idx)]
             mood = moods[int(rng.integers(len(moods)))]
@@ -331,7 +331,7 @@ class Recommender:
                 self.ltr._features(
                     cands,
                     np.asarray(sims, dtype=float),
-                    cf_s,
+                    genre_pop_s,
                     int(self.df.loc[seed, "cluster"]),
                     MOOD_GENRE_MAP.get(mood, []) if mood else [],
                 )
@@ -398,19 +398,19 @@ class Recommender:
         sim_lookup = dict(zip(ann_idx.tolist(), ann_sims.tolist()))
         content_s = np.array([sim_lookup.get(i, 0.0) for i in cand_list])
 
-        cf_top = self.cf.similar_items(seed_idx, k=200)
-        cf_lookup = {idx: 1.0 - rank / len(cf_top) for rank, idx in enumerate(cf_top)}
-        cf_s = np.array([cf_lookup.get(i, 0.0) for i in cand_list])
+        genre_pop_top = self.genre_pop.similar_items(seed_idx, k=200)
+        genre_pop_lookup = {idx: 1.0 - rank / len(genre_pop_top) for rank, idx in enumerate(genre_pop_top)}
+        genre_pop_s = np.array([genre_pop_lookup.get(i, 0.0) for i in cand_list])
 
         mood_genres = MOOD_GENRE_MAP.get(profile.mood, [])
         cluster_id = int(self.df.loc[seed_idx, "cluster"])
-        ltr_scores = self.ltr.score(cands, content_s, cf_s, cluster_id, mood_genres)
+        ltr_scores = self.ltr.score(cands, content_s, genre_pop_s, cluster_id, mood_genres)
         bandit_s = np.array([self.bandit.expected_reward(i) for i in cand_list])
 
         ltr_max = ltr_scores.max() + 1e-9
         final_score = (
             self.WEIGHTS["content"] * content_s +
-            self.WEIGHTS["cf"] * cf_s +
+            self.WEIGHTS["genre_pop"] * genre_pop_s +
             self.WEIGHTS["ltr"] * (ltr_scores / ltr_max) +
             self.WEIGHTS["bandit"] * bandit_s
         )

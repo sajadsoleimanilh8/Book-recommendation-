@@ -6,7 +6,7 @@ Feature importances before this fix:
     log_ratings_norm   0.314
     avg_rating         0.013
     content_s          0.000      <- ones at training
-    cf_s               0.000      <- ones at training
+    genre_pop_s               0.000      <- ones at training
     cluster_match      0.000      <- zeros at training
     mood_match         0.000      <- zeros at training
     inv_price          0.000
@@ -38,7 +38,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 FEATURES = [
-    "content_s", "cf_s", "cluster_match", "avg_rating", "log_ratings_norm",
+    "content_s", "genre_pop_s", "cluster_match", "avg_rating", "log_ratings_norm",
     "inv_price", "recency", "mood_match", "comment_score", "log_ratings",
 ]
 
@@ -77,7 +77,7 @@ def test_the_query_dependent_features_actually_vary(training_matrix):
     )
 
 
-@pytest.mark.parametrize("name", ["content_s", "cf_s", "cluster_match", "mood_match"])
+@pytest.mark.parametrize("name", ["content_s", "genre_pop_s", "cluster_match", "mood_match"])
 def test_each_previously_constant_feature_varies(training_matrix, name):
     """Named individually so a failure says which one regressed."""
     X, _ = training_matrix

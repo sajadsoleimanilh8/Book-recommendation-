@@ -31,7 +31,7 @@ class LearningToRank:
         )
         self.fitted = False
 
-    def _features(self, cands, content_s, cf_s, cluster_id, mood_genres) -> np.ndarray:
+    def _features(self, cands, content_s, genre_pop_s, cluster_id, mood_genres) -> np.ndarray:
         mood_match = cands["genre"].apply(
             lambda g: float(any(m.lower() in str(g).lower() for m in mood_genres))
         ).values
@@ -42,7 +42,7 @@ class LearningToRank:
 
         return np.column_stack([
             content_s,
-            cf_s,
+            genre_pop_s,
             cluster_match,
             cands["average_rating"].values / 5.0,
             np.log1p(cands["ratings_count"].values) / 15.0,
@@ -58,8 +58,8 @@ class LearningToRank:
 
         The caller builds the matrix, because five of the ten features are
         *query-dependent* and this class has no query. It used to accept
-        `(df, content_s, cf_s)` and fill the rest with `ones` and `zeros`,
-        which is how `content_s`, `cf_s`, `cluster_match` and `mood_match`
+        `(df, content_s, genre_pop_s)` and fill the rest with `ones` and `zeros`,
+        which is how `content_s`, `genre_pop_s`, `cluster_match` and `mood_match`
         came to be constant columns. A gradient-boosted tree never splits on
         a constant, so those four features were dead weight at training and
         live inputs at inference — a train/serve skew, not an oversight.
@@ -81,14 +81,14 @@ class LearningToRank:
         )
         self.fitted = True
 
-    def score(self, cands, content_s, cf_s, cluster_id, mood_genres) -> np.ndarray:
-        X = self._features(cands, content_s, cf_s, cluster_id, mood_genres)
+    def score(self, cands, content_s, genre_pop_s, cluster_id, mood_genres) -> np.ndarray:
+        X = self._features(cands, content_s, genre_pop_s, cluster_id, mood_genres)
 
         if self.fitted:
             return self.model.predict(X)
 
         return (
             content_s * 0.4 +
-            cf_s * 0.3 +
+            genre_pop_s * 0.3 +
             cands["average_rating"].values / 5.0 * 0.3
         )

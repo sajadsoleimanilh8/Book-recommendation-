@@ -345,7 +345,7 @@ def test_ltr_has_no_dead_features(recommender):
     Two distinct causes, both from F-13:
 
     * **Constant at training time** — `Recommender.fit` passes
-      `diag = np.ones(...)` for content_s and cf_s, and `train()` hardcodes
+      `diag = np.ones(...)` for content_s and genre_pop_s, and `train()` hardcodes
       cluster_match and mood_match to `np.zeros(...)`. comment_score is also
       constant, because no book has a comment when the model is fitted. A
       gradient-boosted tree never splits on a constant column, so all five
@@ -362,7 +362,7 @@ def test_ltr_has_no_dead_features(recommender):
     training and the marker must be removed.
     """
     names = [
-        "content_s", "cf_s", "cluster_match", "avg_rating", "log_ratings_norm",
+        "content_s", "genre_pop_s", "cluster_match", "avg_rating", "log_ratings_norm",
         "inv_price", "recency", "mood_match", "comment_score", "log_ratings",
     ]
     importances = dict(zip(names, recommender.ltr.model.feature_importances_))
