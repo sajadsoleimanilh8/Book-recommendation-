@@ -1585,9 +1585,20 @@ one process can see its siblings.
 **5. Declaring production is now enough to be told what is wrong.**
 `config.production_problems()` enumerates default credentials and `DEBUG`;
 `ENV=production` refuses to boot while any remain, and `/health` reports the
-list as `production_blockers` on a laptop. `ENV` still defaults to
-`development` — that is right for a laptop, and the point of the guards is
-that declaring production is a complete check rather than the start of one.
+list as `production_blockers` — gated on `DEBUG`, because `/health` is public
+and "POSTGRES_PASSWORD is the development default" is a useful sentence to
+the wrong reader. Nothing is lost by hiding it: in production the list is
+empty by construction. `ENV` still defaults to `development`, which is right
+for a laptop; the point of the guards is that *declaring* production is a
+complete check rather than the start of one.
+
+**This one was claimed before it was true.** The `production_blockers` key
+was added to `config.summary()`, which `/health` does not call — so the list
+was unreachable and the sentence above was false when first written. Its
+test asserted on `config.summary()` rather than on the endpoint, so it passed
+throughout: the same shape as "a correct limiter the route never calls",
+which this file already warns about twice. Caught by curling the running app,
+not by reading either file. The test now probes `/health`.
 
 ### Sabotage results
 

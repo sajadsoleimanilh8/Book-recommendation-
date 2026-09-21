@@ -197,10 +197,21 @@ def test_production_refuses_the_development_credentials():
     assert any("REDIS_PASSWORD" in p for p in problems)
 
 
-def test_health_reports_the_blockers_rather_than_hiding_them():
-    from core import config
+def test_health_reports_the_blockers_rather_than_hiding_them(fitted_app):
+    """Asserted against the endpoint, not `config.summary()`.
 
-    assert "production_blockers" in config.summary()
+    The first version of this checked the helper. It passed while `/health`
+    never called `config.summary()` at all, so the list was unreachable and
+    the claim that /health reported it was simply false — the same shape as
+    "a correct limiter the route never calls". Caught by probing the running
+    app rather than by reading either file."""
+    _, client = fitted_app
+    body = client.get("/api/health").json()
+
+    assert "production_blockers" in body, "/health does not report them"
+    assert any("POSTGRES_PASSWORD" in p for p in body["production_blockers"]), (
+        f"the blockers are not the real ones: {body['production_blockers']}"
+    )
 
 
 def test_the_health_summary_never_carries_the_redis_password():

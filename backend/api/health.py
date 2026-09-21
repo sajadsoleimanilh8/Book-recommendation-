@@ -109,6 +109,17 @@ def health():
         # whether the database correction was applied. A skipped overlay is
         # invisible downstream, so it has to be visible here.
         "language_overlay": main.LANGUAGE_OVERLAY or None,
+        # OI-5: the settings that would stop this configuration being
+        # deployable. Empty in production by construction — `config` refuses
+        # to boot while any remain — so this only ever has content on a
+        # developer's machine, which is exactly where it is worth seeing.
+        #
+        # Gated on DEBUG rather than shown always. /health is public and
+        # unauthenticated, and "POSTGRES_PASSWORD is the development default"
+        # is a useful sentence to the wrong reader on a box that is exposed
+        # without meaning to be. Nothing is lost by hiding it: where it would
+        # be visible to a stranger it is already empty.
+        "production_blockers": config.production_problems() if config.DEBUG else None,
     }
 
 
