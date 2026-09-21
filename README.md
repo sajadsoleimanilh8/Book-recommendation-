@@ -47,22 +47,35 @@ It loads 28,399 unique books (29,975 records, minus 1,576 duplicate ids).
 
 ## Running
 
-Two processes. `npm start` launches Express **and** spawns the backend:
+One process. The app serves its own frontend:
 
-```bash
-npm start
+```powershell
+.\scriptsun.ps1
 ```
 
-- Frontend → http://localhost:3000
-- Backend API → http://127.0.0.1:8000
+- App → http://127.0.0.1:8000
 - API docs → http://127.0.0.1:8000/docs
 
-To run the backend alone:
+The script exists for one reason: it picks the project venv's interpreter.
+sentence-transformers is not in the shared global Python (F-24), and starting
+from the wrong one does not fail loudly — semantic search returns nothing for
+every query instead (OI-9).
+
+Equivalent by hand, if the venv is already active:
 
 ```bash
-npm run backend
-# or: python -m uvicorn main:app --app-dir backend --port 8000 --reload
+python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
+
+It binds loopback. Set `HOST` to widen that deliberately — and read
+`docs/PROGRESS.md`, OI-5, before exposing this to a network.
+
+> Until 2026-09-21 this was two processes: `npm start` ran an Express static
+> host on :3000 that spawned the backend on :8000. Express is retired (OI-5).
+> Two origins for one app was what forced `CORS_ORIGINS` to allowlist
+> localhost, and its `/api` proxy was dead code that dropped `Authorization`
+> headers and mangled binary responses. There is no Node dependency left;
+> `node_modules/` can be deleted.
 
 ## Verifying it works
 
@@ -133,8 +146,9 @@ backend/
                    each aliases its real module. Removed in Phase E once no
                    call site imports the old path.
 frontend/        the served UI (plain HTML/CSS/JS)
-server.js        Express: static host + spawns uvicorn
-scripts/         keepup.sh — periodic enrichment/embedding loop
+scripts/         run.ps1 — the launcher (picks the venv interpreter)
+                 run_daily_enrichment.ps1 — the standing OI-7 job
+                 keepup.sh — periodic enrichment/embedding loop
 tests/           regression suite
 docs/            architecture audit, archive/
 ```

@@ -230,6 +230,17 @@ proves no call site imports the old flat path. F-48, the recommendation
 ### OI-3 · Deployment target
 Undecided. Determines Postgres, Redis, and object-storage choices. Needed before Phase 1 infrastructure lands.
 
+**Now blocks F-55 as well (2026-09-21).** OI-5 closed every defect on its own
+list, so the remaining gate is this decision rather than any missing work.
+Specifically: whether there is a reverse proxy in front. With one, the rate
+limiter needs `--proxy-headers --forwarded-allow-ips=<the proxy's IP>` *and*
+a `client_ip()` that reads the header it is then safe to trust; without one,
+the current code is already correct. The two are mutually exclusive and
+guessing wrong turns the limiter into a shared bucket that locks everybody
+out at the first ten requests. Deliberately left unset until this is
+answered — nothing is exposed meanwhile, because the app is local-only, which
+is the same fact this item exists to change.
+
 ### OI-4 · Copyright posture (§11) — **CONFIRMED 2026-09-20**
 
 **In-app reading is restricted to public-domain text only.** Gutenberg and
@@ -1451,7 +1462,7 @@ and is now reachable with a real login, but no page's UI reads it yet —
 logging in unlocks the backend capability this table describes; building a
 profile page around it is a follow-on, not part of "add a login UI."
 
-### OI-5 · Rate limit required before any deployment — **BLOCKING**
+### OI-5 · Deployment readiness — **the list is CLOSED; one command and one decision remain**
 **Status (2026-08-19):** product owner confirmed the app is **local-only until further notice**, so the rate limit was deliberately **excluded from PR 1**.
 
 **This is a deployment gate.** `/api/audiobook/generate` is unauthenticated (F-07) and synchronous (F-19). After PR 1 it can no longer destroy files, but each call still triggers an unbounded fetch-and-synthesise — repeated calls exhaust the server.
@@ -1472,23 +1483,178 @@ profile page around it is a follow-on, not part of "add a login UI."
 **Re-scoped 2026-09-20. Three gates this list predates, all created since it
 was written:**
 
-- **`POST /api/chat` has no rate limit, and is now the most expensive
-  unauthenticated endpoint in the app.** It takes `OptionalUser`, so anonymous
-  callers are supported by design, and each request can drive up to
-  `MAX_STEPS = 4` local-model calls plus catalogue searches on the single GPU.
-  That is a strictly worse denial-of-service lever than
-  `/api/audiobook/generate` — the endpoint OI-5 was written about, and the only
-  one `core/ratelimit.py` protects (`main.py`'s sole middleware is CORS).
-  F-22 Phases B–D created this; it needs a rate limit before the app is
-  reachable from any network.
-- **`CORS_ORIGINS` defaults to `localhost:3000/8000`.** Correct for local
-  development, wrong the moment the app has a real origin.
-- **Single worker, still.** F-19's job registry is deliberately in-process, so
-  a second worker cannot see jobs the first accepted and polling 404s.
-  Conversation history is Redis-backed and multi-worker safe; the audiobook
-  registry is not.
+- ~~**`POST /api/chat` has no rate limit**~~ — **done 2026-09-21.** It took
+  `OptionalUser`, so anonymous callers were supported by design, and each
+  request could drive up to `MAX_STEPS = 4` local-model calls on the single
+  GPU: a strictly worse denial-of-service lever than the endpoint OI-5 was
+  originally written about. 10/min per caller, plus a concurrency guard.
+- ~~**`CORS_ORIGINS` defaults to `localhost:3000/8000`**~~ — **done
+  2026-09-21**, by removing the second origin rather than by editing the
+  allowlist. The default is now empty.
+- ~~**Single worker, still**~~ — **resolved 2026-09-21 as a documented
+  constraint with a guard that enforces it**, not a rewrite.
 
-Do not deploy, port-forward, expose via tunnel, or demo over a network until these land.
+---
+
+## OI-5, scoped then implemented — 2026-09-21
+
+**The scope changed the answer.** OI-5 had been carried for a month as "the
+audiobook endpoint needs a rate limit". Auditing before touching anything
+found the rate limit was the *smallest* of its gates. Everything in this
+table was verified against the running system, not inferred from code:
+
+| What | How it was verified | Status |
+|---|---|---|
+| Redis published on `0.0.0.0:6380` with **no password at all** | `docker ps` showed `0.0.0.0:6380->6379`; `redis-cli DBSIZE` answered with no credential | **fixed and verified** |
+| Postgres published on `0.0.0.0:5433`, password defaulting to `digikitab_dev` in both compose and `config.py` | same `docker ps` | **fixed in compose — see "still to apply"** |
+| `main.py` entrypoint: `uvicorn.run(host="0.0.0.0", ..., reload=True)` | source | **fixed** |
+| `ENV` defaults to `development`, so every production guard in `config.py` was inert | source | **fixed** — guards now enumerate what is wrong |
+| `/docs`, `/redoc`, `/openapi.json` public | live request | **fixed** — gated on `ENV` |
+| Raw exception text returned to callers in 5 handlers, one on public `/health` | source sweep | **fixed** |
+| Express (`server.js`) dead code whose only real effect was forcing a second origin | every frontend page hardcoded `:8000`; its `/api` proxy stripped the prefix, dropped `Authorization`, and `.json()`-ed binary responses | **retired** |
+| Uvicorn started without `--proxy-headers`, while the limiter reads `request.client.host` | source | **F-55 — decided: leave as is, blocked on OI-3** |
+| Secrets hygiene | only `.env.example` ever committed; no key in history; no git remote configured | clean |
+
+### What was built
+
+**1. `POST /api/chat` is rate limited** — 10/minute, charged before the
+engine-ready check and before any model work. `/chatbot` is the same handler
+under a second path and shares the budget; a limit keyed on the path would
+have been bypassed by alternating between the two.
+
+The bucket is the **IP always, and the account as well when signed in**. Not
+the account *instead of* the IP: that reads like the tighter choice and is
+the looser one, because registering an account costs an attacker one request
+and would have bought them a fresh allowance. The account bucket exists only
+to stop one account roaming addresses; with equal limits it never binds
+otherwise.
+
+**2. A concurrency guard, which is the part that actually protects the GPU.**
+A per-caller rate limit bounds how fast *one* address can ask. It does not
+bound how many ask at once, and 100 callers each staying politely inside
+10/min still buries one GPU. `services/providers/llm.py` now holds a 2-slot
+semaphore, taken across the whole tool loop rather than per `chat()` call —
+a per-call slot can be granted for step 1 and refused for step 2, which
+abandons a half-finished answer *after* spending the GPU time that produced
+it. The unit of work is the request.
+
+Over capacity it raises `LLMUnavailable`, so **saturation and an outage take
+the same path out**: the classifier answers. Section 12 asks for degradation,
+and a cheap deterministic reply now beats a good reply after the queue
+drains.
+
+**3. Express retired.** `server.js`, `package.json` and `package-lock.json`
+deleted; FastAPI serves `frontend/` from its own origin via `StaticFiles`,
+mounted last so every API route is already claimed. This is the real CORS
+fix: two origins for one app was the *reason* `allow_origins` had to name
+localhost, and an allowlist you must remember to edit before deploying is a
+gate rather than a setting. `CORS_ORIGINS` survives as a deliberate escape
+hatch, defaulting to empty. The seven `API_BASE` constants in the frontend
+are now `''`.
+
+`scripts/run.ps1` replaces `npm start`, and exists for one reason: it picks
+the venv interpreter. Not cosmetic — sentence-transformers is not in the
+shared global Python (F-24), and starting from the wrong one does not crash,
+it returns nothing for every semantic query (OI-9).
+
+**That failure mode demonstrated itself during this work.** The full suite
+was run with the global interpreter and produced 8 failures and 5 errors
+that read as genuine regressions from this change set — golden ranking,
+book vectors, the librarian's catalogue search. Re-run under the venv:
+clean. It does not announce itself; it looks like a bug in whatever you just
+touched. Recorded here because the lesson generalises past the launcher.
+
+**4. Single worker, documented *and* enforced.** `core/jobs.check_single_worker()`
+runs first in `startup()`, ahead of the catalogue load and ML fit, and
+refuses a multi-worker launch (`--workers N`, `-w N`, `WEB_CONCURRENCY`).
+
+Kept as a constraint rather than rewritten onto Redis because nothing here
+wants a second worker: the ML fit runs per process and takes tens of
+seconds, the fitted model is hundreds of megabytes resident, and the
+librarian is bounded by one GPU that a second worker would only contend for.
+Two workers would cost more and serve less.
+
+A constraint is only documented if something enforces it. Unenforced, the
+symptom is an audiobook job that 404s on poll roughly (N-1)/N of the time —
+which reads as a bug in synthesis, not as a deployment flag.
+
+Stated so it is not mistaken for complete: the guard cannot catch a process
+manager starting N copies of the app each with `--workers 1`. Nothing inside
+one process can see its siblings.
+
+**5. Declaring production is now enough to be told what is wrong.**
+`config.production_problems()` enumerates default credentials and `DEBUG`;
+`ENV=production` refuses to boot while any remain, and `/health` reports the
+list as `production_blockers` on a laptop. `ENV` still defaults to
+`development` — that is right for a laptop, and the point of the guards is
+that declaring production is a complete check rather than the start of one.
+
+### Sabotage results
+
+Seven sabotages, every one caught:
+
+| Sabotage | Caught by |
+|---|---|
+| Route never calls the limiter | 5 tests |
+| Limit runs after the engine-ready check | `test_the_limit_applies_before_the_engine_ready_check` |
+| Signing in replaces the IP bucket instead of adding to it | 2 tests |
+| Limit keyed on the request path | 6 tests |
+| `slot()` leaks capacity when the work raises | 2 tests |
+| `slot()` is per-thread instead of shared | 6 tests |
+| The engine never takes a slot | `test_the_engine_takes_a_slot_before_running_the_tool_loop` |
+
+The first attempt at sabotage 1 produced invalid Python and reported "30
+passed, 10 errors" — which is not a sabotage that passed, it is a sabotage
+that never ran. Redone with an `ast.parse()` check on the mutated source
+before the suite runs. **Worth noting beside the recurring weak-sabotage
+rule (F-45): this is that rule's mirror image, and at a glance it reads the
+same.** A sabotage that fails nothing means the test is weak; a sabotage that
+*errors* means you have learned nothing at all.
+
+### Applied and verified — 2026-09-21
+
+Both containers were recreated under this repository's compose file, after
+waiting for the OI-7 enrichment job to reach its **natural** pause point
+rather than restarting Postgres underneath it. The job is resumable by
+design (`enrichment_status` committed every 25 books), so a restart would
+have been survivable — but it would have spent up to 24 books of that day's
+Google quota on work it could not record, and the quota is the binding
+constraint (F-30). Waiting cost nothing: it stopped on `QuotaExceeded` after
+992 books, exit code 0.
+
+Verified after, not assumed:
+
+```
+digikitab-postgres  127.0.0.1:5433->5432   ->  final_postgres_data
+digikitab-redis     127.0.0.1:6380->6379   ->  final_redis_data
+books                 29975
+by_status             pending 21274 / ok 5930 / partial 2018 / not_found 751 / failed 2
+redis-cli DBSIZE      NOAUTH Authentication required.
+app's own REDIS_URL   connects
+```
+
+The `by_status` line matches the enrichment run's own closing report exactly,
+which is what confirms the 992 books survived the recreate.
+
+**This step nearly went wrong — see F-56.** The first `docker compose up -d`
+mounted an empty volume.
+
+```
+docker compose up -d        # when enrichment is idle
+```
+
+**A separate finding that deserves its own line:** the running containers
+belonged to compose project `final`, working directory `D:\final\final\final`
+— a *stale copy of this repository*. `final_clean/docker-compose.yml` had
+never governed them. Editing it and stopping there would have been a fix
+that did nothing while reading as done. Same family as the `digikitab` /
+`digikitab_test` confusion: **the config you are editing is not always the
+config that is running.**
+
+**OI-5's list is closed.** What remains before this app faces a network is
+no longer a list of defects but two open decisions: OI-3 (deployment target),
+which F-55 now blocks on, and token revocation. The app stays local-only
+until OI-3 is answered.
 
 ---
 
@@ -2611,6 +2777,8 @@ Carried deliberately, with the reason. Each has a closing phase.
 | F-20 | Full ML refit on every boot, no artefact persistence | Partially addressed in PR 1 (`limit` cap) | Phase 1 |
 | **F-51** | **Ranking is not reproducible across separate model fits, for near-tied candidates.** Found while reviewing F-47's golden diff: two candidates ~0.001-0.005 apart in score returned in different order across separate fresh fits of the identical code and data, while agreeing every time within one fit. Rules out the bandit (unseeded, would vary within a fit too) and `MiniBatchKMeans` (`random_state=42` already set). Suspected cause: GPU floating-point non-determinism in the MiniLM embedding pass — the one input to ranking that is neither seeded nor cached across fits. Currently worked around in the golden tests with an evidence-based safe prefix (`MAX_SAFE_PREFIX` in `test_golden_ranking.py`), not fixed at the source | Needs isolating the actual source (start by comparing raw MiniLM embedding output across two fresh fits on identical input, bit for bit) and either a deterministic CUDA mode or a documented, accepted tolerance. Touches the core ML fit; deserves its own review | Phase 8 (evaluation) |
 | **F-53** | **The standing enrichment job ran green for three days while doing nothing.** Found while pulling numbers for a status summary, not by any alert. Every run 2026-09-17 → 2026-09-20 logged `processed 0, throttled True`, exit code 0, Task Scheduler "Last Result: 0". The cause was Google answering `HTTP 403 (blocked, not a miss)` and the F-29 circuit breaker stopping cleanly after 3 consecutive throttles — correct behaviour, rows left `pending` rather than falsely `not_found`, nothing corrupted. But the *outcome* was 72 hours of zero progress that looked identical to success from every angle a human would check. The block lifted on its own; the 10:59 run on 2026-09-20 is enriching normally again | **Decided 2026-09-20: after 3 consecutive barren runs (zero processed, clean exit), surface a warning in `/health`.** Deliberately nothing more — not a non-zero exit (the run genuinely succeeded; lying about that trades one wrong signal for another), not alerting infrastructure. `/health` is already where this project reports capabilities that are degraded but not down (search_ready, F-03/F-21's lesson), so a barren-streak warning belongs beside them. Needs the run history readable from the app, which today lives only in `logs/enrichment/history.log` | Next enrichment touch |
+| **F-56** | **Bringing the stack up from this directory created an empty database beside the real one.** Compose names a volume `<project>_<key>` and the project defaults to the *directory name*. The containers that had been running all along belonged to project `final` (working dir `D:\final\final\final`, a stale copy of this repo) and therefore to `final_postgres_data`. `docker compose up -d` from `final_clean/` created `final_clean_postgres_data`: a brand new, empty Postgres, with the real one sitting untouched beside it. **Nothing was lost, because it was checked** — `select count(*) from books` answered `relation "books" does not exist`. Had it not been, the app would have booted against an empty catalogue, which is F-03's exact shape and does not fail loudly; 992 books of that day's enrichment would have looked gone | **Fixed**: both volumes are pinned by explicit `name:` in `docker-compose.yml`, so the data no longer depends on which folder Compose was invoked from. The `final_` prefix is kept deliberately — that is where the data actually is, and renaming would be a volume migration rather than a config change. **Third member of a family now worth naming: `digikitab` vs `digikitab_test`, the stale `D:\final\final\final` checkout, and now the volume. In each case the thing being edited was not the thing that was running.** | Closed 2026-09-21 |
+| **F-55** | **The rate limiter is not deployment-ready for the deployment it is for.** `core/ratelimit.client_ip()` reads `request.client.host` and deliberately ignores `X-Forwarded-For`, which is correct with nothing in front. But uvicorn is started without `--proxy-headers` / `--forwarded-allow-ips`, so **behind any reverse proxy — which is how this would actually be deployed — every request carries the proxy's address**. Both limiters then collapse into one shared bucket: the first ten chat requests from anyone lock out everybody, and the limiter reads as protection while delivering a denial of service. Found while scoping OI-5; it applies to the audiobook limit that has been shipped since August, not just the new chat one | Not a code change so much as a deployment decision. **Decided 2026-09-21: leave it exactly as it is — no `--proxy-headers`, no proxy trust — and block it on OI-3.** The correct setting is a function of the deployment target, which is undecided: behind a proxy it needs `--proxy-headers --forwarded-allow-ips=<the proxy's IP>` *and* a `client_ip()` that honours the header it is then safe to trust; with no proxy the current code is already right. Picking one now means finding out later whether it was the right one, which is how a limiter ends up reading as protection while delivering a denial of service. Nothing is exposed while this waits — the app is local-only, which is what OI-3 is about | **Blocked on OI-3** |
 | **F-54** | **`cf_sim` and `content_sim` have always been `0.0` for every book.** Found while renaming F-14. Both are read in `_to_api` as `round(_safe_float(b.get("cf_sim")), 3)`, and **nothing anywhere assigns them** — so `_safe_float(None)` returns 0.0 and the API reports two similarity scores that are structurally constant. Same family as the `taste_vector_dim: 0` claim removed from `/api/feedback` (Waiting-on-you #3): a field describing a measurement that never happens. No consumer found — neither name appears in the frontend | Removing them is an API contract change, so it is a decision rather than an obvious patch: drop both fields, or populate them honestly from values the ranker already computes (`content_s` and `genre_pop_s` are both in scope at scoring time) | Needs a decision |
 | **F-52** | **`test_every_priced_result_actually_has_a_known_price` fails intermittently — a `KeyError: 'availability'`.** Found while verifying the F-44 book-vectors search wiring did not regress anything else; reproduced on unmodified `main` too via `git stash`, so it is unrelated to that change and pre-existing. `_recommend(client, max_price=5)` — no genre filter, unlike its two sibling tests which both pass `genre="Fiction"` — occasionally returns at least one item with no `availability` key at all. 3 isolated re-runs: 2 failed, 1 passed, so it is genuinely intermittent, not a one-off fluke or a fixture-ordering artefact. Not investigated further or fixed — out of scope for the change it was found during | Needs reproducing deliberately (seed the bandit's exploration slot, or log which book triggers it) and tracing why an unfiltered `/api/recommend` call can surface an item shaped differently from a filtered one | Phase 3 (ranking work already owns this endpoint) |
 

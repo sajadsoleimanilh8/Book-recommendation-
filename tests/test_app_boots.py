@@ -80,23 +80,34 @@ def test_health_does_not_500_when_engine_is_ready(client):
 # F-04 — the true form of the security test
 # --------------------------------------------------------------------------
 
+# The payloads still name `server.js`, the file the original exploit
+# destroyed, because they are attacker-supplied strings and a string does not
+# need its target to exist. The *canary* had to change: OI-5 retired Express
+# and deleted that file, so a hash of it is no longer a hash of anything.
+# `docker-compose.yml` replaces it — tracked, at the project root, one `../`
+# out of the audio directory, and loudly wrong if it ever changes.
+CANARY = "docker-compose.yml"
+
 ATTACKS = [
     {"book_name": "Animal Farm", "output_file": "../server.js"},
     {"book_id": 1, "output_file": "../../server.js"},
     {"book_id": 1, "output_file": "/etc/passwd"},
+    {"book_id": 1, "output_file": f"../{CANARY}"},
+    {"book_id": 1, "output_file": f"../../{CANARY}"},
 ]
 
 
 @pytest.mark.parametrize("payload", ATTACKS)
-def test_exploit_is_rejected_and_server_js_untouched(client, payload):
-    target = ROOT / "server.js"
+def test_exploit_is_rejected_and_the_canary_untouched(client, payload):
+    target = ROOT / CANARY
+    assert target.exists(), f"the canary {CANARY} is gone; this test proves nothing"
     before = hashlib.md5(target.read_bytes()).hexdigest()
 
     r = client.post("/api/audiobook/generate", json=payload)
 
     assert r.status_code == 422, f"exploit was not rejected: {payload}"
     after = hashlib.md5(target.read_bytes()).hexdigest()
-    assert before == after, "server.js was modified — F-04 is open again"
+    assert before == after, f"{CANARY} was modified — F-04 is open again"
 
 
 # --------------------------------------------------------------------------

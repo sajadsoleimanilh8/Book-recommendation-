@@ -266,8 +266,9 @@ class SentenceTransformerBackend:
         except ImportError as exc:  # pragma: no cover - depends on the install
             raise RuntimeError(
                 "sentence-transformers is not installed in this interpreter. "
-                "It lives in the project venv — run from .venv (server.js "
-                "selects it automatically), or set EMBEDDING_BACKEND=lsa."
+                "It lives in the project venv — start the app with "
+                "scripts/run.ps1, which selects it, or set "
+                "EMBEDDING_BACKEND=lsa."
             ) from exc
         import torch
 

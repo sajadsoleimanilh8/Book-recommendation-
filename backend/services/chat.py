@@ -28,6 +28,7 @@ from domain.entities import MOOD_GENRE_MAP, UserProfile
 from services.audio import AudiobookEngine
 from services.comments import CommentEngine
 from services.librarian import Librarian, default_deps
+from services.providers import llm as llm_provider
 from services.providers.llm import LLMUnavailable, get_llm_provider
 
 if TYPE_CHECKING:
@@ -190,13 +191,20 @@ class ChatbotEngine:
 
         if self.librarian is not None:
             try:
-                result = self.librarian.answer(
-                    user_message, account_id=account_id, profile=profile,
-                    history=history, prior_book_ids=prior_book_ids,
-                )
+                # OI-5. The slot is taken around the whole loop, not inside
+                # it, and it is what stops concurrent callers queueing on one
+                # GPU until they all time out. Over capacity it raises
+                # `LLMUnavailable`, so saturation and an outage take the same
+                # path out of here: the classifier answers.
+                with llm_provider.slot():
+                    result = self.librarian.answer(
+                        user_message, account_id=account_id, profile=profile,
+                        history=history, prior_book_ids=prior_book_ids,
+                    )
             except LLMUnavailable as exc:
-                # Section 12: every model in the chain is down. Say so in the
-                # log and carry on with the deterministic reply below.
+                # Section 12: every model in the chain is down, or they are
+                # all busy. Say so in the log and carry on with the
+                # deterministic reply below.
                 log.warning(f"librarian unavailable, using classifier fallback: {exc}")
             else:
                 response.update(

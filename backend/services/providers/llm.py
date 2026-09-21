@@ -35,10 +35,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Optional, Protocol
+from typing import Any, Iterator, Optional, Protocol
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +54,46 @@ class LLMUnavailable(RuntimeError):
     the model does not exist on this Ollama instance. The caller decides
     what "graceful" means for it (section 12); this module's only job is to
     make that a single, specific exception rather than N different ones."""
+
+
+# -- how many requests may be in the model at once ---------------------------------
+#
+# OI-5. A per-caller rate limit bounds how fast one address can ask; it does
+# not bound how many addresses ask at once, and each of those requests drives
+# up to `MAX_STEPS` round trips against one local model on one GPU. Without a
+# cap the queue grows until every request times out — including the ones
+# already in flight, so an overload degrades everybody rather than the
+# marginal caller.
+#
+# Two, because concurrency past that buys nothing here: Ollama serialises work
+# on a single GPU, so a third simultaneous request adds latency without adding
+# throughput. The short wait absorbs a burst that arrives together; past it the
+# caller is not refused, they fall through to the classifier — section 12 says
+# degrade, and a cheap deterministic answer now beats a good answer after the
+# queue drains.
+MAX_CONCURRENCY = max(1, int(os.getenv("LLM_MAX_CONCURRENCY", "2")))
+QUEUE_WAIT = float(os.getenv("LLM_QUEUE_WAIT", "5.0"))
+
+_slots = threading.BoundedSemaphore(MAX_CONCURRENCY)
+
+
+@contextmanager
+def slot() -> Iterator[None]:
+    """Hold one of the model's concurrency slots, or raise `LLMUnavailable`.
+
+    Held across a whole tool loop rather than around each `chat()` call: a
+    per-call slot could be granted for step 1 and refused for step 2, which
+    abandons a half-finished answer *and* has already spent the GPU time that
+    produced it. The unit of work is the request.
+    """
+    if not _slots.acquire(timeout=QUEUE_WAIT):
+        raise LLMUnavailable(
+            f"all {MAX_CONCURRENCY} model slots busy for {QUEUE_WAIT}s"
+        )
+    try:
+        yield
+    finally:
+        _slots.release()
 
 
 @dataclass(frozen=True)

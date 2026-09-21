@@ -32,6 +32,7 @@ from typing import Any, Dict, List
 import main
 import store
 from api.search import _get_search_encoder
+from core.jobs import check_single_worker
 from db import SessionLocal
 from engine import DataLoader, QuestionerEngine, Recommender
 from services.catalogue import (
@@ -96,6 +97,11 @@ def fit_ml(books: List[Dict[str, Any]]):
 
 
 def startup():
+    # OI-5. First, before tens of seconds of catalogue load and ML fit: a
+    # multi-worker launch is a misconfiguration, and the honest place to say
+    # so is immediately, not after each worker has finished booting. See
+    # core/jobs.py for why this app is single-worker.
+    check_single_worker()
 
     log.info(f"Loading books from {DATA_FILE}…")
     # F-20 (partial): the limit=5000 cap silently truncated the catalogue to

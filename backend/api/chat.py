@@ -7,9 +7,11 @@ main.py's live module state (RESTRUCTURE-NOTES B-4, 5.2).
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request, status
+from fastapi.responses import JSONResponse
 
 import main
+import ratelimit
 from auth import OptionalUser
 from core import conversations
 from schemas.chat import ChatbotRequest
@@ -19,15 +21,39 @@ router = APIRouter()
 
 @router.post("/chatbot")
 @router.post("/api/chat")
-def chatbot(payload: ChatbotRequest, user: OptionalUser):
+def chatbot(payload: ChatbotRequest, request: Request, user: OptionalUser):
+    # The real account, never `payload.user_id`: that is a free-text profile
+    # key anyone can send, and both the librarian's library tool and the
+    # conversation history below read private data (F-07). It is resolved
+    # first because the rate limit is keyed on it.
+    account_id = user.id if user else None
+
+    # OI-5. F-22 made this the most expensive unauthenticated endpoint in the
+    # app: `OptionalUser` means anonymous callers are supported by design, and
+    # one request can drive up to `MAX_STEPS` tool-calling round trips against
+    # a local model on the single GPU. The limit goes before the engine check
+    # and before any work, for the same reason it does on audiobook generate.
+    #
+    # This bounds one caller's *rate*. It does not bound total load on the
+    # GPU, because many addresses each stay inside it; `services.chat`'s
+    # concurrency guard is what covers that.
+    try:
+        ratelimit.hit_all(
+            ratelimit.caller_keys("chat", request, account_id),
+            ratelimit.CHAT_LIMIT,
+            ratelimit.CHAT_WINDOW,
+        )
+    except ratelimit.RateLimited as limited:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"error": {"message": str(limited)}},
+            headers={"Retry-After": str(limited.retry_after)},
+        )
+
     if not main.RECOMMENDER or not getattr(main.RECOMMENDER, 'chatbot', None):
         return main.error_response("Chatbot engine not ready.")
 
     profile = main.get_profile(payload.user_id)
-    # The real account, never `payload.user_id`: that is a free-text profile
-    # key anyone can send, and both the librarian's library tool and the
-    # conversation history below read private data (F-07).
-    account_id = user.id if user else None
     # F-22 Phase D. A signed-in caller is keyed on their account and the
     # supplied conversation_id is ignored; an anonymous one keeps the opaque
     # token minted for them. See core.conversations.resolve_key.
@@ -51,7 +77,7 @@ def chatbot(payload: ChatbotRequest, user: OptionalUser):
             prior_book_ids=prior_book_ids,
         )
     except Exception as e:
-        return main.error_response(f"Chatbot error: {str(e)}")
+        return main.internal_error("Chatbot error", e)
 
     answer = response.get("message", "")
     conversations.append(history_key, [

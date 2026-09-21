@@ -1,6 +1,10 @@
 // questionnair.js - نسخه اصلاح شده
 
-const API_BASE = 'http://127.0.0.1:8000';
+// OI-5: same origin. The backend serves this page, so an absolute
+// origin here would be a second one to keep in step — and was what
+// forced CORS to allowlist localhost. Empty string keeps every
+// `${API_BASE}/api/...` template below working, as a relative URL.
+const API_BASE = '';
 
 let currentPage = 1;
 let currentQuestions = [];

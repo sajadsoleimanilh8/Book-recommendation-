@@ -1,16 +1,32 @@
-"""Per-IP rate limiting — OI-5, the blocking deployment gate.
+"""Per-caller rate limiting — OI-5, the blocking deployment gate.
 
-Why this endpoint specifically
+Which endpoints, and why those
 ------------------------------
-`POST /api/audiobook/generate` is unauthenticated (F-07 covered the rest of
-the API, not this) and synchronous (F-19): each call fetches a book and
-synthesises speech in the request thread. A handful of repeat calls occupies
-every worker, so the endpoint is a denial-of-service lever that needs no
-credentials to pull. That is why OI-5 blocks deployment rather than merely
-being advisable.
+Two, both expensive and both reachable without credentials:
 
-This closes the rate-limit half. F-19 — moving generation to a background job
-— is still open, and OI-5 stays blocking until it lands.
+`POST /api/audiobook/generate` was the original one. It is unauthenticated
+(F-07 covered the rest of the API, not this) and was synchronous: each call
+fetched a book and synthesised speech in the request thread. F-19 has since
+moved generation to a background job, so the limit now bounds how fast jobs
+can be *queued* rather than how many workers one caller can occupy. Still
+worth having — submitting is cheap, the work it schedules is not.
+
+`POST /api/chat` (and its `/chatbot` alias) is the newer and now the worse
+one. F-22 made it the most expensive unauthenticated endpoint in the app: it
+takes `OptionalUser`, so anonymous callers are supported by design, and each
+request can drive up to `MAX_STEPS` tool-calling round trips against a local
+model on a single GPU. A per-caller limit alone does not protect that GPU —
+see `services.chat` for the concurrency guard that does — but it stops one
+caller monopolising the queue.
+
+What a limit is keyed on
+------------------------
+The IP always, and the account as well when there is one. The IP bucket is
+the ceiling that matters, because it is what an attacker has to spend real
+resources to multiply. The account bucket exists only so that a caller who
+*does* have many addresses cannot use one account across all of them; with
+the same limit on both it never binds otherwise. Shared-NAT callers share an
+IP bucket, which is the accepted cost of the ceiling being meaningful.
 
 Fixed window, not a token bucket
 --------------------------------
@@ -40,6 +56,7 @@ import logging
 import threading
 import time
 from collections import defaultdict
+from typing import Optional
 
 from fastapi import Request
 
@@ -51,6 +68,12 @@ log = logging.getLogger(__name__)
 # and useless for a script.
 AUDIOBOOK_LIMIT = 3
 AUDIOBOOK_WINDOW = 60
+
+# A person composing a message to a librarian sends one every 15-30 seconds.
+# Ten a minute leaves that untouched and still caps a scripted caller at ten
+# tool loops a minute rather than as many as the socket will carry.
+CHAT_LIMIT = 10
+CHAT_WINDOW = 60
 
 _redis = None
 _redis_checked = False
@@ -97,6 +120,34 @@ def client_ip(request: Request) -> str:
     trusted header should be read here, deliberately.
     """
     return request.client.host if request.client else "unknown"
+
+
+def caller_keys(scope: str, request: Request, account_id: Optional[int] = None) -> list[str]:
+    """Every bucket one request is charged against.
+
+    Always the address; additionally the account when the caller is signed
+    in. See the module docstring for why both — in short, the IP bucket is
+    the ceiling and the account bucket closes address-roaming. Charging both
+    means the caller is held to whichever is tighter.
+    """
+    keys = [f"ratelimit:{scope}:ip:{client_ip(request)}"]
+    if account_id is not None:
+        keys.append(f"ratelimit:{scope}:u:{account_id}")
+    return keys
+
+
+def hit_all(keys: list[str], limit: int, window: int) -> None:
+    """Charge every bucket, refusing on the first that is full.
+
+    Buckets after a refusal are left uncharged; ones already charged stay
+    charged, so a refusal by a later bucket still costs an earlier one a
+    slot. The IP goes first precisely so that asymmetry falls the harmless
+    way: the only way to be refused by the account bucket while inside the
+    IP bucket is to be roaming addresses, and over-charging an address in
+    that case is not a cost worth a second round trip to avoid.
+    """
+    for key in keys:
+        hit(key, limit, window)
 
 
 def _hit_redis(client, key: str, limit: int, window: int) -> None:

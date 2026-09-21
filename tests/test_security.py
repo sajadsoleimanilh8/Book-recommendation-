@@ -149,14 +149,20 @@ def test_engine_guard_present():
 # F-05 — Express path traversal
 # --------------------------------------------------------------------------
 
-def test_traversable_express_routes_are_gone():
-    src = (Path(__file__).resolve().parents[1] / "server.js").read_text(encoding="utf-8")
-    for route in ("'/css/:file'", "'/js/:file'"):
-        assert route not in src, (
-            f"{route} reintroduced — req.params.file reaches path.join() and "
-            "Express decodes params, so ..%2f traverses out of the directory"
-        )
-    assert "express.static" in src, "static serving removed along with the vulnerable routes"
+def test_the_express_layer_is_gone():
+    """F-05 deleted two traversable routes from `server.js`; OI-5 deleted
+    `server.js`. The strongest form this assertion can take is that the file
+    hosting them does not exist, so they cannot come back by being edited
+    back in — only by someone reintroducing the whole layer, which this
+    catches."""
+    root = Path(__file__).resolve().parents[1]
+    assert not (root / "server.js").exists(), (
+        "server.js is back. It served the frontend from a second origin, which "
+        "is what forced CORS to allowlist localhost, and it carried the "
+        "'/css/:file' and '/js/:file' routes whose decoded params reached "
+        "path.join() — ..%2f traversed out of the directory (F-05)."
+    )
+
 
 
 # --------------------------------------------------------------------------
@@ -196,6 +202,10 @@ ENV_EXAMPLE_MAY_HAVE_VALUES = {
     "CATALOGUE_LANGUAGES", "CATALOGUE_PATH", "AUDIO_DIR",
     "BOOK_LOAD_LIMIT", "CORS_ORIGINS", "DB_ECHO",
     "JWT_EXPIRE_MINUTES",
+    # OI-5. REDIS_PASSWORD sits with POSTGRES_PASSWORD: a throwaway local
+    # container credential that has to match compose's default to be useful,
+    # and that `ENV=production` refuses to boot with.
+    "BIND_HOST", "REDIS_PASSWORD", "LLM_MAX_CONCURRENCY", "LLM_QUEUE_WAIT",
 }
 
 # These are real secrets. They must ALWAYS be blank in the committed example.

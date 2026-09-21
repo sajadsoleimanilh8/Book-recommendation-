@@ -26,6 +26,7 @@ main.py has finished importing and startup() has run.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter
@@ -33,8 +34,10 @@ from sqlalchemy import func as sa_func, select as sa_select
 
 import main
 import models
+from core import config
 from db import SessionLocal
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -124,7 +127,14 @@ def _search_corpus_health() -> Dict[str, Any]:
                 ).all()
             )
     except Exception as exc:
-        return {"searchable_chunks": None, "corpus_backend_error": str(exc)[:120]}
+        # OI-5: /health is public and unauthenticated. A database exception
+        # string here carries the failing SQL and frequently the connection
+        # target, so the text is kept for development and the log only.
+        log.warning(f"corpus backend probe failed: {exc}")
+        return {
+            "searchable_chunks": None,
+            "corpus_backend_error": str(exc)[:120] if config.DEBUG else "unavailable",
+        }
 
     # The stored name may carry a fingerprint ("lsa:501a37e8") while the
     # encoder reports the family ("lsa"). Match on the family.

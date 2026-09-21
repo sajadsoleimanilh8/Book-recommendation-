@@ -178,3 +178,229 @@ def test_the_limit_runs_before_any_work(endpoint):
         f"generation ran {len(calls)} times for a limit of "
         f"{ratelimit.AUDIOBOOK_LIMIT}"
     )
+
+
+# -- POST /api/chat --------------------------------------------------------
+#
+# F-22 made this the more expensive of the two limited endpoints, and it was
+# unlimited until OI-5: `OptionalUser` means anonymous callers are supported
+# by design, and one request drives up to MAX_STEPS tool-calling round trips
+# against a local model on one GPU.
+
+CHAT_BODY = {"message": "recommend me something about grief", "user_id": "guest"}
+
+
+@pytest.fixture
+def chat(fitted_app, in_process, monkeypatch):
+    """The app with the chatbot engine stubbed out.
+
+    The real `respond` reaches Ollama. These tests are about whether the
+    route refuses, which must hold whether or not a model is running.
+    """
+    main_module, client = fitted_app
+    if not getattr(main_module.RECOMMENDER, "chatbot", None):
+        pytest.skip("chatbot engine unavailable")
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        main_module.RECOMMENDER.chatbot,
+        "respond",
+        lambda **kw: (calls.append(kw), {"message": "stub", "books": []})[1],
+    )
+    return client, calls
+
+
+def test_the_chat_endpoint_actually_enforces_it(chat):
+    client, _ = chat
+    statuses = [
+        client.post("/api/chat", json=CHAT_BODY).status_code
+        for _ in range(ratelimit.CHAT_LIMIT + 2)
+    ]
+
+    assert 429 in statuses, f"never rate limited: {statuses}"
+    assert statuses.index(429) >= ratelimit.CHAT_LIMIT
+
+
+def test_the_chatbot_alias_shares_the_same_budget(chat):
+    """`/chatbot` and `/api/chat` are the same handler under two paths. A
+    limit keyed on the path would be bypassed by alternating between them."""
+    client, _ = chat
+    for _ in range(ratelimit.CHAT_LIMIT):
+        client.post("/chatbot", json=CHAT_BODY)
+
+    assert client.post("/api/chat", json=CHAT_BODY).status_code == 429
+
+
+def test_the_chat_limit_runs_before_the_model_is_touched(chat):
+    """Refusing after the tool loop has run costs exactly what the limit
+    exists to prevent — this endpoint's whole expense is downstream."""
+    client, calls = chat
+    for _ in range(ratelimit.CHAT_LIMIT + 3):
+        client.post("/api/chat", json=CHAT_BODY)
+
+    assert len(calls) <= ratelimit.CHAT_LIMIT, (
+        f"the engine ran {len(calls)} times for a limit of {ratelimit.CHAT_LIMIT}"
+    )
+
+
+def test_the_chat_429_carries_retry_after(chat):
+    client, _ = chat
+    for _ in range(ratelimit.CHAT_LIMIT + 2):
+        response = client.post("/api/chat", json=CHAT_BODY)
+        if response.status_code == 429:
+            assert int(response.headers["Retry-After"]) > 0
+            return
+    pytest.fail("endpoint never returned 429")
+
+
+def test_the_limit_applies_before_the_engine_ready_check(fitted_app, in_process, monkeypatch):
+    """An unfitted engine answers with a cheap error, but only after the
+    handler has been entered. If the readiness check came first the endpoint
+    would still be an unlimited target whenever the engine is down — which is
+    exactly when the box is least able to absorb it."""
+    main_module, client = fitted_app
+    monkeypatch.setattr(main_module, "RECOMMENDER", None)
+
+    statuses = [
+        client.post("/api/chat", json=CHAT_BODY).status_code
+        for _ in range(ratelimit.CHAT_LIMIT + 2)
+    ]
+    assert 429 in statuses, f"unlimited while the engine is down: {statuses}"
+
+
+# -- what a request is charged against -------------------------------------
+
+
+class _Req:
+    def __init__(self, host="10.0.0.1"):
+        self.client = type("C", (), {"host": host})()
+        self.headers: dict = {}
+
+
+def test_an_anonymous_request_is_charged_to_its_address():
+    assert ratelimit.caller_keys("chat", _Req("10.0.0.1")) == [
+        "ratelimit:chat:ip:10.0.0.1"
+    ]
+
+
+def test_signing_in_adds_a_bucket_rather_than_replacing_one():
+    """The hole this avoids: key on the account *instead of* the address and
+    the IP ceiling disappears for anyone willing to register, which costs an
+    attacker one request."""
+    keys = ratelimit.caller_keys("chat", _Req("10.0.0.1"), account_id=7)
+
+    assert "ratelimit:chat:ip:10.0.0.1" in keys, "signing in escaped the IP ceiling"
+    assert "ratelimit:chat:u:7" in keys
+
+
+def test_two_accounts_on_one_address_still_share_that_address(in_process):
+    """Registering a second account must not buy a second allowance from the
+    same machine."""
+    for i in range(ratelimit.CHAT_LIMIT):
+        ratelimit.hit_all(
+            ratelimit.caller_keys("chat", _Req("10.0.0.1"), account_id=1),
+            ratelimit.CHAT_LIMIT, ratelimit.CHAT_WINDOW,
+        )
+
+    with pytest.raises(ratelimit.RateLimited):
+        ratelimit.hit_all(
+            ratelimit.caller_keys("chat", _Req("10.0.0.1"), account_id=2),
+            ratelimit.CHAT_LIMIT, ratelimit.CHAT_WINDOW,
+        )
+
+
+def test_one_account_cannot_roam_addresses_without_limit(in_process):
+    """What the second bucket is for. Each address is a fresh IP bucket, so
+    the account bucket is the only thing left holding the caller."""
+    for i in range(ratelimit.CHAT_LIMIT):
+        ratelimit.hit_all(
+            ratelimit.caller_keys("chat", _Req(f"10.0.0.{i}"), account_id=9),
+            ratelimit.CHAT_LIMIT, ratelimit.CHAT_WINDOW,
+        )
+
+    with pytest.raises(ratelimit.RateLimited):
+        ratelimit.hit_all(
+            ratelimit.caller_keys("chat", _Req("10.0.99.99"), account_id=9),
+            ratelimit.CHAT_LIMIT, ratelimit.CHAT_WINDOW,
+        )
+
+
+def test_the_two_endpoints_have_separate_budgets(in_process):
+    """A shared bucket would let audiobook traffic lock a reader out of chat,
+    and the two cost different things."""
+    for _ in range(ratelimit.AUDIOBOOK_LIMIT):
+        ratelimit.hit_all(
+            ratelimit.caller_keys("audiobook", _Req()),
+            ratelimit.AUDIOBOOK_LIMIT, ratelimit.AUDIOBOOK_WINDOW,
+        )
+
+    ratelimit.hit_all(
+        ratelimit.caller_keys("chat", _Req()),
+        ratelimit.CHAT_LIMIT, ratelimit.CHAT_WINDOW,
+    )  # must not raise
+
+
+# -- the concurrency guard, as the engine uses it --------------------------
+#
+# `test_llm_provider.py` covers the slot itself. This covers the other half:
+# a correct guard the engine never acquires protects nothing, the same way a
+# correct limiter the route never calls does.
+
+
+@pytest.fixture
+def one_slot(monkeypatch):
+    import threading
+
+    from services.providers import llm
+
+    monkeypatch.setattr(llm, "MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(llm, "QUEUE_WAIT", 0.05)
+    monkeypatch.setattr(llm, "_slots", threading.BoundedSemaphore(1))
+    return llm
+
+
+def test_the_engine_takes_a_slot_before_running_the_tool_loop(
+    fitted_app, one_slot, monkeypatch
+):
+    # monkeypatch, not assignment: `fitted_app` is session-scoped, so a bare
+    # `engine.librarian.answer = ...` would follow the suite into every later
+    # test. That is the Phase A fixture bug, which cost ten golden baselines.
+    main_module, _ = fitted_app
+    engine = getattr(main_module.RECOMMENDER, "chatbot", None)
+    if engine is None or engine.librarian is None:
+        pytest.skip("chatbot engine or librarian unavailable")
+
+    called = []
+    monkeypatch.setattr(
+        engine.librarian, "answer", lambda *a, **k: called.append(1)
+    )
+
+    with one_slot.slot():                      # capacity is gone
+        response = engine.respond("recommend me something")
+
+    assert called == [], "the tool loop ran with no slot available"
+    assert response["mode"] == "classifier", (
+        "saturation must degrade to the classifier, not fail the reply"
+    )
+    assert response["message"], "section 12: the reader still gets an answer"
+
+
+def test_a_saturated_model_does_not_leak_the_slot_for_the_next_caller(
+    fitted_app, one_slot, monkeypatch
+):
+    """The refusal path must not consume the capacity it was refused."""
+    main_module, _ = fitted_app
+    engine = getattr(main_module.RECOMMENDER, "chatbot", None)
+    if engine is None or engine.librarian is None:
+        pytest.skip("chatbot engine or librarian unavailable")
+
+    def boom(*a, **k):
+        raise RuntimeError("the tool loop blew up")
+
+    monkeypatch.setattr(engine.librarian, "answer", boom)
+
+    with pytest.raises(RuntimeError):
+        engine.respond("recommend me something")
+
+    with one_slot.slot():
+        pass  # capacity came back

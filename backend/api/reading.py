@@ -53,7 +53,7 @@ def set_reminder(payload: ReminderRequest, user: CurrentUser, session: SessionDe
             enabled=payload.enabled,
         )
     except Exception as e:
-        return main.error_response(f"Reminder error: {str(e)}")
+        return main.internal_error("Reminder error", e)
 
     store.set_reminder(
         session, user_id=user.id, book_pk=book_pk, enabled=payload.enabled
@@ -119,7 +119,7 @@ def progress(payload: ProgressRequest, user: CurrentUser, session: SessionDep) -
                 profile=profile,
             )
         except Exception as e:
-            return main.error_response(f"Progress update error: {str(e)}")
+            return main.internal_error("Progress update error", e)
 
         # OI-6 follow-through: `page` used to be `int(payload.total_pages or
         # 0)` — the book's page COUNT written into the column meant to hold

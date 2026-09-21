@@ -70,7 +70,7 @@ def add_comment(payload: CommentRequest, user: CurrentUser, session: SessionDep)
             profile=profile,
         )
     except Exception as e:
-        return main.error_response(f"Comment error: {str(e)}")
+        return main.internal_error("Comment error", e)
 
     row = store.save_comment(
         session,

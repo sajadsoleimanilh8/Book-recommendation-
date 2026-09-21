@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import secrets
 from pathlib import Path
+from urllib.parse import quote
 
 # parents[1], not parent: this module moved from backend/config.py into
 # backend/core/, and BACKEND_DIR must keep resolving to backend/ itself.
@@ -65,7 +66,15 @@ DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", "10"))
 
 # --- Redis ----------------------------------------------------------------
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6380/0")
+# OI-5: Redis now requires a password (see docker-compose.yml for why —
+# short version: it had none at all, on a published port). The URL is built
+# from it so there is one place to change, and quoted because a password is
+# not guaranteed to be URL-safe.
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "digikitab_dev")
+_redis_auth = f":{quote(REDIS_PASSWORD, safe='')}@" if REDIS_PASSWORD else ""
+REDIS_URL = os.getenv(
+    "REDIS_URL", f"redis://{_redis_auth}127.0.0.1:6380/0"
+)
 
 
 # --- Auth -----------------------------------------------------------------
@@ -126,6 +135,45 @@ CATALOGUE_LANGUAGES = [
 GOOGLE_BOOKS_API_KEY = os.getenv("GOOGLE_BOOKS_API_KEY", "").strip()
 
 
+# --- What production refuses to start with --------------------------------
+#
+# OI-5. `ENV` defaults to "development", which is right for a laptop and
+# means every production guard in this file is inert until someone sets it.
+# That is the intended shape — the guards exist so that *declaring*
+# production is enough to be told what is still wrong, rather than finding
+# out later. The JWT_SECRET check above is the oldest of them; these are the
+# credentials that ship with a default in this repo, and a default credential
+# is a published one.
+DEV_DEFAULT_PASSWORDS = {"digikitab_dev"}
+
+
+def production_problems() -> list[str]:
+    """Settings that are fine on a laptop and unacceptable on a network.
+
+    Returned rather than raised so `/health` can report them and so a caller
+    can see the whole list at once instead of one per restart.
+    """
+    problems: list[str] = []
+    if POSTGRES_PASSWORD in DEV_DEFAULT_PASSWORDS:
+        problems.append("POSTGRES_PASSWORD is the development default")
+    if REDIS_PASSWORD in DEV_DEFAULT_PASSWORDS:
+        problems.append("REDIS_PASSWORD is the development default")
+    if not REDIS_PASSWORD:
+        problems.append("REDIS_PASSWORD is empty — Redis would be unauthenticated")
+    if DEBUG:
+        problems.append("DEBUG is on")
+    return problems
+
+
+if IS_PRODUCTION:
+    _problems = production_problems()
+    if _problems:
+        raise RuntimeError(
+            "ENV=production, but: " + "; ".join(_problems) + ". "
+            "Set these in the environment before starting."
+        )
+
+
 def summary() -> dict:
     """Non-secret config, safe to log or expose on /health."""
     return {
@@ -135,4 +183,9 @@ def summary() -> dict:
         "redis": REDIS_URL.rsplit("@", 1)[-1],
         "catalogue_languages": CATALOGUE_LANGUAGES,
         "google_books_key_present": bool(GOOGLE_BOOKS_API_KEY),
+        # OI-5: what would stop this configuration being deployable. Empty in
+        # production by construction (the guard above refuses to boot
+        # otherwise); on a laptop it is the standing to-do list, visible
+        # rather than remembered.
+        "production_blockers": production_problems(),
     }

@@ -27,10 +27,21 @@ answer.
 
 The cost is a real constraint, not a hidden one: **this works for a single
 worker process.** With several, a job accepted by one is invisible to the
-others and polling 404s. That is recorded against OI-5 as a deployment gate,
-alongside the same limitation the rate limiter degrades to. Moving the
-registry to Redis is the fix when multi-worker becomes real; it is not needed
-before then.
+others and polling 404s. Moving the registry to Redis is the fix when
+multi-worker becomes real; it is not needed before then.
+
+OI-5 resolved this as a documented constraint rather than a rewrite, on the
+grounds that nothing about this deployment wants a second worker: the ML fit
+runs per process and takes tens of seconds, the fitted model is hundreds of
+megabytes of resident memory, and the librarian is bounded by one GPU that a
+second worker would only contend for. Two workers would cost more and serve
+less.
+
+A constraint is only documented if something enforces it, so
+`check_single_worker()` below refuses to start under a multi-worker launch
+rather than leaving it to be discovered as intermittent 404s from the poll
+endpoint — the symptom is a job that "vanishes", which reads like a bug in
+synthesis and not like a deployment setting.
 """
 
 from __future__ import annotations
@@ -192,3 +203,62 @@ class JobRegistry:
 
 
 REGISTRY = JobRegistry()
+
+
+# -- the single-worker constraint, enforced ----------------------------------------
+
+
+class MultiWorkerRefused(RuntimeError):
+    """A multi-worker launch was detected. See this module's docstring."""
+
+
+def _requested_workers(argv: list[str], environ: dict[str, str]) -> int:
+    """How many workers the launch asked for, as best it can be told.
+
+    Read from the command line, because that is where it is actually set:
+    `uvicorn --workers N`, `-w N`, or gunicorn's equivalents. Uvicorn exports
+    nothing to the environment that a child process could read, so there is
+    no more authoritative source to prefer — `WEB_CONCURRENCY` is honoured
+    too since gunicorn and several platforms set it.
+    """
+    for i, arg in enumerate(argv):
+        if arg in ("--workers", "-w") and i + 1 < len(argv):
+            try:
+                return int(argv[i + 1])
+            except ValueError:
+                continue
+        if arg.startswith("--workers="):
+            try:
+                return int(arg.split("=", 1)[1])
+            except ValueError:
+                continue
+    try:
+        return int(environ.get("WEB_CONCURRENCY", "1"))
+    except ValueError:
+        return 1
+
+
+def check_single_worker(argv: list[str] | None = None, environ: dict | None = None) -> None:
+    """Refuse to start if more than one worker was asked for.
+
+    What this does not catch: a process manager that starts N copies of the
+    app itself, each with `--workers 1`. Nothing inside one process can see
+    its siblings, so that is out of reach from here and stays a deployment
+    note rather than a check. What it does catch is the one-flag version,
+    which is the way it would actually happen.
+    """
+    import os
+    import sys
+
+    workers = _requested_workers(
+        list(sys.argv if argv is None else argv),
+        dict(os.environ if environ is None else environ),
+    )
+    if workers > 1:
+        raise MultiWorkerRefused(
+            f"started with {workers} workers, but this app is single-worker "
+            "by design: the audiobook job registry is in-process, so a job "
+            "accepted by one worker is invisible to the others and polling "
+            "returns 404. Run with one worker (see core/jobs.py), or move "
+            "the registry to Redis first."
+        )

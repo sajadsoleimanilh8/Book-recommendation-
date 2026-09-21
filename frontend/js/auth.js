@@ -7,13 +7,19 @@
 // every page that wants a login/logout affordance adds one element,
 // <span id="auth-slot"></span>, to its nav for mountAuthNav() to render into.
 //
-// Talks to the backend directly (http://127.0.0.1:8000), the same
-// convention questionnair.js already used, rather than through server.js's
-// proxy — that proxy does not forward the Authorization header, which would
-// make a logged-in request silently 401 with no obvious cause.
+// Requests go to the origin that served the page. This used to name
+// http://127.0.0.1:8000 explicitly, because Express served the pages from
+// :3000 and its /api proxy dropped the Authorization header — a logged-in
+// request through it would have 401'd with no obvious cause. OI-5 retired
+// Express; the backend serves these pages itself, so there is one origin
+// and nothing to name.
 
 const AUTH = (() => {
-  const API_BASE = 'http://127.0.0.1:8000';
+  // OI-5: same origin. The backend serves this page, so an absolute
+  // origin here would be a second one to keep in step — and was what
+  // forced CORS to allowlist localhost. Empty string keeps every
+  // `${API_BASE}/api/...` template below working, as a relative URL.
+  const API_BASE = '';
   const TOKEN_KEY = 'dk_auth_token';
   const USER_KEY = 'dk_auth_user';
 

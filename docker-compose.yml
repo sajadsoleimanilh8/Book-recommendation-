@@ -1,8 +1,17 @@
 # Local development infrastructure for DigiKitab.
 #
 # Only the datastores live here. The app itself still runs on the host via
-# `npm start`, because F-24 (shared global Python) is the reason to isolate
-# dependencies, and a container for the app is Phase 11 work, not PR 2.
+# `scripts/run.ps1`, because F-24 (shared global Python) is the reason to
+# isolate dependencies, and a container for the app is Phase 11 work.
+#
+# OI-5: both services publish to 127.0.0.1, not 0.0.0.0.
+#
+# A bare "5433:5432" binds every interface on the machine, so the database
+# was reachable from anything on the same network — coffee shop wifi
+# included — with a password that defaults to a value written in this file.
+# Docker publishes past the host firewall by design, so "there is a firewall"
+# was not the mitigation it looked like. `BIND_HOST` widens it deliberately
+# for anyone who actually needs a remote client.
 #
 #   docker compose up -d
 #   docker compose down          # keeps data
@@ -28,7 +37,7 @@ services:
     ports:
       # 5433 on the host, not 5432 — this project shares a machine with
       # other work (see F-24) and must not collide with an existing server.
-      - "${POSTGRES_PORT:-5433}:5432"
+      - "${BIND_HOST:-127.0.0.1}:${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -41,16 +50,43 @@ services:
     image: redis:7-alpine
     container_name: digikitab-redis
     restart: unless-stopped
+    # OI-5: Redis ships with no authentication at all. Published on
+    # 0.0.0.0 that meant anyone who could reach the port could read every
+    # rate-limit counter and every stored conversation, and write whatever
+    # they liked — no credential involved. The loopback binding above is the
+    # real fix; `requirepass` is the second lock, so a future `BIND_HOST`
+    # change is not silently a full compromise.
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-digikitab_dev}"]
     ports:
-      - "${REDIS_PORT:-6380}:6379"
+      - "${BIND_HOST:-127.0.0.1}:${REDIS_PORT:-6380}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-digikitab_dev}", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
 
+# Pinned by explicit name, not left to Compose's default.
+#
+# Compose names a volume `<project>_<key>`, and the project defaults to the
+# *directory name*. This repository has been copied: the containers that had
+# been running all along belonged to project `final` (`D:\final\final\final`,
+# a stale copy) and therefore to `final_postgres_data`. Bringing them up from
+# `final_clean/` created `final_clean_postgres_data` instead — a brand new,
+# empty database, with the real one still sitting untouched beside it.
+#
+# That was caught by checking (`select count(*) from books` → relation does
+# not exist) rather than by the app noticing. It would not have failed
+# loudly: an empty catalogue boots, F-03 is exactly that shape, and 992 books
+# of enrichment progress would have looked lost.
+#
+# Naming them here decouples the data from which folder Compose was invoked
+# in. The `final_` prefix is kept because that is where the data actually
+# lives — renaming it would mean copying the volume, which is a migration and
+# not a config change.
 volumes:
   postgres_data:
+    name: final_postgres_data
   redis_data:
+    name: final_redis_data

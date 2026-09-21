@@ -27,6 +27,7 @@ BACKEND = Path(__file__).resolve().parents[1] / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+from services.providers import llm  # noqa: E402
 from services.providers.llm import (  # noqa: E402
     DEFAULT_MODEL,
     FALLBACK_MODEL,
@@ -245,3 +246,93 @@ def test_a_fully_unreachable_chain_raises_llm_unavailable():
     ])
     with pytest.raises(LLMUnavailable):
         chain.chat(MESSAGES)
+
+
+# -- concurrency: how many requests may be in the model at once ------------
+#
+# OI-5. A per-caller rate limit bounds how fast one address can ask. It does
+# not bound how many addresses ask at once, and every one of those requests
+# drives up to MAX_STEPS round trips against one model on one GPU.
+
+import threading  # noqa: E402
+
+
+@pytest.fixture
+def slots(monkeypatch):
+    """A one-slot, no-wait semaphore, so saturation is reachable in a test
+    without sleeping through the real queue wait."""
+    monkeypatch.setattr(llm, "MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(llm, "QUEUE_WAIT", 0.05)
+    monkeypatch.setattr(llm, "_slots", threading.BoundedSemaphore(1))
+
+
+def test_a_request_inside_capacity_gets_a_slot(slots):
+    with llm.slot():
+        pass  # must not raise
+
+
+def test_a_request_past_capacity_is_told_the_model_is_unavailable(slots):
+    """Not a new exception type. Saturation and an outage mean the same thing
+    to the caller — this tier is not answering — and `ChatbotEngine` already
+    falls back to the classifier on exactly this."""
+    with llm.slot():
+        with pytest.raises(llm.LLMUnavailable):
+            with llm.slot():
+                pass
+
+
+def test_the_slot_is_released_when_the_work_raises(slots):
+    """The failure that would brick the endpoint permanently: a slot leaked
+    on the error path means capacity falls by one for every failed request
+    until nothing gets through, and the symptom — everything falls back to
+    the classifier — looks like Ollama being down."""
+    with pytest.raises(ValueError):
+        with llm.slot():
+            raise ValueError("the tool loop blew up")
+
+    with llm.slot():
+        pass  # capacity came back
+
+
+def test_capacity_is_actually_shared_across_threads(slots):
+    """A per-thread guard would count to one in each worker and cap nothing,
+    which is the whole point on a threadpool server."""
+    held = threading.Event()
+    release = threading.Event()
+    refused = []
+
+    def hold():
+        with llm.slot():
+            held.set()
+            release.wait(2)
+
+    worker = threading.Thread(target=hold)
+    worker.start()
+    assert held.wait(2), "the holding thread never acquired"
+    try:
+        with llm.slot():
+            refused.append(False)
+    except llm.LLMUnavailable:
+        refused.append(True)
+    finally:
+        release.set()
+        worker.join(2)
+
+    assert refused == [True], "a second thread got in while the slot was held"
+
+
+def test_a_waiting_caller_gets_in_once_the_slot_frees(slots):
+    """The wait must be a wait, not a formality: a burst that arrives
+    together should be served, not degraded."""
+    import time
+
+    def hold():
+        with llm.slot():
+            time.sleep(0.01)
+
+    worker = threading.Thread(target=hold)
+    worker.start()
+    worker.join(2)
+
+    with llm.slot():
+        pass
