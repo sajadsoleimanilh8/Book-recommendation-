@@ -748,8 +748,18 @@ def _ml_to_api(b: Dict[str, Any], rank: int) -> Dict[str, Any]:
         "cluster": b.get("cluster", -1),
         "comment_score": round(_safe_float(b.get("comment_score")), 3),
         "ml_score": round(_safe_float(b.get("final_score")), 4),
-        "content_sim": round(_safe_float(b.get("content_sim")), 3),
-        "cf_sim": round(_safe_float(b.get("cf_sim")), 3),
+        # F-54: `content_sim` and `cf_sim` were removed here on 2026-09-22.
+        # Both read a key nothing ever set, so `_safe_float(None)` made them
+        # 0.0 for every book ever returned — two API fields reporting a
+        # measurement that never happened, which is the same shape as the
+        # `taste_vector_dim: 0` claim removed from /api/feedback.
+        #
+        # Removed rather than populated. The honest values would have been
+        # `content_s` and `genre_pop_s`, which are both in scope at scoring
+        # time, but nothing asked for per-component scores: no frontend page
+        # read either field, no test asserted on them, and `ml_score` already
+        # exposes the blended result. Filling them would have been building a
+        # feature to justify a bug.
         "source": b.get("source") or inferred_source,
         "url": b.get("url", ""),
         "rank": rank,
@@ -776,8 +786,8 @@ def _gutenberg_to_api(g: Dict[str, Any], rank: int) -> Dict[str, Any]:
         "cluster": -1,
         "comment_score": 0.0,
         "ml_score": round(g.get("download_count", 0) / 1_000_000, 4),
-        "content_sim": None,
-        "cf_sim": None,
+        # F-54, see _to_api above. These were `None` here rather than 0.0,
+        # so the two shapes did not even agree with each other.
         "source": "gutenberg",
         "url": g.get("url", ""),
         "rank": rank,

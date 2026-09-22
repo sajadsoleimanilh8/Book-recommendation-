@@ -367,3 +367,54 @@ def test_search_readiness_is_known_before_the_first_search(client):
     assert (main._SEARCH_ENCODER is not None) or (main._SEARCH_ENCODER_ERROR is not None), (
         "startup neither loaded the encoder nor recorded why not"
     )
+
+
+# --------------------------------------------------------------------------
+# F-54 — fields that reported a measurement that never happened
+# --------------------------------------------------------------------------
+
+DEAD_FIELDS = ("cf_sim", "content_sim")
+
+
+def test_the_api_does_not_report_scores_it_never_computes(client):
+    """`cf_sim` and `content_sim` were read in `_to_api` from keys nothing
+    ever assigned, so `_safe_float(None)` returned 0.0 for every book in
+    every response since the ranker was written. A constant dressed as a
+    measurement is worse than a missing field: a caller can see a missing
+    field, and cannot see that 0.0 means "not measured" rather than "no
+    similarity".
+
+    Removed rather than populated — nothing read them, and filling them from
+    `content_s`/`genre_pop_s` would have been building a feature to justify a
+    bug. This asserts they stay gone.
+    """
+    r = client.post("/api/recommend", json={"user_id": "f54", "top_k": 5})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    books = body.get("items") or []
+    assert books, f"no recommendations to check: {str(body)[:200]}"
+
+    for book in books:
+        for field in DEAD_FIELDS:
+            assert field not in book, (
+                f"{field} is back in the API payload. If it is being populated "
+                "for real now, this test should assert it varies; if not, it is "
+                "F-54 again."
+            )
+
+
+def test_the_dead_fields_are_not_being_produced_anywhere():
+    """The endpoint test above only covers the shape it happens to return.
+    `_gutenberg_to_api` builds a second shape for a source that needs no
+    catalogue row, and it carried the same two fields — set to `None` rather
+    than 0.0, so the two payloads did not even agree with each other."""
+    import re
+
+    src = (ROOT / "backend" / "services" / "recommendation.py").read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in src.splitlines() if not line.lstrip().startswith("#")
+    )
+    for field in DEAD_FIELDS:
+        assert not re.search(rf'"{field}"\s*:', code), (
+            f"{field} is being produced again in recommendation.py"
+        )
