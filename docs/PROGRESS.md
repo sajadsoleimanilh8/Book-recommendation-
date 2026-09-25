@@ -2818,6 +2818,225 @@ worth doing in PR 2.
 
 ---
 
+## F-63 · `book_texts`/`book_chunks` restored into `digikitab_test`; the restore verification found the tolerance question is more urgent than expected, plus 3 masked test-isolation gaps — 2026-09-23
+
+Closes the F-62 restore step. Golden baselines are still **not** touched —
+that is the next, separate step, still pending.
+
+### The restore
+
+`digikitab_test` lost `book_texts` and `book_chunks` in the 2026-09-22
+`TRUNCATE ... CASCADE` incident (F-61) and the restore that followed only
+rebuilt `books` + `book_vectors` (F-59). Dev and test have disjoint primary
+keys (`books.id` ranges `1..53595` vs `88896..118870`), so nothing could be
+copied by id — every row was carried across on `(source, external_id)`,
+verified to be a collision-free 1:1 mapping before any write (6,305 dev keys,
+6,305 matched in test, 0 unmatched, 0 duplicate targets).
+
+1. `book_texts`: exported from dev keyed on `(source, external_id)`, inserted
+   into test remapped to test's own `book_id`. **6,305 rows, byte-identical**
+   — `md5(string_agg(... md5(content) ...))` over the full table matches
+   between dev and test exactly.
+2. `book_chunks`: re-derived in test via `chunk_pass --origin text` (chunks
+   are not raw data, they are a deterministic function of `book_texts`, so
+   re-running the pass is the correct restore, not a copy). **145,887 chunks
+   from 6,304 books.** Checked key-for-key against dev's 144,081 chunks
+   (`(source, external_id, ordinal)`): all 144,081 present, **0 content
+   mismatches**. The extra 1,806 chunks belong to 80 books dev had not yet
+   chunked (dev carries its own 81-book backlog, confirmed independently) —
+   test is now slightly *ahead* of dev, not divergent from it.
+3. Embedded via `embed_pass --backend minilm`: **145,887/145,887, 100%
+   coverage**, matching dev's embedding space.
+4. Schema and migration state: `information_schema.columns` diff between
+   dev and test is empty; both at `alembic_version = 7bf266537994`.
+
+Golden ranking suite re-run after the full restore: **identical result**
+(same 3 failing cases, same values, 15 passed, 2 xfailed) — confirms neither
+`book_texts` nor `book_chunks` feeds `Recommender`/`QuestionerEngine`, so the
+restore could not have been expected to move F-62's numbers, and didn't.
+
+### The tolerance question the product owner asked to log separately
+
+Measured directly rather than guessed. `_compare`'s per-row loop checks
+title equality *before* the score, so in principle a ranking swap is always
+caught — the risk is whether the score assertion on an *earlier*, correctly-
+ordered row fails first and hides it. Replayed `recommend_author_only`'s full
+measured row set (§F-62) through `_compare`'s exact logic at several
+`abs_tol` values:
+
+| `abs_tol` | first assertion the reader sees |
+|---|---|
+| 1e-5, **1e-4 (current)** | rank 2: "score drifted" |
+| 2e-4, 5e-4 | rank 5: "score drifted" |
+| 1e-3, 1e-2 | rank 6: **"ranking changed"** — the real defect |
+
+**Tightening `SCORE_TOLERANCE` does not help and would not have caught this
+sooner — it is already tight enough to fail first.** The rank 6/7 swap is
+real and current at any tolerance from 1e-5 up to just under 1e-3; it is
+masked only because a *smaller*, less interesting drift earlier in the same
+list trips the assertion first and `pytest` stops there. The fix this points
+to is in `_compare`'s control flow, not the constant: check every row's
+title before checking any row's score (or report all mismatches instead of
+the first), so a real ranking change is never hidden behind an earlier
+cosmetic one. Not built — this is a test-harness change adjacent to the
+open F-62 decision, not part of the restore. Flagged for the product owner
+rather than done unilaterally.
+
+### Collateral: 3 tests were passing vacuously against an empty table
+
+Running the full suite after the restore surfaced 3 new failures, all
+pre-existing test-isolation gaps that the 2026-09-22 data loss had been
+silently hiding — not caused by the restore, not data corruption, not
+production bugs:
+
+- `test_search.py::test_nonsense_query_returns_nothing_rather_than_a_bad_guess`
+  asserts a nonsense query returns `[]`, but calls `search_chunks` with no
+  `embedding_model` filter and no scope to its own fixture's book. Against
+  an empty/near-empty `book_chunks` that was trivially true. Against the
+  real 145,887-chunk corpus, a nonsense query legitimately has *some* chunk
+  above `min_similarity=0.05` somewhere in the whole catalogue. The
+  production caller (`api/search.py:130`) already passes
+  `embedding_model=encoder.name` explicitly, with a comment naming this
+  exact hazard — **the app is not affected, only this test's setup is.**
+- `test_embed_pass.py::test_a_chunk_from_another_backend_is_re_embedded` and
+  `::test_a_chunk_already_on_the_current_backend_is_left_alone` both call
+  `embed_pass.run(limit=5000, redo=False, backend_name="hashing")` and
+  assert against one fixture-created chunk. With the table empty that chunk
+  was the only pending row within `limit=5000`. With 145,887 real chunks
+  (all `embedding_model='minilm'`, none `'hashing'`), the *entire corpus*
+  now reads as pending for backend `hashing`, so `limit=5000` picks up 5,000
+  arbitrary real chunks — possibly not including the fixture's row (test 1),
+  and definitely leaving thousands more pending for a second run to pick up
+  (test 2, "re-embedded 5000 chunk(s) that were already current").
+
+Same family as F-59/F-61's lesson, generalised: **a test may assert against
+a shared table's global state only if it scopes the query to rows it
+created itself.** All three assume the table is empty apart from their own
+fixture, which was true by accident (data loss) rather than by design.
+Not fixed here — flagged rather than silently expanded into scope the
+product owner did not ask for this pass. `docs/PROGRESS.md` housekeeping
+note applies: worth fixing before anyone next relies on these three tests
+meaning what they say.
+
+**Net suite state after the restore, before touching goldens:** the same 3
+golden failures as F-62, plus these 3 newly-visible (not newly-caused)
+isolation gaps. Full numbers in the next full-suite run are the ones to cite,
+not this table — re-run before reporting a final count.
+
+**Decided 2026-09-24 (product owner): fix the isolation gaps first, then
+regenerate baselines once — not before, to avoid touching them twice.** See
+F-64 for what "fixing the isolation gaps" actually turned out to require.
+
+---
+
+## F-64 · The 3 "isolation gaps" were one systemic bug: an ORDER-BY-less query was silently deleting a real book's chunks on every affected test run — 2026-09-24
+
+Closes the F-63 follow-up. Found while fixing the 3 tests flagged in F-63,
+before regenerating any baseline (still untouched — that is the next step).
+
+### What F-63 missed
+
+Re-running the F-63 group to fix its 3 known failures surfaced a 4th,
+more serious problem: `book_chunks` dropped from 145,887 to 145,866 rows
+— **21 real chunks silently and permanently deleted** — after nothing more
+than running `tests/test_search.py` on its own. Traced to the exact book by
+diffing dev's chunk keys against test's (same method as F-63's restore
+verification): Gutenberg's *David Copperfield* (external_id `766`, book_id
+in this database), fully chunked (21 chunks) after the F-63 restore, ended
+the run with zero.
+
+### Root cause
+
+`corpus`, `book_vector_corpus` (`test_search.py`), `seeded`
+(`test_search_endpoint.py`) and `sample_book` (`test_chunk_pass.py`) all pick
+a "test book" the same way: `select(Book).limit(1)` (or `.limit(2)`), **no
+`ORDER BY`.** Every one of them assumed this returns some arbitrary,
+content-free row, and each deletes that book's `book_chunks` rows to make
+room for its own fixture data.
+
+That assumption was true only by the accident of F-63's restore state, not
+by anything the query guarantees. Postgres has never promised row order
+without `ORDER BY`; it returns physical scan order, which this table's
+restore/rebuild history (F-59, F-61, F-63) has no reason to leave correlated
+with ascending `id`. Measured directly: `select(Book).limit(1)` on this
+database returns *David Copperfield* — a real, fully-chunked book — not the
+lowest-`id` row (verified separately at `id=88896`, an unrelated chunkless
+book). Every fixture's assumption was wrong for the same reason at the same
+time, which is why it reads as one bug wearing four costumes rather than
+four unrelated ones.
+
+**The telling detail: three of these four fixtures already do the right
+thing for `BookVector`** — snapshot the real row before deleting it, restore
+it in teardown — with a comment explaining *why* (`load_content_vectors` is
+all-or-nothing, so leaving a gap breaks the golden suite). `book_chunks` got
+no such discipline because nothing was known to break from leaving it empty.
+Nothing does break, functionally — F-63 already confirmed the golden suite
+doesn't read `book_chunks` — but "the golden suite doesn't notice" and "the
+data isn't destroyed" are different claims, and the fixture docstrings had
+quietly conflated them. `book_vector_corpus`'s own comment said the quiet
+part directly: *"a delete-and-leave-empty teardown \[...\] safely, since
+nothing reads 'all chunks exist'"* — true of the suite, false of the
+reader who uploaded that content and just lost it from search.
+
+Same family as F-59/F-61 again, one level more general: **a test may mutate
+a shared table's row only if it knows, not assumes, what was there first.**
+`select(Book).limit(N)` with no `ORDER BY` cannot supply that knowledge.
+
+### Fix
+
+All four fixtures now snapshot the real `BookChunk` rows for their picked
+book(s) before deleting, and restore them in teardown — the identical
+discipline already applied to `BookVector` in the same fixtures, extended to
+the table that didn't have it. No fixture's actual test behaviour changed;
+only its cleanup got honest about what it owns.
+
+Two smaller companions, from F-63's original list, fixed alongside:
+
+- `test_nonsense_query_returns_nothing_rather_than_a_bad_guess`
+  (`test_search.py`): `search_chunks` has no way to scope a query to one
+  book, so the assertion is now scoped client-side to the fixture's own
+  `book_id` rather than asserting emptiness across the whole shared corpus.
+- `test_embed_pass.py`'s two backend-mismatch tests: `embed_pass.run()`
+  gained an optional `book_ids: list[int] | None = None` parameter
+  (`backend/scripts/embed_pass.py`) — `None` preserves every existing
+  caller's behaviour unchanged. Without it, these tests had no way to run
+  `embed_pass.run(backend_name="hashing")` against a real, populated
+  `book_chunks` table without also re-embedding thousands of unrelated real
+  rows into a throwaway backend name. **This is not hypothetical: it is what
+  actually corrupted 60,000 of 145,887 real chunk embeddings during F-63's
+  own verification work**, repaired twice via `embed_pass --backend minilm
+  --redo` before this fix, described here rather than in F-63 because the
+  fix belongs with its root cause.
+
+### Verification
+
+- Sabotage-style, by reproduction before the fix: same 6-file group,
+  identical 21-chunk loss, same book, twice — confirmed deterministic, not
+  a fluke.
+- After the fix, the same group leaves `book_chunks` at 145,887 with 0 rows
+  on any non-`minilm` embedding model, and `test_embed_pass.py` (4/4),
+  `test_search.py`'s nonsense-query test, and the three fixture-owning
+  files all pass.
+- **Two consecutive full-suite runs, identical:** 472 passed / 3 failed / 2
+  xfailed both times — the 3 failures are exactly F-62's known goldens, same
+  values both runs. `book_chunks` held at 145,887 rows / 0 corrupted through
+  both. This is the same 472/3/2 split the project was at before F-59/F-61
+  ever happened, now reached with the restore verified rather than assumed.
+- Content re-verified once more against dev after all of the above: 0
+  mismatches, 0 missing, `book_texts` checksum unchanged from F-63.
+
+One incidental infrastructure event during this work, unrelated to the
+above: both Docker containers exited cleanly mid-run (OI-8's known
+sleep/wake pattern), producing 9 transient `test_upload_isolation.py`
+errors in one run. Restarted from the correct directory (containers
+reattached to the pinned `final_*` volumes, per F-56 — no new volume
+created), data confirmed intact, and the affected file re-run clean
+(10/10) before trusting any further result.
+
+**Golden baselines are addressed in a separate commit, next (F-62).**
+
+---
+
 ## Deferred technical debt
 
 Carried deliberately, with the reason. Each has a closing phase.

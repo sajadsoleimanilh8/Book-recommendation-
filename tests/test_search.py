@@ -41,11 +41,36 @@ def _vec(text: str):
 
 @pytest.fixture
 def corpus():
-    """Two users, one book, three chunks: one public and one private each."""
+    """Two users, one book, three chunks: one public and one private each.
+
+    F-64: `select(Book).limit(1)` carries no ORDER BY, so it is not
+    guaranteed to land on an empty book — in this database it resolves to a
+    real, fully-chunked catalogue book. Its real chunks are snapshotted
+    before the delete and restored in teardown, rather than left gone.
+    """
     with SessionLocal() as session:
         book = session.scalar(select(Book).limit(1))
         assert book is not None, "test catalogue is empty"
         book_id = book.id
+
+        original = list(
+            session.scalars(select(BookChunk).where(BookChunk.book_id == book_id))
+        )
+        original_snapshot = [
+            {
+                "user_id": r.user_id,
+                "visibility": r.visibility,
+                "ordinal": r.ordinal,
+                "origin": r.origin,
+                "content": r.content,
+                "char_count": r.char_count,
+                "embedding": r.embedding,
+                "embedding_model": r.embedding_model,
+            }
+            for r in original
+        ]
+        for row in original:
+            session.expunge(row)
 
         session.execute(BookChunk.__table__.delete().where(BookChunk.book_id == book_id))
 
@@ -81,6 +106,9 @@ def corpus():
         yield {"book_id": book_id, **users}
 
         session.execute(BookChunk.__table__.delete().where(BookChunk.book_id == book_id))
+        session.add_all(
+            BookChunk(book_id=book_id, **fields) for fields in original_snapshot
+        )
         session.commit()
 
 
@@ -98,11 +126,16 @@ def book_vector_corpus():
     `book_vectors` is not like `book_chunks`: `load_content_vectors`
     (services/store.py) is all-or-nothing — if even one book in the whole
     catalogue is missing a vector, the ML fit falls back to TF-IDF for
-    *everything*, moving every golden ranking score. A delete-and-leave-empty
-    teardown (the pattern the chunk fixtures use, safely, since nothing reads
-    "all chunks exist") would silently break the golden suite the next time
-    it runs against this database. So the original row is snapshotted first
-    and put back, not just deleted.
+    *everything*, moving every golden ranking score. So the original
+    `BookVector` row is snapshotted first and put back, not just deleted.
+
+    **F-64 correction:** this docstring used to claim a delete-and-leave-empty
+    teardown was safe for `book_chunks` too, "since nothing reads 'all chunks
+    exist'". True of the golden suite, false in general: `select(Book).limit`
+    with no `ORDER BY` is not guaranteed to land on an empty book, and here it
+    resolves to a real, fully-chunked catalogue book — so that teardown was
+    silently and permanently deleting real search content every run. Fixed
+    below with the same snapshot-and-restore discipline as `BookVector`.
     """
     with SessionLocal() as session:
         books = list(session.scalars(select(Book).limit(2)))
@@ -124,11 +157,29 @@ def book_vector_corpus():
             }
             for book_id, row in original.items()
         }
+        original_chunks = list(
+            session.scalars(select(BookChunk).where(BookChunk.book_id == with_chunk))
+        )
+        original_chunks_snapshot = [
+            {
+                "user_id": r.user_id,
+                "visibility": r.visibility,
+                "ordinal": r.ordinal,
+                "origin": r.origin,
+                "content": r.content,
+                "char_count": r.char_count,
+                "embedding": r.embedding,
+                "embedding_model": r.embedding_model,
+            }
+            for r in original_chunks
+        ]
         # See test_search_endpoint.py's `seeded` fixture for why this
         # expunge matters: the bulk delete below does not expire these
         # already-loaded ORM objects from the identity map, so re-adding a
         # BookVector for the same book_id later raises a SQLAlchemy warning.
         for row in original.values():
+            session.expunge(row)
+        for row in original_chunks:
             session.expunge(row)
 
         session.execute(BookChunk.__table__.delete().where(BookChunk.book_id == with_chunk))
@@ -160,6 +211,9 @@ def book_vector_corpus():
         ))
         for book_id, fields in original_snapshot.items():
             session.add(BookVector(book_id=book_id, **fields))
+        session.add_all(
+            BookChunk(book_id=with_chunk, **fields) for fields in original_chunks_snapshot
+        )
         session.commit()
 
 
@@ -232,12 +286,22 @@ def test_every_result_is_a_real_row_never_generated(corpus):
 
 def test_nonsense_query_returns_nothing_rather_than_a_bad_guess(corpus):
     """Returning nothing is the correct failure. A confident irrelevant
-    result is worse than an empty list, because the reader cannot tell."""
+    result is worse than an empty list, because the reader cannot tell.
+
+    F-64: `search_chunks` has no way to scope a query to one book, and this
+    ran unscoped against the whole shared `book_chunks` table. Against a
+    real, tens-of-thousands-of-chunks catalogue a nonsense query can
+    legitimately clear `min_similarity=0.05` against *something* real
+    somewhere — that is not a search-quality bug, it is a big corpus. The
+    claim this test actually makes is about this fixture's own synthetic
+    content, so the assertion is scoped to it.
+    """
     with SessionLocal() as session:
         hits = search_chunks(
             session, _vec("zzzqqq xyzzy plugh frobnicate"), limit=50, min_similarity=0.05
         )
-        assert hits == []
+        own_hits = [h for h in hits if h.book_id == corpus["book_id"]]
+        assert own_hits == []
 
 
 def test_book_level_search_returns_each_book_once(book_vector_corpus):

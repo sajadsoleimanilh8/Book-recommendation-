@@ -40,10 +40,38 @@ PROSE = (
 
 @pytest.fixture
 def sample_book():
+    """F-64: `select(Book).limit(1)` carries no ORDER BY, so it is not
+    guaranteed to land on an empty book — in this database it resolves to a
+    real, fully-chunked catalogue book (Gutenberg's *David Copperfield*).
+    Deleting its chunks and leaving them gone destroys real search content
+    every time this fixture runs. Snapshot what is really there first and
+    put it back in teardown, the same discipline `book_vector_corpus` and
+    `seeded` already apply to `BookVector` for the same reason.
+    """
     with SessionLocal() as session:
         book = session.scalar(select(Book).limit(1))
         assert book is not None, "test catalogue is empty"
         book_id = book.id
+
+        original = list(
+            session.scalars(select(BookChunk).where(BookChunk.book_id == book_id))
+        )
+        original_snapshot = [
+            {
+                "user_id": r.user_id,
+                "visibility": r.visibility,
+                "ordinal": r.ordinal,
+                "origin": r.origin,
+                "content": r.content,
+                "char_count": r.char_count,
+                "embedding": r.embedding,
+                "embedding_model": r.embedding_model,
+            }
+            for r in original
+        ]
+        for row in original:
+            session.expunge(row)
+
         session.execute(
             BookChunk.__table__.delete().where(BookChunk.book_id == book_id)
         )
@@ -52,6 +80,9 @@ def sample_book():
     with SessionLocal() as session:
         session.execute(
             BookChunk.__table__.delete().where(BookChunk.book_id == book_id)
+        )
+        session.add_all(
+            BookChunk(book_id=book_id, **fields) for fields in original_snapshot
         )
         session.commit()
 

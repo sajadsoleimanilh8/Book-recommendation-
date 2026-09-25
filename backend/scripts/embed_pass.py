@@ -56,7 +56,21 @@ def fit(dim: int = EMBEDDING_DIM, sample: int = FIT_SAMPLE) -> dict:
     return {"documents": len(corpus), "corpus_available": total, "saved_to": str(path)}
 
 
-def run(limit: int, redo: bool = False, backend_name: str | None = None) -> dict:
+def run(
+    limit: int,
+    redo: bool = False,
+    backend_name: str | None = None,
+    book_ids: list[int] | None = None,
+) -> dict:
+    """`book_ids` restricts the pending query to those books' chunks.
+
+    F-64: without it, a test exercising a backend switch on one fixture chunk
+    has no way to run this against a real, populated `book_chunks` table
+    without also re-embedding thousands of unrelated real rows into the
+    fixture's throwaway backend name — silently corrupting production data
+    with every test run. `None` (the default) is every existing caller's
+    behaviour, unchanged.
+    """
     backend = get_backend(backend_name, dim=EMBEDDING_DIM)
     if hasattr(backend, "load") and backend.name == "lsa":
         backend.load()
@@ -65,6 +79,8 @@ def run(limit: int, redo: bool = False, backend_name: str | None = None) -> dict
 
     with SessionLocal() as session:
         stmt = select(BookChunk.id, BookChunk.content)
+        if book_ids is not None:
+            stmt = stmt.where(BookChunk.book_id.in_(book_ids))
         if not redo:
             # F-39. Selecting only NULL vectors was not enough. After a backend
             # change the existing rows keep their old vectors while new ones get

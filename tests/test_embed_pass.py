@@ -62,13 +62,20 @@ def stale_chunk():
 
 
 def test_a_chunk_from_another_backend_is_re_embedded(stale_chunk):
-    """Not --redo. An ordinary run must repair the mismatch on its own."""
+    """Not --redo. An ordinary run must repair the mismatch on its own.
+
+    F-64: `book_ids` scopes this to the fixture's own chunk. Without it,
+    `run()`'s query is global — every real chunk in the corpus reads as
+    "pending" for backend "hashing" too, so an unscoped call processes
+    thousands of unrelated real rows (silently corrupting them to a
+    throwaway backend name) before it would ever reach this fixture's row.
+    """
     import embed_pass
     from db import SessionLocal
     from models import BookChunk
 
-    _, chunk_id = stale_chunk
-    embed_pass.run(limit=5000, redo=False, backend_name="hashing")
+    book_id, chunk_id = stale_chunk
+    embed_pass.run(limit=5000, redo=False, backend_name="hashing", book_ids=[book_id])
 
     with SessionLocal() as session:
         refreshed = session.get(BookChunk, chunk_id)
@@ -79,14 +86,17 @@ def test_a_chunk_from_another_backend_is_re_embedded(stale_chunk):
 
 
 def test_a_chunk_already_on_the_current_backend_is_left_alone(stale_chunk):
-    """The fix must not turn every run into a full re-embed."""
+    """The fix must not turn every run into a full re-embed.
+
+    F-64: scoped via `book_ids`, see the sibling test above for why.
+    """
     import embed_pass
     from db import SessionLocal
     from models import BookChunk
 
-    _, chunk_id = stale_chunk
-    embed_pass.run(limit=5000, redo=False, backend_name="hashing")
-    second = embed_pass.run(limit=5000, redo=False, backend_name="hashing")
+    book_id, chunk_id = stale_chunk
+    embed_pass.run(limit=5000, redo=False, backend_name="hashing", book_ids=[book_id])
+    second = embed_pass.run(limit=5000, redo=False, backend_name="hashing", book_ids=[book_id])
 
     assert second["embedded"] == 0, (
         f"re-embedded {second['embedded']} chunk(s) that were already current"

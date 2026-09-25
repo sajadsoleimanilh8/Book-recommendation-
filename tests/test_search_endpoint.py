@@ -96,6 +96,29 @@ def seeded(client):
             # SQLAlchemy identity-map warning (two objects, one primary key).
             session.expunge(original)
 
+        # F-64: `select(Book.id).limit(1)` carries no ORDER BY, so it is not
+        # guaranteed to land on an empty book — in this database it resolves
+        # to a real, fully-chunked catalogue book. Snapshotted and restored
+        # for the same reason as the BookVector row above.
+        original_chunks = list(
+            session.scalars(select(BookChunk).where(BookChunk.book_id == book_id))
+        )
+        original_chunks_snapshot = [
+            {
+                "user_id": r.user_id,
+                "visibility": r.visibility,
+                "ordinal": r.ordinal,
+                "origin": r.origin,
+                "content": r.content,
+                "char_count": r.char_count,
+                "embedding": r.embedding,
+                "embedding_model": r.embedding_model,
+            }
+            for r in original_chunks
+        ]
+        for row in original_chunks:
+            session.expunge(row)
+
         session.execute(BookChunk.__table__.delete().where(BookChunk.book_id == book_id))
         session.execute(BookVector.__table__.delete().where(BookVector.book_id == book_id))
         session.add_all(
@@ -135,6 +158,9 @@ def seeded(client):
         session.execute(BookVector.__table__.delete().where(BookVector.book_id == book_id))
         if original_snapshot is not None:
             session.add(BookVector(book_id=book_id, **original_snapshot))
+        session.add_all(
+            BookChunk(book_id=book_id, **fields) for fields in original_chunks_snapshot
+        )
         session.commit()
 
 
