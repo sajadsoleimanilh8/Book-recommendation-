@@ -3200,6 +3200,100 @@ F-62's own writeup) but not the cause of anything found here.
 
 ---
 
+## Phase 4 slice 2a · Upload endpoint + attestation — shipped 2026-09-25
+
+`POST /api/library/upload` and `GET /api/library`, per section 29's format
+list and section 30's attestation requirement, and the handoff's agreed
+order: this is only the upload endpoint itself. Extraction (TXT+EPUB, PDF
+deferred), the background job to run it, and private search wired into the
+AI Librarian are the next three slices, in that order, untouched here.
+
+**Schema** (migration `c25d1ebf747d`, applied and round-tripped on both
+databases): six nullable `books` columns — `upload_status`,
+`source_filename`, `file_format`, `storage_path`, `file_size_bytes`,
+`attested_at`, `attestation_version` — NULL for every catalogue row,
+following `owner_id`'s own precedent of one table over a second `uploads`
+table with its own authorization surface to get wrong.
+
+**Attestation (section 30), decided with the product owner rather than
+assumed:** a required boolean per upload, not implicit consent and not
+purchase-verification infrastructure — `attests_ownership` must be
+explicitly true, rejected before the file is even read otherwise, recorded
+with a timestamp and a version string (`attestation_version`) so a later
+change to the wording cannot retroactively reinterpret an attestation
+someone already made. No ISBN/receipt/invoice capture in this slice; that
+is section 30's separate `OWNED_NOT_UPLOADED` future state, left alone.
+
+**Format validation is extension-first, content-checked**, not a full
+parser: `.txt` must decode as UTF-8, `.epub` must be a valid zip whose
+`mimetype` entry (when present) reads `application/epub+zip`, checked by
+`file_size` before decompressing it — an oversized declared size is refused
+without reading it, since `zf.read` decompresses whatever the archive
+claims and a crafted entry could otherwise expand to gigabytes inside one
+request. Fully validating EPUB structure is extraction's job, a later
+slice. **PDF is deliberately rejected for now**, not queued: section 29
+lists it as a supported format, but its extraction pass does not exist yet,
+and accepting it would mean a file sitting at `upload_status="uploaded"`
+indefinitely with nothing telling the reader that nothing is coming — the
+same "honest not-yet beats a silent stall" reasoning as F-17 and F-53. One
+line to remove once PDF extraction ships.
+
+**Storage is never influenced by caller input.** The file on disk is named
+`{server-generated uuid}.{validated extension}`; `source_filename` keeps
+the caller's original name for display only. This project has already paid
+once for the alternative (F-04/F-05, arbitrary file overwrite and path
+traversal, a different feature) — `test_uploaded_filename_never_becomes_a_filesystem_path`
+asserts the actual contract (the stored name is exactly
+`{external_id}.{ext}`, not merely "contains no `..`") and was sabotage-verified:
+reverting `disk_filename` to derive from the caller's filename (even via a
+safe `.name` basename, not a raw path-traversal payload) fails it.
+
+**Bounded before it is a problem, not after:** `MAX_UPLOAD_BYTES` (50 MB)
+is enforced by reading at most one byte past the limit
+(`file.file.read(MAX_UPLOAD_BYTES + 1)`), not by reading the whole upload
+into memory first and checking after — the difference between capping disk
+and capping memory. The route is a plain `def`, not `async def`, so
+FastAPI runs the synchronous disk write, zip parse and DB commit in the
+threadpool rather than blocking the event loop for every other request
+while one upload is processed. Upload is rate-limited the same way
+audiobook generation and chat already are (`ratelimit.hit_all`,
+`UPLOAD_LIMIT = 10` per hour, both IP and account bucket) — authenticated
+rather than anonymous, so the threat here is a careless or scripted caller
+filling the disk, not an anonymous flood, but the existing utility already
+does exactly what that needs.
+
+**Verified:** `tests/test_upload_endpoint.py`, 15 tests — auth, attestation
+(present and required-true), both supported formats, the PDF deferral, four
+content-mismatch cases (binary-as-txt, non-zip-as-epub, wrong-mimetype-as-epub,
+empty file), the oversize limit, the path-traversal contract, catalogue
+isolation (`catalogue_only` correctly excludes an upload), cross-reader
+listing isolation, and the rate limit. Four sabotaged deliberately
+(path-generation, PDF-deferral, attestation, `owner_id` assignment) to
+confirm the tests actually fail without the code they check — the
+PDF-deferral test failed to catch its own sabotage on the first pass (the
+generic "unsupported format" rejection also echoes the extension, so
+`"pdf" in message` passed either way) and was sharpened to check for
+deferral-specific language and the *absence* of "unsupported", then
+re-sabotaged to confirm the sharpened version does fail. The other three
+caught their sabotage on the first attempt.
+
+One test-contamination incident during this verification, caught and
+cleaned before committing: the `owner_id` sabotage run left 3 rows with
+`source='upload', owner_id IS NULL` in `digikitab_test` (the cleanup
+fixture keys its own teardown on `owner_id == user_id`, so it correctly
+found nothing to clean up for rows the sabotage had orphaned) plus their
+3 files under `backend/uploads/`. Both removed by hand; `books` count
+reconfirmed at 29,975 before the final suite runs.
+
+Two consecutive full-suite runs after fixing and cleaning up: 490 passed,
+2 xfailed, 0 failed, identical both times (475 + this slice's 15 new
+tests). `book_chunks` held at 145,887 rows / 0 corrupted through both.
+
+Dependency added: `python-multipart==0.0.32` (FastAPI's `File`/`Form`
+require it; not previously installed).
+
+---
+
 ## Deferred technical debt
 
 Carried deliberately, with the reason. Each has a closing phase.

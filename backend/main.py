@@ -44,6 +44,7 @@ from api.comments import router as comments_router
 from api.reading import router as reading_router
 from api.profile import router as profile_router
 from api.clusters import router as clusters_router
+from api.library import router as library_router
 
 
 log = logging.getLogger(__name__)
@@ -124,6 +125,7 @@ app.include_router(comments_router)
 app.include_router(reading_router)
 app.include_router(profile_router)
 app.include_router(clusters_router)
+app.include_router(library_router)
 
 # F-38: reject unknown query parameters. After include_router so the
 # guard can see every route (api/middleware.py explains the wrapper it
@@ -171,6 +173,10 @@ BOOK_LOAD_LIMIT = int(os.getenv("BOOK_LOAD_LIMIT", "0")) or None
 # Single source of truth for generated audio. Must match
 # AudiobookEngine.AUDIO_DIR in engine.py.
 AUDIO_DIR = Path(__file__).resolve().parent / "audio_outputs"
+
+# Phase 4 (section 29). Files are named by server-generated id, never by
+# anything a caller supplies — see api/library.py for why.
+UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
 
 BOOKS: List[Dict[str, Any]] = []
 BOOK_BY_ID: Dict[int, Dict[str, Any]] = {}

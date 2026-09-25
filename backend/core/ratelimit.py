@@ -75,6 +75,13 @@ AUDIOBOOK_WINDOW = 60
 CHAT_LIMIT = 10
 CHAT_WINDOW = 60
 
+# Phase 4, section 29. Authenticated (unlike the two above), so the threat
+# is a careless or scripted caller filling the disk, not an anonymous flood.
+# One book is a deliberate act; ten in an hour is generous for a person
+# building a library and pointless for a script.
+UPLOAD_LIMIT = 10
+UPLOAD_WINDOW = 3600
+
 _redis = None
 _redis_checked = False
 _warned_fallback = False

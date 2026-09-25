@@ -12,6 +12,7 @@
 fastapi==0.139.2
 uvicorn==0.51.0
 pydantic==2.13.4          # ConfigDict(extra="forbid") in main.py needs v2
+python-multipart==0.0.32  # Phase 4 §29: File()/Form() for POST /api/library/upload
 
 # --- Data / ML (verified) ---
 pandas==3.0.5

@@ -180,6 +180,38 @@ class Book(Base):
     enrichment_source: Mapped[str | None] = mapped_column(String(32))
     enriched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Phase 4 (section 29/30). NULL for every catalogue row — these describe
+    # an upload, not a book, the same way `owner_id` does. Kept on `books`
+    # rather than a separate `uploads` table for the reason `owner_id`'s own
+    # comment gives: a private book is the same shape as a catalogue book
+    # everywhere downstream, and a second table would mean two of every join.
+    #
+    # `upload_status` has exactly one value today, deliberately not enforced
+    # by a CHECK constraint (same choice as `enrichment_status`, which has
+    # never had one): "uploaded" means the file passed validation and is
+    # stored, waiting for a pipeline that does not exist yet (extraction,
+    # section 29's Validate -> ... -> READY). Future slices add to this
+    # vocabulary; nothing here should need to widen a constraint to do it.
+    upload_status: Mapped[str | None] = mapped_column(String(16))
+    source_filename: Mapped[str | None] = mapped_column(Text)
+    file_format: Mapped[str | None] = mapped_column(String(8))
+    # Relative to `main.UPLOADS_DIR`, never derived from `source_filename` —
+    # F-04/F-05 already cost this project an arbitrary-file-overwrite and a
+    # path-traversal finding over exactly this shape of mistake, for a
+    # different feature. The name on disk is a server-generated id
+    # (`external_id` + a validated extension), so nothing a caller supplies
+    # ever becomes part of a filesystem path.
+    storage_path: Mapped[str | None] = mapped_column(Text)
+    file_size_bytes: Mapped[int | None] = mapped_column(Integer)
+
+    # Section 30: the reader's explicit claim that they may lawfully upload
+    # this file, captured at the point of upload rather than inferred from
+    # the act of uploading. `attestation_version` records which wording they
+    # agreed to, so a later change to that wording does not retroactively
+    # change what an existing attestation means.
+    attested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attestation_version: Mapped[str | None] = mapped_column(String(16))
+
     created_at: Mapped[datetime] = TimestampCol()
 
     comments: Mapped[list["Comment"]] = relationship(back_populates="book")
