@@ -2816,6 +2816,143 @@ Installing the pinned requirements downgraded `click` and broke an unrelated
 shared interpreter. A `.venv` and a note in the README is a five-minute fix
 worth doing in PR 2.
 
+
+## F-62 · The golden drift is not F-51, and it is wider than three tests — **RESOLVED, see F-63/F-64** (2026-09-23)
+
+Investigated per the handoff's §4. The prescribed experiment returned the
+**opposite** of the expected answer, so the question the handoff set out to
+close is reopened rather than settled.
+
+### The prescribed experiment, and what it said
+
+`book_vector_pass --limit 40000 --redo` was run against `digikitab_test` a
+third time. The vectors provably changed — `md5(string_agg(embedding))` over
+all 29,975 rows went `7aeb67a278b75cac484c81d680dc7f93` →
+`4f6784f2978e397ac0d4c05e3bba7775`. The three failing cases then failed with
+**identical** values to before the redo (0.5718 / 0.4906 / 0.6426).
+
+The handoff's own decision rule was: *different* values confirm F-51, *same*
+values mean F-51 is not the explanation. They were the same. **F-51 is ruled
+out as the cause of this drift.**
+
+### F-51's mechanism is real, and is now measured — but it is 1e-7, not 1e-4
+
+Done directly, as F-51's own remediation note asks ("compare raw MiniLM
+embedding output across two fresh fits on identical input, bit for bit"):
+
+| Comparison | Result |
+|---|---|
+| Two `encode()` calls, same process, same batch | **bit-identical** |
+| Same text alone vs inside a batch, same process | differs, max abs 1.1e-7 |
+| Stored vector (2026-09-22 fit) vs fresh encode | differs, max abs 1.1e-7, cos 1.0000001 |
+
+So embeddings are genuinely not bit-reproducible across fits, and **batch
+composition is a demonstrable cause** — that part of F-51 is confirmed and no
+longer needs isolating. But the noise is ~1e-7 and the golden scores are
+compared at 1e-4, and the full-catalogue redo above shows it does not
+propagate that far. F-51 is real and orthogonal, not the culprit here.
+
+### The drift is deterministic, so it is not nondeterminism at all
+
+Three separate processes — three full ML refits — produced identical scores,
+before and after the vector regeneration. Whatever moved these numbers is
+persistent state, not float noise.
+
+### It is six baselines, not three, and one is a real ranking change
+
+`pytest` asserts title-then-score per rank and stops at the first mismatch in
+a test, so it reports only the earliest drifted rank and hides the rest. A
+direct comparison of every golden file at every rank — including the ranks
+`MAX_SAFE_PREFIX` truncates — gives the actual state:
+
+| Baseline | Last written | Drift |
+|---|---|---|
+| recommend_fiction_dark | 7e5a57e 09-11 | 0.0000 |
+| recommend_fantasy_adventurous | 7e5a57e 09-11 | 0.0000 |
+| questionnaire_fantasy_dark_fast | 7e5a57e 09-11 | 0.0000 |
+| questionnaire_selfhelp_motivational | 7e5a57e 09-11 | 0.0001 (2 ranks) |
+| recommend_no_preferences | 538e69e 09-14 | 0.0001 (6 ranks) |
+| recommend_thoughtful_mood | 538e69e 09-14 | 0.0001 (8 ranks) |
+| questionnaire_popular_english | 538e69e 09-14 | 0.0001 (6 ranks) |
+| questionnaire_empty_answers | 538e69e 09-14 | 0.0001 (**all 9 ranks**) |
+| **recommend_author_only** | 538e69e 09-14 | **0.0006, and ranks 6/7 swapped** |
+
+`recommend_author_only` returns *Warbreaker* and *The Final Empire* in the
+opposite order from the baseline. That is a ranking change, not score noise,
+and the handoff's "non-rank-1 score drifts" framing does not cover it.
+
+**The tolerance is the same order as the drift.** `SCORE_TOLERANCE = 1e-4`
+and the systematic shift is 1e-4, so five of the six moved baselines pass
+while being wrong. The suite is currently green on a shift it is too coarse
+to resolve — the F-43/F-45 family again: a pass that is not evidence.
+
+### What was ruled out, by measurement
+
+| Candidate | Evidence it is not the cause |
+|---|---|
+| F-51 / GPU float noise | full `--redo`, checksum changed, scores identical |
+| Phase 4 slice 1 code | `catalogue_only()` is `owner_id IS NULL`; all 29,975 rows match, so a no-op here |
+| Any committed code since the baselines | `git diff 538e69e..HEAD` over the whole scoring path is renames (F-14), dead-code removal (F-49), docstrings. `ml/ranking.py` is a pure `cf_s`→`genre_pop_s` rename |
+| Library versions | nothing in `.venv` installed after 2026-09-11; baselines written 09-14 |
+| The catalogue file | `backend/site_ready_books.json` unmodified vs HEAD, mtime 2026-04-25 |
+| `comment_score` | `comments` is empty in `digikitab_test`; score is 0 for every book |
+| Bandit | no rehydration anywhere; `expected_reward` returns the constant 0.5 with no rewards |
+| Lost descriptions | `digikitab_test` has 0 and that is *correct* — F-15's placeholder is nulled by `clean_description`. Running the same comparison against `digikitab` (which has 7,965) changes whole title lists, not fourth decimals, so a description change cannot produce this signature |
+| Vector recipe | `build_text` unchanged since before the baselines |
+| Vector→row mapping | 29,975 rows, 29,975 distinct `(source, external_id)`; the 1,576 colliding `book_id`s are correctly disambiguated by source (F-27). No missing vectors, no TF-IDF fallback |
+
+### What is left, and the part that is inference
+
+Every reproducible input is eliminated. The remaining difference is the
+fixture itself: `digikitab_test` was destroyed and rebuilt on 2026-09-22
+(F-59's `prune()`, then F-61's `TRUNCATE ... CASCADE`), and restored by
+re-running `ingest` + `book_vector_pass`. It is now in **pure fresh-ingest
+state** — its `title`/`author`/`genre` match the catalogue JSONL exactly,
+with no accumulated pass output on top.
+
+The baselines were written on 2026-09-14, against the *pre-wipe* database,
+which had months of passes applied to it. That state no longer exists and
+cannot be reconstructed, so this last step is inference, not measurement —
+but it is the only surviving candidate, and there is direct corroboration
+that the restore was **not** faithful:
+
+```
+                 digikitab (dev)   digikitab_test
+book_texts             6,305              0
+book_chunks          153,711              0
+book_vectors          29,975         29,975
+```
+
+`book_texts` and `book_chunks` were taken by the same cascade and **have
+never been restored**. The restore rebuilt `books` and `book_vectors` only.
+So the test fixture is still missing data it had before 2026-09-22, and the
+baselines are being compared against a fixture that is not the one they were
+recorded in.
+
+### Consequences worth separating
+
+1. **The three failures are not a Phase 4 regression.** Slice 1's code is
+   exonerated by measurement, not by assumption.
+2. **The golden baselines no longer describe the current fixture**, and
+   cannot be made to, because the state they encode is gone.
+3. **`book_texts`/`book_chunks` are still empty in `digikitab_test`** — an
+   unrepaired gap from the 2026-09-22 incident, independent of the golden
+   question and affecting anything that reads chunks.
+4. **`SCORE_TOLERANCE` is too coarse to see the drift it is meant to catch**,
+   and `MAX_SAFE_PREFIX` hides further ranks on top of that.
+
+### The decision needed
+
+Not the handoff's (a)/(b)/(c), which all assumed F-51. The real choice is
+what a golden baseline should be pinned against now that the fixture is
+known to have been rebuilt — and whether `book_texts`/`book_chunks` are
+restored first, since regenerating baselines before that repair would pin a
+second state that is also about to change. **Nothing committed pending this.**
+
+**Decided 2026-09-23 (product owner): restore `book_texts`/`book_chunks`
+first, verify the test DB fully matches dev in structure and content, then
+regenerate baselines against that complete state — not before.** See F-63.
+
 ---
 
 ## F-63 · `book_texts`/`book_chunks` restored into `digikitab_test`; the restore verification found the tolerance question is more urgent than expected, plus 3 masked test-isolation gaps — 2026-09-23
@@ -3033,7 +3170,33 @@ reattached to the pinned `final_*` volumes, per F-56 — no new volume
 created), data confirmed intact, and the affected file re-run clean
 (10/10) before trusting any further result.
 
-**Golden baselines are addressed in a separate commit, next (F-62).**
+### Baselines regenerated — 2026-09-24, closing F-62
+
+With the restore verified and both isolation-gap fix runs clean, the 3
+baselines F-62 identified as genuinely drifted were regenerated —
+`recommend_author_only`, `recommend_thoughtful_mood`,
+`questionnaire_empty_answers` — and only those three; the other 6 golden
+files are untouched (`git status` confirms it). Each diff was read by hand
+before anything was committed:
+
+- `questionnaire_empty_answers`, `recommend_thoughtful_mood`: uniform
+  **-0.0001** at every rank, no title or order change — the "score drifted"
+  shape F-62 measured.
+- `recommend_author_only`: same pattern at ranks 2–5 and 8–9, plus the
+  ranks-6/7 title swap (*The Final Empire* ↔ *Warbreaker*) F-62 flagged as a
+  real ranking change, not scoring noise. Measured the unrounded scores
+  underneath before accepting the diff: **5.27e-06** separates the two
+  books at full precision — a genuine but extremely close near-tie that
+  happened to cross a rounding boundary at the 4th decimal the API reports.
+
+Golden ranking suite: **18 passed, 2 xfailed** (was 15 passed / 3 failed / 2
+xfailed before regeneration). Two consecutive full-suite runs after
+regenerating: **475 passed, 2 xfailed, 0 failed**, identical both times.
+`book_chunks` held at 145,887 rows / 0 corrupted through both.
+
+F-62 is closed. F-51 remains open, narrowed (F-64's investigation
+independently confirmed its 1e-7-scale embedding non-reproducibility, see
+F-62's own writeup) but not the cause of anything found here.
 
 ---
 
