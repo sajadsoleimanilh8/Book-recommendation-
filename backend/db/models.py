@@ -107,11 +107,38 @@ class Book(Base):
             "enrichment_status",
             postgresql_where=text("enrichment_status = 'pending'"),
         ),
+        # Phase 4. Every catalogue-wide query filters on `owner_id IS NULL`,
+        # and that is nearly the whole table, so the useful index is the
+        # small side: find one reader's uploads without scanning 30k rows.
+        Index(
+            "ix_books_owner",
+            "owner_id",
+            postgresql_where=text("owner_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
     external_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Phase 4 (section 29). NULL means "catalogue"; a value means "this row is
+    # one reader's private upload".
+    #
+    # Structural, not a `source == 'upload'` convention, for the same reason
+    # `book_chunks.visibility` is structural: the thing that must never happen
+    # is a private book being treated as catalogue, and a string convention
+    # makes that a mistake any new query can make silently. This makes it a
+    # column every query either filters on or visibly does not.
+    #
+    # Nullable rather than a separate `uploads` table because a private book
+    # is the same shape as a catalogue book everywhere downstream — chunks,
+    # embeddings, reading progress, comments all key on `books.id`, and a
+    # second table would mean two of each of those paths, with only one of
+    # them getting the authorization right. That is the argument `BookChunk`
+    # already makes for one table and two populations.
+    owner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
 
     title: Mapped[str] = mapped_column(Text, nullable=False)
     author: Mapped[str] = mapped_column(Text, default="Unknown", nullable=False)
@@ -156,6 +183,36 @@ class Book(Base):
     created_at: Mapped[datetime] = TimestampCol()
 
     comments: Mapped[list["Comment"]] = relationship(back_populates="book")
+
+
+def catalogue_only(stmt):
+    """Restrict a `Book` query to the shared catalogue, excluding uploads.
+
+    Phase 4, section 29. Every pass that walks `books` — enrichment, vector
+    building, Gutenberg text, ingest — was written when every row was
+    catalogue, so each one's "all books" meant what it said. The moment a
+    reader uploads a private book, "all books" silently includes it.
+
+    The enrichment pass is the one that made this urgent rather than tidy:
+    `pending_query` takes `sources: list[str] | None = None` and applies no
+    source filter when that is None, so an uploaded book would have been
+    queued and its title and author sent to Google Books. That is a third
+    party learning what is in someone's private library, and it spends the
+    quota that is this project's binding constraint (F-30, OI-7) on a book
+    no other reader can ever see.
+
+    Written as `owner_id IS NULL` rather than `source != 'upload'`
+    deliberately. A denylist fails open: the next private source anyone adds
+    is included by default, and the failure is invisible. This fails closed,
+    and the column makes the distinction impossible to forget rather than
+    merely documented.
+    """
+    return stmt.where(Book.owner_id.is_(None))
+
+
+def owned_by(stmt, user_id: int):
+    """The other half: one reader's uploads, and nobody else's."""
+    return stmt.where(Book.owner_id == user_id)
 
 
 class BookText(Base):

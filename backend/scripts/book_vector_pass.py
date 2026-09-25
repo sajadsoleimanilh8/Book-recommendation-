@@ -43,7 +43,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from db import SessionLocal
 from embeddings import get_backend
-from models import Book, BookVector
+from models import Book, BookVector, catalogue_only
 
 log = logging.getLogger("book_vector_pass")
 
@@ -72,7 +72,16 @@ def build_text(book: Book) -> tuple[str, bool, int]:
 
 
 def pending_query(limit: int, redo: bool, model_name: str):
-    stmt = select(Book)
+    # Phase 4: catalogue only, and this one is load-bearing rather than
+    # tidy. `book_vectors` is keyed on `book_id` alone — it has no
+    # `visibility` column and no owner — and `services.search.search_books`
+    # queries it directly. A vector built for a private upload would
+    # therefore be a public search result for every reader on the platform.
+    #
+    # This is why private retrieval rides `book_chunks` instead: that table
+    # carries `visibility` and `user_id` with a CHECK constraint, and
+    # `visible_chunks()` already filters on them.
+    stmt = catalogue_only(select(Book))
     if not redo:
         # Same rule as embed_pass after F-39: a vector from another backend is
         # as stale as a missing one, so a model switch is self-healing.

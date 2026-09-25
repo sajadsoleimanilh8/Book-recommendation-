@@ -27,6 +27,7 @@ main.py has finished importing and startup() has run.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from fastapi import APIRouter
@@ -109,6 +110,9 @@ def health():
         # whether the database correction was applied. A skipped overlay is
         # invisible downstream, so it has to be visible here.
         "language_overlay": main.LANGUAGE_OVERLAY or None,
+        # F-53: the standing enrichment job ran green for three days doing
+        # nothing at all. See _enrichment_health.
+        "enrichment": _enrichment_health(),
         # OI-5: the settings that would stop this configuration being
         # deployable. Empty in production by construction — `config` refuses
         # to boot while any remain — so this only ever has content on a
@@ -160,3 +164,76 @@ def _search_corpus_health() -> Dict[str, Any]:
         "corpus_backends": {m: n for m, n in counts.items() if m},
     }
 
+
+# F-53 --------------------------------------------------------------------
+#
+# The standing enrichment job ran 2026-09-17 -> 2026-09-20 logging
+# `processed 0, throttled True`, exit code 0, Task Scheduler "Last Result: 0".
+# Every component behaved correctly — Google answered 403, the F-29 circuit
+# breaker stopped after 3 throttles, rows were left `pending` rather than
+# falsely `not_found`. Nothing was corrupted and nothing was wrong. The
+# *outcome* was 72 hours of zero progress that looked identical to success
+# from every angle a human would check.
+#
+# The agreed fix was "after 3 consecutive barren runs, warn in /health".
+# This implements that intent against ground truth rather than a run counter,
+# and the difference is worth stating because it is a deviation:
+#
+#   A run counter records what the job *says* it did. F-53 is a case where
+#   the job said it succeeded. Adding a table of run outcomes would have
+#   given a second thing that can report success while the data sits still —
+#   the same class of claim, one layer up.
+#
+#   `max(enriched_at)` cannot drift from reality, because it *is* the
+#   reality: the last moment any book's enrichment state changed. Combined
+#   with "work remains", it answers the only question worth asking.
+#
+# It also needs no new table, no new writer, and no coordination with a
+# process that runs outside the app.
+STALL_DAYS = 3
+
+
+def _enrichment_health() -> Dict[str, Any]:
+    """Whether the standing backfill is actually making progress.
+
+    Never raises: /health returning 500 is F-21, and a monitoring endpoint
+    that fails when the thing it monitors is unhealthy is worse than none.
+    """
+    try:
+        with SessionLocal() as session:
+            pending, last = session.execute(
+                sa_select(
+                    sa_func.count()
+                    .filter(models.Book.enrichment_status == "pending"),
+                    sa_func.max(models.Book.enriched_at),
+                ).where(models.Book.owner_id.is_(None))
+            ).one()
+    except Exception as exc:
+        log.warning(f"enrichment health probe failed: {exc}")
+        return {"pending": None, "error": "unavailable"}
+
+    # No book has ever been enriched. That is a fresh install, not a stall,
+    # and the two are indistinguishable from here — so report the empty state
+    # honestly (F-17) rather than raising a false alarm on a machine where
+    # the job was simply never set up.
+    if last is None:
+        return {"pending": pending, "last_progress": None, "stalled": False}
+
+    age = datetime.now(timezone.utc) - last
+    days = round(age.total_seconds() / 86400, 2)
+    # Pending is the second half deliberately: once the backlog is drained,
+    # a long quiet period is the job having finished, not the job being
+    # broken, and warning then would train everyone to ignore this field.
+    stalled = days >= STALL_DAYS and pending > 0
+
+    return {
+        "pending": pending,
+        "last_progress": last.isoformat(),
+        "days_since_progress": days,
+        "stalled": stalled,
+        "warning": (
+            f"enrichment has made no progress in {days} days with {pending} "
+            f"book(s) still pending — the job may be running green and doing "
+            f"nothing (F-53)"
+        ) if stalled else None,
+    }

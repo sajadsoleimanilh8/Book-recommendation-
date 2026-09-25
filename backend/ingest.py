@@ -29,7 +29,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 import config
 from db import SessionLocal
-from models import Book
+from models import Book, catalogue_only
 
 PLACEHOLDER_DESCRIPTIONS = {"", "no description available", "none", "null"}
 PLACEHOLDER_THUMBNAILS = {"/static/images/default-book.jpg"}
@@ -175,7 +175,13 @@ def prune(path=None) -> dict:
 
     removed = []
     with SessionLocal() as session:
-        for book in session.scalars(select(Book)):
+        # Phase 4: catalogue only, and this is the one that would have lost
+        # data rather than leaked it. This loop deletes every book whose
+        # (source, external_id) is absent from the catalogue file — and an
+        # uploaded book is never in that file, so every upload on the
+        # instance would be destroyed by the next `python -m ingest`, which
+        # the README tells people to re-run freely because it is idempotent.
+        for book in session.scalars(catalogue_only(select(Book))):
             if (book.source, book.external_id) not in valid:
                 removed.append((book.id, book.source, book.external_id, book.title))
                 session.delete(book)
@@ -272,7 +278,7 @@ def report() -> dict:
         )
         by_source = dict(
             session.execute(
-                select(Book.source, func.count()).group_by(Book.source)
+                catalogue_only(select(Book.source, func.count())).group_by(Book.source)
             ).all()
         )
         by_lang = dict(

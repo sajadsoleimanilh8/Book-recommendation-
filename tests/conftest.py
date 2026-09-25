@@ -119,6 +119,24 @@ def clean_user_state():
 
     Books are left alone — they are immutable reference data and re-ingesting
     costs 20s. Only the tables tests write to are cleared.
+
+    **`users` is cleared with DELETE, not TRUNCATE, and that is load-bearing
+    (F-61).** `TRUNCATE ... CASCADE` cascades at the level of *tables*, not
+    rows: it empties every table holding a foreign key to the truncated one,
+    whether or not a single row actually references it. Phase 4 added
+    `books.owner_id -> users.id`, which silently enrolled `books` in this
+    statement — and `books` cascades on to `book_vectors`, `book_chunks` and
+    `book_texts`.
+
+    The result was that this fixture, whose docstring promises books are left
+    alone, deleted all 29,975 of them at the start of every session. The
+    catalogue was restored twice before the cause was found, because the
+    restore kept vanishing on the next run.
+
+    `DELETE FROM users` cascades per *row*, honouring the FK as intended: it
+    takes books that are actually owned by a deleted user, and leaves the
+    catalogue (`owner_id IS NULL`) alone. Slower, and irrelevantly so — these
+    tables hold tens of rows in a test session.
     """
     if not database_reachable() and not _ensure_test_database():
         yield
@@ -129,10 +147,17 @@ def clean_user_state():
         from db import engine
 
         with engine.begin() as conn:
+            # These reference users and books but nothing references them, so
+            # their CASCADE reaches nothing and TRUNCATE is safe and fast.
             conn.execute(
-                text("TRUNCATE users, comments, reading_progress, reminders, "
+                text("TRUNCATE comments, reading_progress, reminders, "
                      "user_books, interaction_events, recommendation_log CASCADE")
             )
+            # Private chunks belong to a reader; catalogue chunks must survive.
+            conn.execute(text("DELETE FROM book_chunks WHERE user_id IS NOT NULL"))
+            # Row-level, so the catalogue survives. See the docstring — this
+            # was `TRUNCATE users ... CASCADE` and it emptied `books`.
+            conn.execute(text("DELETE FROM users"))
     except Exception:
         pass
     yield

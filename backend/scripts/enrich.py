@@ -38,7 +38,7 @@ from sqlalchemy import case, func, select
 import config
 import net_cache
 from db import SessionLocal
-from models import Book
+from models import Book, catalogue_only
 from providers import GoogleBooksProvider, OpenLibraryProvider, QuotaExceeded, reconcile
 from providers.base import ProviderThrottled
 from providers.reconcile import MIN_DESCRIPTION_CHARS, _usable_description
@@ -75,7 +75,14 @@ def pending_query(
     languages: list[str] | None = None,
     sources: list[str] | None = None,
 ):
-    stmt = select(Book).where(Book.enrichment_status == STATUS_PENDING)
+    # Phase 4: catalogue only. `sources` below defaults to None, meaning
+    # "every source", so without this an uploaded book would be queued and
+    # its title and author sent to Google Books — a third party learning
+    # what is in a reader's private library, paid for out of the quota that
+    # is this project's binding constraint.
+    stmt = catalogue_only(
+        select(Book).where(Book.enrichment_status == STATUS_PENDING)
+    )
     if languages:
         stmt = stmt.where(Book.language.in_(languages))
     if sources:
@@ -225,7 +232,9 @@ def report() -> dict:
 
         by_status = dict(
             session.execute(
-                select(Book.enrichment_status, func.count()).group_by(Book.enrichment_status)
+                catalogue_only(
+                    select(Book.enrichment_status, func.count())
+                ).group_by(Book.enrichment_status)
             ).all()
         )
         with_desc = session.scalar(

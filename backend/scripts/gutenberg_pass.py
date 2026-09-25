@@ -34,7 +34,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 import net_cache
 from db import SessionLocal
-from models import Book, BookText
+from models import Book, BookText, catalogue_only
 from providers.base import RateLimiter
 from providers.gutenberg_text import extract_description, extract_reading_text, fetch_opening
 
@@ -50,7 +50,11 @@ def pending_query(limit: int, redo: bool = False):
     already have marked a book `partial` (it found metadata but no
     description). Those are exactly the rows this pass exists to finish.
     """
-    stmt = select(Book).where(Book.source == SOURCE)
+    # Phase 4: already closed by the `source` filter below, since an upload
+    # is never `source == SOURCE`. Stated anyway so the rule is uniform
+    # across every pass that walks `books`, and so a future change to what
+    # SOURCE means cannot quietly open it.
+    stmt = catalogue_only(select(Book)).where(Book.source == SOURCE)
     if not redo:
         stmt = stmt.where(
             Book.id.notin_(select(BookText.book_id))
