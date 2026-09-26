@@ -295,7 +295,7 @@ class SentenceTransformerBackend:
             requested = "cuda" if available else "cpu"
 
         self.device = requested
-        self._model = SentenceTransformer(model_name, device=self.device)
+        self._model = self._load(model_name)
 
         if self.device == "cpu":
             # Leave the machine usable, and cooler. torch defaults to every
@@ -311,6 +311,41 @@ class SentenceTransformerBackend:
         else:
             name = torch.cuda.get_device_name(0)
             log.info(f"MiniLM on {self.device}: {name}")
+
+    def _load(self, model_name: str):
+        """Cached-local first, network only as a fallback.
+
+        Every call — not just a first-time download — otherwise checks
+        huggingface.co for a newer config before using the cache, per
+        `sentence-transformers`' own default. Harmless when the network is
+        fine; when it is not, several connection attempts have to time out
+        before falling back, and this project now embeds synchronously
+        inside a request-triggered background job (Phase 4, section 29),
+        not only from an offline maintenance pass where a slow retry cost
+        nothing anyone was waiting on. Observed directly: a degraded
+        connection here turned a sub-second model load into
+        `services.library_ingest`'s embedding step failing outright once
+        `jobs.LIBRARY_REGISTRY`'s worker outlived the retry loop.
+
+        `local_files_only=True` is `SentenceTransformer`'s own parameter for
+        this — tried first, falling back to a normal (network-permitted)
+        load on *any* failure. Not narrowed to one exception type, because
+        "the offline load failed" covers both "not cached yet" (a genuinely
+        fresh install, which must still be able to download once) and
+        library-version differences in what gets raised for that.
+
+        Setting `HF_HUB_OFFLINE=1` instead (tried first) does not work:
+        measured directly, it left every one of `sentence-transformers`'
+        own per-file HEAD requests unchanged, so it is not this library's
+        own offline switch for whatever internally decides to make them.
+        """
+        from sentence_transformers import SentenceTransformer
+
+        try:
+            return SentenceTransformer(model_name, device=self.device, local_files_only=True)
+        except Exception:
+            log.info(f"{model_name} not available offline; trying the network")
+            return SentenceTransformer(model_name, device=self.device)
 
     def describe(self) -> dict:
         """What is actually running, for /health and for verification."""
