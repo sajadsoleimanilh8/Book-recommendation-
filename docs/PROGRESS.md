@@ -3532,3 +3532,65 @@ last check (26.57% -> 29.07% description coverage, 993 processed,
 `quota_exhausted=True` — a clean stop, not a failure) before the container
 outage interrupted the following scheduled run. No action needed beyond
 the restart; the 4am run should succeed now that Postgres is reachable.
+
+---
+
+## Continuing autonomously — 2026-09-26
+
+Product owner: keep working through unblocked, high-value items without
+per-item sign-off or reports, same stop conditions as the Phase 4 stretch
+(irreversible/destructive with no safe path; a real product/scope decision;
+GPU-thermal risk). Stepping away for an extended period; one consolidated
+report on return. Picked, with reasoning given up front: F-60, then F-52,
+then F-53's residual enhancement, then whatever else is unblocked and
+valuable. Explicitly not touching: OI-3 (deployment, on hold), OI-12
+(Reading DNA, no spec), F-14/F-55 (blocked on OI-3), F-51 (Phase 8, treated
+as GPU-thermal-adjacent — sustained embedding-fit comparisons risk the same
+pattern F-41 already burned this machine on once).
+
+## F-60 · Test DB migration-drift guard — **CLOSED 2026-09-26**
+
+Built exactly as specified in the table entry: a check, run once via
+`pytest_configure` (before collection, extending the existing
+`REQUIRE_DATABASE` check there rather than adding a second hook), comparing
+`digikitab_test`'s actual `alembic_version` against the code's own migration
+head — read via `alembic.script.ScriptDirectory`, a filesystem operation,
+not a second `alembic upgrade head` subprocess. A mismatch raises
+`pytest.UsageError` with the specific drifted-vs-expected revisions and the
+exact fix command, before any test runs — one clear message instead of the
+eight confusing `column "owner_id" of relation "books" does not exist`
+errors this exact gap has already produced once.
+
+**Deliberately does not auto-migrate.** `_ensure_test_database` already
+does, but only when the database does not exist yet. Once it exists and is
+merely stale, silently upgrading it would also silently paper over the
+other way this class of bug happens: `DIGIKITAB_TEST_DB` pointed at the
+wrong database entirely. A loud failure is the point.
+
+**Verified, including sabotage of both the guard and its own test:**
+- Real sabotage against the actual database: `alembic downgrade -1` against
+  `digikitab_test`, then ran a real test file — caught immediately, one
+  line, naming both revisions and the fix command. Restored
+  (`alembic upgrade head`) and confirmed back at `a73fc73a4646`, 29,975
+  books intact, before doing anything else.
+- `tests/test_conftest_guards.py` (3 tests): the steady state (no
+  exception when at head), the mismatch (mocking the code's own reported
+  head via `ScriptDirectory.get_current_head`, not the real database's
+  `alembic_version` row — proves the comparison without any risk of
+  leaving the shared test database mismatched if the test itself failed
+  partway through), and that an unreachable database is a silent no-op
+  (a different, already-handled degradation path) rather than a second,
+  unrelated failure on top of it.
+- Sabotage-verified the test file too: commented out the guard's `raise`,
+  confirmed `test_fails_loudly_on_a_mismatch` fails as it should, reverted,
+  confirmed clean.
+
+Docker CLI (`docker ps`, `docker exec`) was persistently slow/unresponsive
+(120s+ timeouts) throughout this item — noted to the product owner
+separately, not investigated further since every actual database
+operation (via direct `psycopg`/SQLAlchemy connections, including the
+sabotage above) succeeded normally throughout, indicating the CLI/API
+layer rather than the containers or Postgres itself.
+
+---
+

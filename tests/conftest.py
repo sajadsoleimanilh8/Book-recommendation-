@@ -222,6 +222,66 @@ def pytest_configure(config):
             "would exit 0, reporting success for tests that never ran. "
             "Start it with: docker compose up -d"
         )
+    _check_test_db_migration_head()
+
+
+def _check_test_db_migration_head() -> None:
+    """F-60: fail loudly, once, before collection, if `digikitab_test` is on
+    a different migration than the code expects.
+
+    Third appearance of the two-database mixup (`conftest.py` forces
+    `digikitab_test` unconditionally at import) — `alembic upgrade head` run
+    against `digikitab` alone leaves `digikitab_test` behind with no warning
+    beyond eight collection errors reading
+    `column "owner_id" of relation "books" does not exist`, legible only
+    after the fact and only if you already suspect this. Compared here
+    instead: the code's own migration head (`ScriptDirectory`, a filesystem
+    read — no DB connection, and no subprocess the way `_ensure_test_database`
+    shells out to `alembic upgrade head`) against what `digikitab_test`
+    actually reports.
+
+    Deliberately does not auto-migrate. `_ensure_test_database` already
+    does that, but only when the database does not exist yet — once it
+    exists and is merely stale, auto-upgrading here would also silently
+    "fix" the case this guard exists to catch in the first place: someone
+    pointed `DIGIKITAB_TEST_DB` at the wrong database. A loud, actionable
+    failure is the point, not a quiet repair.
+
+    Skips silently if Postgres is unreachable at all (a different, already
+    -handled degradation — individual test files skip themselves via
+    `database_reachable()`) or if `alembic`/its config cannot be read (never
+    block collection on this guard's own plumbing).
+    """
+    if not database_reachable():
+        return
+    try:
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+        from sqlalchemy import text
+
+        from db import engine
+
+        alembic_cfg = Config(str(BACKEND / "alembic.ini"))
+        alembic_cfg.set_main_option("script_location", str(BACKEND / "alembic"))
+        code_head = ScriptDirectory.from_config(alembic_cfg).get_current_head()
+
+        with engine.connect() as conn:
+            db_version = conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar()
+    except Exception as exc:
+        logging.warning(f"F-60 migration-head check skipped: {type(exc).__name__}: {exc}")
+        return
+
+    if db_version != code_head:
+        raise pytest.UsageError(
+            f"{TEST_DB} is on migration {db_version!r} but the code expects "
+            f"{code_head!r}. This is F-60's exact shape: migrating `digikitab` "
+            f"and not `{TEST_DB}` fails silently until test collection breaks "
+            "on a confusing 'column does not exist' error. Fix: "
+            f'POSTGRES_DB={TEST_DB} .venv/Scripts/python.exe -m alembic '
+            "upgrade head (run from backend/)."
+        )
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
