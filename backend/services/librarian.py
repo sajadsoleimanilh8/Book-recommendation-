@@ -52,9 +52,10 @@ SYSTEM_PROMPT = """You are the DigiKitab librarian. You help readers find books 
 
 Rules, without exception:
 - Never name a book from your own memory. Only recommend books that a tool returned in this conversation.
-- To find or recommend books, call search_catalog. To exclude books the reader has already read, call check_user_library first, then pass exclude_read=true.
-- For any question about price or availability, call check_availability for that book. Never state either otherwise.
-- To talk about a book, use only its summary from search_catalog. If it has no summary, say the catalogue holds no description.
+- To find or recommend books from the shared catalogue, call search_catalog. To exclude books the reader has already read, call check_user_library first, then pass exclude_read=true.
+- For anything about a book the reader uploaded themselves — its content, a summary, a detail, a quote — call search_my_library, never search_catalog. The catalogue and the reader's own uploads are different collections; do not mix results from one into an answer about the other.
+- For any question about price or availability, call check_availability for that book. Never state either otherwise. This does not apply to the reader's own uploads, which are not for sale.
+- To talk about a book, use only its summary from search_catalog, or its passage from search_my_library. If neither tool returned one, say so plainly.
 - Write every book title inside double quotes, exactly as the tool returned it, e.g. "Notes on Grief".
 - If a search returns nothing suitable, say so plainly. Do not fill the gap with books you remember.
 - Keep the reply short: one or two sentences of framing, then the books. Do not repeat the reader's question."""
@@ -112,6 +113,28 @@ TOOLS: list[dict[str, Any]] = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_my_library",
+            "description": (
+                "Search inside the reader's own uploaded books — their private library, "
+                "not the shared catalogue. Use this for any question about a book the "
+                "reader uploaded, or that should be answered from its actual content "
+                "(a summary, a detail, a quote), never search_catalog for that."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "what to find within the reader's own uploaded books",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -126,6 +149,17 @@ class LibrarianDeps:
     book_by_id: Callable[[int], Optional[dict[str, Any]]]
     # account id -> API book ids the reader has read, started or reviewed
     library_for: Callable[[int], set[int]]
+    # Phase 4, section 29/31: (account_id, query, pool) -> the reader's own
+    # uploaded chunks, best first. Same "no tool takes a user id" rule as
+    # every other tool here — `account_id` is a parameter of the *dependency
+    # function*, filled in from `ctx.account_id` at the call site
+    # (`_tool_private_library`), never from the model's own arguments.
+    # Defaulted so every existing `LibrarianDeps(...)` construction — real
+    # or a test's fake — keeps working unchanged; a reader simply gets no
+    # private results until a real search_private is wired in.
+    search_private: Callable[[int, str, int], list[dict[str, Any]]] = (
+        lambda account_id, query, pool: []
+    )
 
 
 @dataclass
@@ -348,12 +382,49 @@ class Librarian:
             "disliked_keywords": list(p.disliked_keywords)[-10:],
         }
 
+    def _tool_private_library(self, args: dict[str, Any], ctx: "_Context") -> dict[str, Any]:
+        """Phase 4, section 29/31. `ctx.account_id` — from the authenticated
+        request, per `answer()`'s caller — is the only identity this ever
+        uses; `args` never carries one, the same rule `check_user_library`
+        is built on and for the same reason (module docstring).
+        """
+        if ctx.account_id is None:
+            return {
+                "logged_in": False,
+                "results": [],
+                "note": "the reader is not logged in, so there is no private library to search",
+            }
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return {"error": "query is required"}
+
+        limit = max(1, min(int(args.get("limit") or DEFAULT_RESULTS), MAX_RESULTS))
+        results: list[dict[str, Any]] = []
+        for hit in self.deps.search_private(ctx.account_id, query, SEARCH_POOL):
+            entry = {
+                "id": hit["book_id"],
+                "title": hit["title"],
+                "author": hit.get("author") or "Unknown",
+                "passage": hit["passage"],
+            }
+            # Namespaced, not the bare book_id: `ctx.seen` also holds
+            # catalogue books keyed by `main.BOOK_BY_ID`'s id space, and
+            # nothing structurally guarantees the two id spaces never
+            # collide. A string key removes the question rather than
+            # relying on today's ranges happening not to overlap.
+            ctx.seen[f"upload:{entry['id']}"] = entry
+            results.append(entry)
+            if len(results) >= limit:
+                break
+        return {"logged_in": True, "results": results, "count": len(results)}
+
     def _run_tool(self, name: str, args: Any, ctx: "_Context") -> dict[str, Any]:
         handlers = {
             "search_catalog": self._tool_search,
             "check_availability": self._tool_availability,
             "check_user_library": self._tool_library,
             "get_reading_profile": self._tool_profile,
+            "search_my_library": self._tool_private_library,
         }
         handler = handlers.get(name)
         if handler is None:
@@ -455,7 +526,10 @@ class Librarian:
 class _Context:
     account_id: Optional[int]
     profile: Any
-    seen: dict[int, dict[str, Any]] = field(default_factory=dict)
+    # int keys: catalogue books (main.BOOK_BY_ID's id space). Str keys
+    # ("upload:<book_id>"): the reader's own private uploads — namespaced so
+    # the two id spaces can never collide in one dict.
+    seen: dict[int | str, dict[str, Any]] = field(default_factory=dict)
     corpus: list[str] = field(default_factory=list)   # every tool result, as text
     prices: set[float] = field(default_factory=set)   # what check_availability returned
     availability_checked: bool = False
@@ -537,4 +611,42 @@ def default_deps() -> LibrarianDeps:
                 ids.add(idx + 1)
         return ids
 
-    return LibrarianDeps(search, book_for_pk, book_by_id, library_for)
+    def search_private(account_id: int, query: str, pool: int) -> list[dict[str, Any]]:
+        """Phase 4, section 29/31. `search_chunks(user_id=account_id)`
+        returns the public catalogue *and* this account's own private
+        chunks together (`services.search.visible_chunks`) — correct for
+        the endpoint it was built for, wrong here: `search_catalog` already
+        covers the shared side, and mixing the two would blur exactly the
+        distinction the system prompt asks the model to keep. Filtered to
+        this account's private rows rather than adding a second retrieval
+        function for one already-correct query with a different filter.
+        """
+        from api.search import _get_search_encoder
+        from db import SessionLocal
+        from services.search import search_chunks
+
+        encoder = _get_search_encoder()
+        if encoder is None:
+            raise LLMUnavailable("catalogue search is not configured")
+        vector = encoder.encode([query])[0]
+        with SessionLocal() as session:
+            hits = search_chunks(
+                session, vector, user_id=account_id, limit=pool,
+                embedding_model=encoder.name, min_similarity=0.0,
+            )
+        # `visible_chunks(account_id)` (services.search) is `public OR
+        # BookChunk.user_id == account_id` — the only way a row can carry
+        # `visibility == "private"` and still be in `hits` at all is if it
+        # is already this account's own, so filtering on visibility alone
+        # is both correct and sufficient (SearchHit does not carry user_id
+        # to check redundantly).
+        return [
+            {
+                "book_id": h.book_id, "title": h.title, "author": h.author,
+                "passage": h.passage, "similarity": h.similarity,
+            }
+            for h in hits
+            if h.visibility == "private"
+        ]
+
+    return LibrarianDeps(search, book_for_pk, book_by_id, library_for, search_private)

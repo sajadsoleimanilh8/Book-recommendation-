@@ -3419,6 +3419,51 @@ during this stretch's test runs (both from test-process teardown races, not
 production behaviour); cleaned by hand, not automated — matches the
 existing accepted scope.
 
+### Private search wired into the Librarian (`services/librarian.py`)
+
+New tool `search_my_library`: query-only parameters (no `id`, no `user`,
+nothing "user"-shaped — `test_no_tool_accepts_a_user_id` already asserts
+this structurally across every tool including this one). Identity is
+`ctx.account_id`, from the authenticated request via `Librarian.answer()`'s
+own `account_id` parameter, exactly the same rule `check_user_library` is
+already built on and stated in this module's own docstring: "No tool takes
+a user id... The tools are unable to ask the question." Verified, not just
+asserted: `test_a_user_id_smuggled_into_private_search_arguments_is_ignored`
+passes a bogus `user_id`/`account_id` in the tool call's own arguments and
+confirms it is never read; sabotage-checked by making the handler
+actually honour an `args["account_id"]` override — caught immediately.
+
+`search_private` (the new `LibrarianDeps` field, defaulted to `lambda ...: []`
+so every existing construction — real or a test's fake — keeps working
+unchanged) filters `search_chunks(user_id=account_id, ...)`'s results down
+to `visibility == "private"`, rather than adding a second retrieval
+function: `search_chunks` already returns exactly the right rows (public
+catalogue plus this account's own private ones, per
+`services.search.visible_chunks`), and `search_catalog` already covers the
+public half — mixing them in one tool would blur the distinction the
+system prompt asks the model to keep between the shared catalogue and the
+reader's own uploads.
+
+`ctx.seen` (the grounding record) now holds catalogue books under their
+plain integer id (unchanged) and uploads under a `f"upload:{book_id}"`
+string key — a deliberate namespacing, not cosmetic: catalogue ids come
+from `main.BOOK_BY_ID`'s space (1..29,975 today) and upload ids from
+`books.id`'s own sequence (in the high 100,000s today, purely as an
+artefact of how many rows this database's sequence has issued across
+restores). Nothing structurally guarantees those ranges never overlap, and
+a collision would silently let one book's grounding record overwrite the
+other's.
+
+**Verified**: `test_librarian.py` gained 5 tests (grounding through the fake
+dependency, the not-logged-in honest-empty-state, the smuggled-identity
+sabotage above, the required-query check, and both tools' results
+coexisting correctly in one turn without conflation) — all 39 tests in the
+file pass, including the two pre-existing structural guards
+(`test_no_tool_accepts_a_user_id`, the analogous smuggling test for
+`check_user_library`) with the new tool in place. `test_library_ingest.py`
+gained a direct test of `default_deps()`'s *real* `search_private` closure
+(not the fake) against a real ingested upload, closing the one seam the
+fake tool-loop tests deliberately do not cover.
 
 ---
 

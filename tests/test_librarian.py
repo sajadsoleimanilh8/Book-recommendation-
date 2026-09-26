@@ -58,10 +58,13 @@ CATALOGUE = {
 
 
 class FakeDeps:
-    def __init__(self, library=None):
+    def __init__(self, library=None, private=None):
         self.library = library or {}
+        # account_id -> [{"book_id", "title", "author", "passage", "similarity"}]
+        self.private = private or {}
         self.searches = []
         self.library_calls = []
+        self.private_calls = []
 
     def build(self) -> LibrarianDeps:
         def search(query, pool):
@@ -72,11 +75,16 @@ class FakeDeps:
             self.library_calls.append(account_id)
             return set(self.library.get(account_id, set()))
 
+        def search_private(account_id, query, pool):
+            self.private_calls.append((account_id, query))
+            return list(self.private.get(account_id, []))
+
         return LibrarianDeps(
             search=search,
             book_for_pk=lambda pk: CATALOGUE.get(pk - 100),
             book_by_id=lambda i: CATALOGUE.get(i),
             library_for=library_for,
+            search_private=search_private,
         )
 
 
@@ -542,3 +550,86 @@ def test_only_real_catalogue_ids_are_carried_forward():
     )
 
     assert result.grounded
+
+
+# -- search_my_library — Phase 4, sections 29/31 -----------------------------
+
+
+def test_private_search_returns_the_readers_own_upload_grounded():
+    deps = FakeDeps(private={7: [
+        {"book_id": 501, "title": "My Uploaded Novel", "author": "Me",
+         "passage": "the opening line of my own book", "similarity": 0.8},
+    ]})
+    llm = Script(
+        calling(call("search_my_library", query="opening line")),
+        saying('The opening is in "My Uploaded Novel".'),
+    )
+    result = run(llm, deps=deps, account_id=7)
+
+    assert result.grounded, result.message
+    assert [b["title"] for b in result.books] == ["My Uploaded Novel"]
+    assert deps.private_calls == [(7, "opening line")]
+
+
+def test_private_search_when_not_logged_in_is_an_honest_empty_state_not_a_crash():
+    deps = FakeDeps(private={7: [{"book_id": 501, "title": "X", "author": "Y", "passage": "z", "similarity": 0.5}]})
+    llm = Script(calling(call("search_my_library", query="anything")), saying("ok"))
+    run(llm, deps=deps, account_id=None)
+
+    tool_message = next(m for m in llm.sent[1][0] if m["role"] == "tool")
+    payload = json.loads(tool_message["content"])
+    assert payload["logged_in"] is False
+    assert payload["results"] == []
+    assert deps.private_calls == [], "must not even attempt a lookup with no account"
+
+
+def test_a_user_id_smuggled_into_private_search_arguments_is_ignored():
+    """The same property `test_a_user_id_smuggled_into_arguments_does_not_change_whose_library_is_read`
+    already proves for check_user_library/search_catalog, for the newer tool.
+    `search_my_library`'s own schema has no user-shaped parameter at all
+    (test_no_tool_accepts_a_user_id covers that structurally); this proves
+    that even a value the model invents and sends anyway is discarded.
+    """
+    deps = FakeDeps(private={7: [], 99: [
+        {"book_id": 999, "title": "Someone Else's Book", "author": "Z",
+         "passage": "p", "similarity": 0.9},
+    ]})
+    llm = Script(
+        calling(call("search_my_library", query="anything", user_id=99, account_id=99)),
+        saying("ok"),
+    )
+    run(llm, deps=deps, account_id=7)
+
+    assert deps.private_calls == [(7, "anything")]
+
+
+def test_private_search_requires_a_query():
+    deps = FakeDeps()
+    llm = Script(calling(call("search_my_library")), saying("ok"))
+    run(llm, deps=deps, account_id=7)
+
+    tool_message = next(m for m in llm.sent[1][0] if m["role"] == "tool")
+    assert "error" in json.loads(tool_message["content"])
+    assert deps.private_calls == []
+
+
+def test_private_and_catalogue_results_are_not_conflated_in_one_answer():
+    """Both tools called in one turn; each book must be captioned correctly
+    and both surface — the grounding guard does not care which tool a title
+    came from, only that some tool returned it."""
+    deps = FakeDeps(private={7: [
+        {"book_id": 501, "title": "My Uploaded Novel", "author": "Me",
+         "passage": "p", "similarity": 0.8},
+    ]})
+    llm = Script(
+        calling(
+            call("search_catalog", query="grief"),
+            call("search_my_library", query="my book"),
+        ),
+        saying('Try "Notes on Grief", or your own "My Uploaded Novel".'),
+    )
+    result = run(llm, deps=deps, account_id=7)
+
+    assert result.grounded, result.message
+    titles = {b["title"] for b in result.books}
+    assert titles == {"Notes on Grief", "My Uploaded Novel"}
