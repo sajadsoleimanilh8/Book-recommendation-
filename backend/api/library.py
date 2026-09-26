@@ -32,10 +32,12 @@ from fastapi import APIRouter, File, Form, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
+import jobs
 import main
 import ratelimit
 from auth import CurrentUser, SessionDep
 from models import Book, owned_by
+from services.library_ingest import process_upload
 
 log = logging.getLogger("api.library")
 
@@ -255,12 +257,37 @@ def upload_book(
 
     log.info(f"upload: user={user.id} book_id={book.id} format={ext} bytes={len(content)}")
 
+    # Section 29's Extract -> Chunk -> Embed -> READY, off the request
+    # thread — its own registry (jobs.LIBRARY_REGISTRY), not the audiobook
+    # one, and its own longer timeout (jobs.py). A saturated queue here
+    # still leaves the upload itself stored and durable; only processing is
+    # delayed, so this degrades rather than fails the request.
+    job_id = None
+    try:
+        job = jobs.LIBRARY_REGISTRY.submit(process_upload, book.id, main.UPLOADS_DIR)
+        job_id = job.id
+    except jobs.Saturated as full:
+        log.warning(f"ingest queue saturated for book {book.id}: {full}")
+
     return {
         "ok": True,
         "message": f"'{title}' uploaded and awaiting processing.",
         "attestation_version": ATTESTATION_VERSION,
+        "job_id": job_id,
+        "poll": f"/api/library/jobs/{job_id}" if job_id else None,
         **_book_to_dict(book),
     }
+
+
+@router.get("/api/library/jobs/{job_id}")
+def library_job_status(job_id: str):
+    """Poll an ingest job — same shape as `/api/audiobook/jobs/{job_id}`,
+    a different registry (jobs.LIBRARY_REGISTRY).
+    """
+    job = jobs.LIBRARY_REGISTRY.get(job_id)
+    if job is None:
+        return main.error_response("No such job.", status.HTTP_404_NOT_FOUND)
+    return job.to_dict()
 
 
 @router.get("/api/library")

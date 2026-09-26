@@ -192,7 +192,7 @@ class Book(Base):
     # stored, waiting for a pipeline that does not exist yet (extraction,
     # section 29's Validate -> ... -> READY). Future slices add to this
     # vocabulary; nothing here should need to widen a constraint to do it.
-    upload_status: Mapped[str | None] = mapped_column(String(16))
+    upload_status: Mapped[str | None] = mapped_column(String(32))
     source_filename: Mapped[str | None] = mapped_column(Text)
     file_format: Mapped[str | None] = mapped_column(String(8))
     # Relative to `main.UPLOADS_DIR`, never derived from `source_filename` —

@@ -65,6 +65,50 @@ def _epub_bytes(mimetype: bytes = b"application/epub+zip") -> bytes:
     return buf.getvalue()
 
 
+def _real_epub_bytes() -> bytes:
+    """A structurally real EPUB (proper OPF/spine/nav, via `ebooklib`
+    itself), for testing extraction rather than just the upload-time
+    content sniff `_epub_bytes()` above exists for.
+
+    Two chapters with clearly distinguishable content, plus a real
+    navigation document — the nav's own text (a chapter-title list) must
+    not leak into the extracted text; `EpubHtml.is_chapter()` is what
+    `services/extraction.py` relies on to exclude it.
+    """
+    from ebooklib import epub
+
+    book = epub.EpubBook()
+    book.set_identifier(uuid.uuid4().hex)
+    book.set_title("A Tale")
+    book.set_language("en")
+    book.add_author("Test Author")
+
+    c1 = epub.EpubHtml(title="Chapter 1", file_name="chap1.xhtml", lang="en")
+    c1.content = (
+        "<html><body><h1>Chapter 1</h1>"
+        "<p>It was the best of times, it was the worst of times, "
+        "it was the age of wisdom, it was the age of foolishness.</p>"
+        "</body></html>"
+    )
+    c2 = epub.EpubHtml(title="Chapter 2", file_name="chap2.xhtml", lang="en")
+    c2.content = (
+        "<html><body><h1>Chapter 2</h1>"
+        "<p>London and Paris were, in this respect, so far removed from "
+        "their high places that things in general were settled for ever.</p>"
+        "</body></html>"
+    )
+    book.add_item(c1)
+    book.add_item(c2)
+    book.toc = (c1, c2)
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav", c1, c2]
+
+    buf = io.BytesIO()
+    epub.write_epub(buf, book)
+    return buf.getvalue()
+
+
 @pytest.fixture
 def uploader(client):
     """A fresh registered, logged-in reader. Cleans up its own uploads —
@@ -104,6 +148,27 @@ def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+def wait_for_job(client, job_id: str, timeout: float = 30.0) -> dict:
+    """Poll an ingest job to a terminal state.
+
+    Upload now triggers Extract -> Chunk -> Embed in a background thread
+    (`jobs.LIBRARY_REGISTRY`) rather than finishing synchronously. A test
+    that asserts on the resulting `BookText`/`BookChunk` rows — or that
+    tears down by deleting the file the job is still reading — has to wait
+    for that thread first; on Windows, unlinking a file the job still has
+    open raises `PermissionError`, which is exactly how this was found.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        body = client.get(f"/api/library/jobs/{job_id}").json()
+        if body.get("status") in ("done", "failed"):
+            return body
+        time.sleep(0.05)
+    raise AssertionError(f"job {job_id} did not finish within {timeout}s")
+
+
 def test_upload_requires_authentication(client):
     r = client.post(
         "/api/library/upload",
@@ -130,8 +195,16 @@ def test_upload_without_attestation_is_rejected(uploader):
         assert count is None, "a rejected attestation must not create a book row"
 
 
+TXT_BODY = (
+    b"Chapter One.\n\nIt was a dark and stormy night. The wind howled through "
+    b"the old house, rattling every window and door, and the candle on the "
+    b"table guttered but did not go out. Somewhere upstairs, a floorboard "
+    b"creaked, though no one else was supposed to be home."
+)
+
+
 def test_upload_txt_succeeds(uploader):
-    content = b"Chapter One.\n\nIt was a dark and stormy night."
+    content = TXT_BODY
     r = uploader["client"].post(
         "/api/library/upload",
         headers=_auth(uploader["token"]),
@@ -147,6 +220,8 @@ def test_upload_txt_succeeds(uploader):
     assert body["source_filename"] == "My Book.txt"
     assert body["file_size_bytes"] == len(content)
     assert body["attested_at"] is not None
+    assert body["job_id"]
+    assert body["poll"] == f"/api/library/jobs/{body['job_id']}"
 
     with SessionLocal() as session:
         book = session.get(Book, body["book_id"])
@@ -160,9 +235,37 @@ def test_upload_txt_succeeds(uploader):
         assert stored.exists()
         assert stored.read_bytes() == content
 
+    # Section 29's Extract -> Chunk -> Embed, run in the background.
+    job = wait_for_job(uploader["client"], body["job_id"])
+    assert job["status"] == "done", job
+    assert job["result"]["ok"] is True
+    assert job["result"]["chunks"] > 0
+
+    with SessionLocal() as session:
+        from models import BookChunk, BookText
+
+        book = session.get(Book, body["book_id"])
+        assert book.upload_status == "ready"
+
+        text_row = session.get(BookText, book.id)
+        assert text_row is not None
+        assert text_row.content == content.decode("utf-8")
+        assert text_row.is_complete is True, "the whole upload was extracted, not an excerpt"
+        assert text_row.source == "txt"
+
+        chunks = session.scalars(
+            select(BookChunk).where(BookChunk.book_id == book.id)
+        ).all()
+        assert len(chunks) > 0
+        assert all(c.visibility == "private" for c in chunks)
+        assert all(c.user_id == uploader["user_id"] for c in chunks)
+        assert all(c.origin == "text" for c in chunks)
+        assert all(c.embedding is not None for c in chunks)
+        assert all(c.embedding_model == "minilm" for c in chunks)
+
 
 def test_upload_epub_succeeds(uploader):
-    content = _epub_bytes()
+    content = _real_epub_bytes()
     r = uploader["client"].post(
         "/api/library/upload",
         headers=_auth(uploader["token"]),
@@ -170,7 +273,34 @@ def test_upload_epub_succeeds(uploader):
         data={"attests_ownership": "true"},
     )
     assert r.status_code == 200, r.text
-    assert r.json()["file_format"] == "epub"
+    body = r.json()
+    assert body["file_format"] == "epub"
+
+    job = wait_for_job(uploader["client"], body["job_id"])
+    assert job["status"] == "done", job
+
+    with SessionLocal() as session:
+        from models import BookChunk, BookText
+
+        book = session.get(Book, body["book_id"])
+        assert book.upload_status == "ready"
+
+        text_row = session.get(BookText, book.id)
+        assert text_row is not None
+        # The nav document's own generated text (title + a chapter-name
+        # list) must not appear — only the real chapters. If it leaked in,
+        # "Chapter 1" would appear twice (the nav's list entry, plus the
+        # real <h1> heading) instead of once.
+        assert "It was the best of times" in text_row.content
+        assert "London and Paris" in text_row.content
+        assert text_row.content.count("Chapter 1") == 1
+        assert "A Tale" not in text_row.content, "the book title is the nav's, not a chapter's"
+
+        chunks = session.scalars(
+            select(BookChunk).where(BookChunk.book_id == book.id)
+        ).all()
+        assert len(chunks) > 0
+        assert all(c.visibility == "private" for c in chunks)
 
 
 def test_upload_rejects_pdf_as_deferred(uploader):
@@ -277,6 +407,7 @@ def test_uploaded_filename_never_becomes_a_filesystem_path(uploader):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["source_filename"] == malicious, "shown verbatim for display"
+    wait_for_job(uploader["client"], body["job_id"])
 
     with SessionLocal() as session:
         book = session.get(Book, body["book_id"])
@@ -304,7 +435,9 @@ def test_uploaded_book_is_excluded_from_catalogue_queries(uploader):
         files={"file": ("mine.txt", b"a private manuscript", "text/plain")},
         data={"attests_ownership": "true"},
     )
-    book_id = r.json()["book_id"]
+    body = r.json()
+    book_id = body["book_id"]
+    wait_for_job(uploader["client"], body["job_id"])
 
     with SessionLocal() as session:
         ids = set(session.scalars(catalogue_only(select(Book.id))))
@@ -318,7 +451,9 @@ def test_list_my_library_returns_only_my_own_uploads(uploader, client):
         files={"file": ("mine.txt", b"only mine", "text/plain")},
         data={"attests_ownership": "true"},
     )
-    my_book_id = r1.json()["book_id"]
+    my_body = r1.json()
+    my_book_id = my_body["book_id"]
+    wait_for_job(uploader["client"], my_body["job_id"])
 
     # A second, unrelated reader uploads their own book.
     tag = uuid.uuid4().hex[:12]
@@ -329,12 +464,13 @@ def test_list_my_library_returns_only_my_own_uploads(uploader, client):
     other_token = r2.json()["access_token"]
     other_user_id = r2.json()["user"]["id"]
     try:
-        client.post(
+        other_upload = client.post(
             "/api/library/upload",
             headers=_auth(other_token),
             files={"file": ("theirs.txt", b"not yours", "text/plain")},
             data={"attests_ownership": "true"},
         )
+        wait_for_job(client, other_upload.json()["job_id"])
 
         listing = uploader["client"].get("/api/library", headers=_auth(uploader["token"]))
         assert listing.status_code == 200
@@ -373,6 +509,7 @@ def test_upload_is_rate_limited(uploader, monkeypatch):
         data={"attests_ownership": "true"},
     )
     assert first.status_code == 200
+    wait_for_job(uploader["client"], first.json()["job_id"])
 
     second = uploader["client"].post(
         "/api/library/upload",

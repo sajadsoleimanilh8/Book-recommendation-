@@ -45,12 +45,23 @@ def pending_query(limit: int, redo: bool):
     return stmt.order_by(BookText.book_id).limit(limit)
 
 
-def chunk_one(session, book_id: int, content: str, origin: str = "text") -> int:
-    """Replace this book's public chunks of one origin. Returns how many.
+def chunk_one(
+    session, book_id: int, content: str, origin: str = "text", user_id: int | None = None
+) -> int:
+    """Replace this book's chunks of one origin (and, for a private book,
+    one owner). Returns how many.
 
     Scoped to a single `origin` so the two passes do not clobber each other:
     a book can hold Gutenberg prose *and* a provider blurb, and chunking one
     must not delete the other.
+
+    `user_id` (Phase 4, section 29): `None` is every existing caller's
+    behaviour, unchanged — public, ownerless catalogue chunks. Given a real
+    id, chunks are written `visibility="private"` for that owner instead.
+    This is the one function both paths go through rather than a second,
+    parallel implementation for uploads — the same reasoning `book_chunks`
+    itself is built on (one table, two populations), applied to the code
+    that populates it.
     """
     pieces = chunk_text(content)
     if origin == "text":
@@ -65,16 +76,23 @@ def chunk_one(session, book_id: int, content: str, origin: str = "text") -> int:
     if not pieces:
         return 0
 
+    visibility = "private" if user_id is not None else "public"
+
     # Delete-then-insert rather than upsert: a tuning change alters both the
     # count and the boundaries, so matching old ordinals to new ones is
-    # meaningless. Private chunks are untouched — this filters on visibility.
-    session.execute(
-        delete(BookChunk).where(
-            BookChunk.book_id == book_id,
-            BookChunk.visibility == "public",
-            BookChunk.origin == origin,
-        )
+    # meaningless. Scoped to this exact (visibility, owner) pair, so
+    # rechunking a private upload can never touch the public catalogue's
+    # chunks for the same book_id (or, symmetrically, another owner's) —
+    # the identical property the public path already relies on.
+    delete_stmt = delete(BookChunk).where(
+        BookChunk.book_id == book_id,
+        BookChunk.visibility == visibility,
+        BookChunk.origin == origin,
     )
+    if user_id is not None:
+        delete_stmt = delete_stmt.where(BookChunk.user_id == user_id)
+    session.execute(delete_stmt)
+
     # Ordinals restart per origin, so the unique index needs them not to
     # collide with the other origin's rows. Descriptions are short and few;
     # offsetting them well past any realistic chapter count is simpler and
@@ -83,8 +101,8 @@ def chunk_one(session, book_id: int, content: str, origin: str = "text") -> int:
     session.add_all(
         BookChunk(
             book_id=book_id,
-            user_id=None,
-            visibility="public",
+            user_id=user_id,
+            visibility=visibility,
             origin=origin,
             ordinal=offset + i,
             content=piece,

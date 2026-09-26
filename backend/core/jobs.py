@@ -101,10 +101,8 @@ class Job:
 class Saturated(RuntimeError):
     """Too much work already waiting. The caller should back off, not queue."""
 
-    def __init__(self, pending: int) -> None:
-        super().__init__(
-            f"{pending} audiobook jobs already waiting; try again shortly"
-        )
+    def __init__(self, pending: int, label: str = "audiobook") -> None:
+        super().__init__(f"{pending} {label} jobs already waiting; try again shortly")
         self.retry_after = 30
 
 
@@ -114,14 +112,31 @@ class JobRegistry:
         max_workers: int = MAX_WORKERS,
         max_pending: int = MAX_PENDING,
         ttl: int = RESULT_TTL_SECONDS,
+        timeout: int | None = None,
+        label: str = "audiobook",
     ) -> None:
         self._pool = ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="job"
+            max_workers=max_workers, thread_name_prefix=f"job-{label}"
         )
         self._jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
         self._max_pending = max_pending
         self._ttl = ttl
+        # Phase 4, section 29: extraction + chunking + embedding a whole
+        # uploaded book does not fit gTTS's 120s assumption (the handoff's
+        # own words: "current job registry times out at 120s"). Rather than
+        # widen that constant for every job — which would let one wedged
+        # audiobook job hold a worker three times as long for no reason —
+        # a registry can now carry its own.
+        #
+        # `None` (every existing caller, including the plain `JobRegistry()`
+        # this module's own default `REGISTRY` uses) means "track the module
+        # constant live", not "120, fixed at construction" — test_jobs.py's
+        # `test_a_wedged_job_is_reported_failed_rather_than_running_forever`
+        # constructs a registry and *then* monkeypatches
+        # `JOB_TIMEOUT_SECONDS`, which only a live read honours.
+        self._timeout = timeout
+        self._label = label
 
     # -- queries ----------------------------------------------------------
 
@@ -133,13 +148,16 @@ class JobRegistry:
             # Report a wedged job as failed rather than leaving a client
             # polling "running" forever. The thread may still be stuck; the
             # bounded pool is what stops that from mattering.
+            effective_timeout = (
+                self._timeout if self._timeout is not None else JOB_TIMEOUT_SECONDS
+            )
             if (
                 job.status == RUNNING
                 and job.started_at
-                and time.time() - job.started_at > JOB_TIMEOUT_SECONDS
+                and time.time() - job.started_at > effective_timeout
             ):
                 job.status = FAILED
-                job.error = f"timed out after {JOB_TIMEOUT_SECONDS}s"
+                job.error = f"timed out after {effective_timeout}s"
                 job.finished_at = time.time()
             return job
 
@@ -158,7 +176,7 @@ class JobRegistry:
                 1 for j in self._jobs.values() if j.status in (QUEUED, RUNNING)
             )
             if pending >= self._max_pending:
-                raise Saturated(pending)
+                raise Saturated(pending, label=self._label)
             job = Job(id=uuid.uuid4().hex)
             self._jobs[job.id] = job
 
@@ -203,6 +221,21 @@ class JobRegistry:
 
 
 REGISTRY = JobRegistry()
+
+# Phase 4, section 29's ingest pipeline: extract -> chunk -> embed a whole
+# uploaded book. A separate instance rather than a parameter to REGISTRY's
+# submit(), for the same reason the two are separate features: an ingest job
+# that ran long would otherwise occupy a worker slot audiobook generation is
+# also waiting on, and vice versa. 10 minutes covers a cold model load plus
+# embedding a large novel's chunks with margin, while still bounding a truly
+# wedged job eventually.
+LIBRARY_INGEST_TIMEOUT_SECONDS = 600
+LIBRARY_REGISTRY = JobRegistry(
+    max_workers=2,
+    max_pending=8,
+    timeout=LIBRARY_INGEST_TIMEOUT_SECONDS,
+    label="library-ingest",
+)
 
 
 # -- the single-worker constraint, enforced ----------------------------------------

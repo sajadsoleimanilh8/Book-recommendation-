@@ -40,6 +40,11 @@ argon2-cffi==25.1.0     # argon2id — no bcrypt 72-byte truncation footgun
 PyJWT==2.13.0
 email-validator==2.3.0   # pydantic EmailStr
 
+# --- Phase 4 §29: upload extraction ---
+EbookLib==0.20            # EPUB spine/manifest/OPF parsing
+beautifulsoup4==4.15.0    # strip an EPUB spine item's XHTML down to prose
+lxml==6.1.3               # EbookLib's own XML parser (not called directly)
+
 # --- Tests ---
 pytest==9.1.1
 httpx==0.28.1             # required by fastapi.testclient

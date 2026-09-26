@@ -3294,6 +3294,134 @@ require it; not previously installed).
 
 ---
 
+## Phase 4 slices 2b-4: extraction, background ingest, private Librarian search — 2026-09-25
+
+Built end to end in one autonomous stretch (product owner authorized
+proceeding through slice 5 without per-slice sign-off; stop conditions were
+irreversible/destructive actions, a real product decision, or GPU-thermal
+risk — none were hit). Decisions below are logged for review, not for
+approval already granted.
+
+### Extraction (`services/extraction.py`)
+
+TXT: decode as UTF-8 (already validated at upload). EPUB: `ebooklib` +
+`beautifulsoup4` (new dependencies — no existing HTML/EPUB parser in this
+project, and hand-rolling OPF/spine/manifest parsing correctly was judged
+not worth it against a mature, standard library for exactly this job).
+
+**Deliberately unbounded**, unlike the catalogue's Gutenberg excerpt
+(`extract_reading_text`, capped ~20K chars — a taste of a public-domain book
+shared across 29,975 rows, where storing everything in full would cost
+~3 GB). An upload is the reader's own single book: storage for the whole
+thing is negligible, and section 29's entire point is a private RAG
+assistant grounded in *all* of it. Truncating an upload the same way the
+catalogue is truncated would have quietly broken the feature's own reason
+to exist — the Librarian would answer confidently from the first ~11 pages
+and never reach the back half of anyone's book. Judgment call, not asked
+about: the two truncation policies solve different problems for different
+reasons, and applying the catalogue's for cost-avoidance reasons that do
+not exist for a single private file would have been copying a number, not
+the reasoning behind it.
+
+**Found before it shipped**: naive EPUB spine iteration includes the
+navigation document — same `ITEM_DOCUMENT` type as a real chapter — which
+would have prepended a page of chapter titles to every extraction, the
+exact "table of contents indexed as though it were the book" mistake F-40
+already found and fixed for Gutenberg text, in a different format.
+`EpubHtml.is_chapter()` is ebooklib's own distinction for this (verified
+against the library's source: `EpubNav` overrides it to `False`, the NCX
+item is not an `EpubHtml` subclass at all), not something inferred from one
+test EPUB.
+
+### `chunk_one` extended, not duplicated (`scripts/chunk_pass.py`)
+
+Added `user_id: int | None = None` (default preserves every existing
+caller exactly). `None` writes public/ownerless, as before; a real id
+writes `visibility="private"` for that owner. One function both paths go
+through, matching the reasoning `book_chunks` itself is built on (one
+table, two populations) applied to the code that populates it, rather than
+a second, parallel chunking implementation for uploads that could drift
+from the first.
+
+### Background ingest job (`core/jobs.py`, `services/library_ingest.py`)
+
+`JobRegistry` gained `timeout`/`label` parameters (both optional,
+backward-compatible) so a second instance — `LIBRARY_REGISTRY`, 600s,
+separate from `REGISTRY`'s 120s — could exist without widening the
+audiobook registry's timeout for every job needlessly. Separate instances
+rather than a per-call timeout override: an ingest job that ran long must
+not occupy a worker slot audiobook generation is also waiting on.
+
+**Caught by running the existing suite before trusting the change** (the
+standing method's own point): the first version captured `JOB_TIMEOUT_SECONDS`
+into the instance at construction time, which broke
+`test_a_wedged_job_is_reported_failed_rather_than_running_forever` —
+that test constructs a registry and *then* monkeypatches the module
+constant, which only a live read honours. Fixed with a `None`-sentinel
+default (`self._timeout = None` means "track the module constant live",
+an explicit value means "this registry's own, fixed") rather than loosening
+the test.
+
+`process_upload(book_id, uploads_dir)` runs Extract -> Chunk -> Embed,
+advancing `book.upload_status` and committing before each next step — a
+failure partway through leaves an honest, resumable record of how far it
+got (`extraction_failed` / `chunking_failed` / `embedding_failed`), the
+same discipline `enrichment_status`/`is_complete` already apply elsewhere
+(F-17). Embedding reuses `embed_pass.run(book_ids=[book_id])` — the exact
+scoping parameter F-64 added earlier in this same stretch, now load-bearing
+for a second reason.
+
+**Bug found by the pipeline's own tests, not in production**: `upload_status`
+was `VARCHAR(16)`; `"extraction_failed"` is 17 characters. Postgres raised
+`StringDataRightTruncation` rather than silently truncating it — correct
+behaviour on the database's part, but a column sized without checking its
+own vocabulary. Widened to `VARCHAR(32)` (migration `a73fc73a4646`, applied
+and round-tripped on both databases) for headroom as the pipeline's
+vocabulary keeps growing, rather than a second one-character-margin column
+needing widening again next time.
+
+Upload now triggers the job automatically and returns `job_id`/`poll` in
+the same response — still 200 (the upload itself succeeded; processing is
+separate and asynchronous). A saturated ingest queue degrades rather than
+fails the request: the file is already stored and durable, only processing
+is delayed.
+
+**Found, then fixed, not deferred (separate commit,
+`ml/embeddings.py`):** what started as a "noted, not fixed" observation
+escalated to a real, reproduced test failure — `SentenceTransformerBackend`
+did not set `local_files_only`, so every embed call — now including every
+upload's ingest job, not just the periodic maintenance passes — made a
+network round-trip to huggingface.co to check for model updates before
+using the local cache. A degraded connection during this stretch's own test
+runs (`WinError 10060`, a genuine timeout, confirmed transient by a direct
+`curl` immediately after) turned that into 6 failing tests in
+`test_upload_endpoint.py`, all in the embedding step, all timing out inside
+`wait_for_job`'s 30s window while the retry loop worked through several
+per-file HEAD requests.
+
+First attempt — `HF_HUB_OFFLINE=1` before constructing `SentenceTransformer`
+— measured and found ineffective: every one of the library's own per-file
+network checks fired regardless. `SentenceTransformer.__init__`'s own
+`local_files_only=True` parameter does what the env var did not: verified
+directly, it took model load from ~40s with a full page of HTTP requests to
+~4s with none. Tried first, falling back to a normal network-permitted load
+on any failure, so a genuinely fresh, never-cached install can still
+download the model once. Two consecutive full-suite runs after the fix:
+506 passed, 2 xfailed, 0 failed, identical both times.
+
+**Noted, not fixed (accepted tradeoff already documented for the
+audiobook registry, now also applying here):** a process restart or a job
+still running at interpreter shutdown can leave an orphaned upload file
+with no matching row (if teardown/cleanup ran first) — `jobs.py`'s own
+docstring already accepts this class of gap for exactly this reason ("an
+empty registry after a restart is the truthful answer"). Encountered twice
+during this stretch's test runs (both from test-process teardown races, not
+production behaviour); cleaned by hand, not automated — matches the
+existing accepted scope.
+
+
+---
+
 ## Deferred technical debt
 
 Carried deliberately, with the reason. Each has a closing phase.
@@ -3333,3 +3461,29 @@ Carried deliberately, with the reason. Each has a closing phase.
 | Embedding provider | Not requested yet | Phase 2 |
 | TTS provider | Not requested yet | Phase 6 |
 | Object storage | Not requested yet | Phase 6 |
+
+---
+
+## Phase 4, autonomous stretch (slices 2b-5) — started 2026-09-25
+
+Product owner authorized proceeding through TXT+EPUB extraction, the
+background job, and private-Librarian search wiring in one continuous pass,
+without per-slice check-ins. Stop conditions: irreversible/destructive
+actions with no safe path, a real product decision, or GPU-thermal risk.
+Everything else — technical/sequencing/scope calls within this plan — is
+mine to make and log here, not to ask about.
+
+**Pre-flight check (as instructed): Docker containers had exited** (both
+`digikitab-postgres`/`-redis` down; the 21:23 scheduled enrichment run
+failed with a Windows pipe error, `-2147023829` — the same OI-8 sleep/wake
+shape seen before, not new). Restarted from the correct directory
+(`docker compose up -d` in `final_clean/`, reattached to the pinned
+`final_*` volumes per F-56, no new volume created). Data confirmed intact
+(29,975 books, 145,887 chunks) before proceeding.
+
+**Enrichment: not stalled.** `last_progress` 2026-09-25 12:48 UTC, 0.22
+days ago, well under `STALL_DAYS=3`. The log shows real progress since the
+last check (26.57% -> 29.07% description coverage, 993 processed,
+`quota_exhausted=True` — a clean stop, not a failure) before the container
+outage interrupted the following scheduled run. No action needed beyond
+the restart; the 4am run should succeed now that Postgres is reachable.
