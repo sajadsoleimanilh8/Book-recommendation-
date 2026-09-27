@@ -2,8 +2,10 @@
 
 AI-assisted book discovery and reading. Hybrid recommendation engine
 (content similarity + item factors + learning-to-rank + contextual bandit)
-over a 29,975-book catalogue, with a cold-start questionnaire, chatbot,
-comments, reading progress, and audiobook generation.
+over a 29,975-book catalogue, with a cold-start questionnaire, an AI
+Librarian (tool-calling chatbot grounded in real search results, including
+a reader's own uploaded books), comments, reading progress, and audiobook
+generation.
 
 Placed 3rd of ~200 teams. Currently being evolved from a competition
 prototype into a production system — see [docs/PHASE-0-AUDIT.md](docs/PHASE-0-AUDIT.md)
@@ -14,7 +16,10 @@ for the full architecture audit and [PROGRESS.md](PROGRESS.md) for current statu
 ## Requirements
 
 - **Python 3.10+**
-- **Node.js 18+**
+
+No Node.js dependency — the Express static host (`server.js`, `npm start`)
+was retired 2026-09-21 (OI-5). The FastAPI app now serves its own frontend
+from one origin; see **Running** below.
 
 ## Setup
 
@@ -31,14 +36,11 @@ python -m venv .venv && source .venv/Scripts/activate   # Windows/Git Bash
 # 1. Python backend
 pip install -r backend/requirements.txt
 
-# 2. Node frontend host
-npm install
-
-# 3. Configuration
+# 2. Configuration
 cp .env.example .env
 # then edit .env — GOOGLE_BOOKS_API_KEY is only needed from Phase 2 onward
 
-# 4. Database schema + catalogue
+# 3. Database schema + catalogue
 cd backend && python -m alembic upgrade head && python -m ingest && cd ..
 ```
 
@@ -50,7 +52,7 @@ It loads 28,399 unique books (29,975 records, minus 1,576 duplicate ids).
 One process. The app serves its own frontend:
 
 ```powershell
-.\scriptsun.ps1
+.\scripts\run.ps1
 ```
 
 - App → http://127.0.0.1:8000
@@ -70,12 +72,9 @@ python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000
 It binds loopback. Set `HOST` to widen that deliberately — and read
 `docs/PROGRESS.md`, OI-5, before exposing this to a network.
 
-> Until 2026-09-21 this was two processes: `npm start` ran an Express static
-> host on :3000 that spawned the backend on :8000. Express is retired (OI-5).
-> Two origins for one app was what forced `CORS_ORIGINS` to allowlist
-> localhost, and its `/api` proxy was dead code that dropped `Authorization`
-> headers and mangled binary responses. There is no Node dependency left;
-> `node_modules/` can be deleted.
+> Retired 2026-09-21 (OI-5): this used to be two processes, with `npm start`
+> running an Express static host on :3000 that spawned the backend on :8000.
+> There is no Node dependency left; `node_modules/` can be deleted.
 
 ## Verifying it works
 
@@ -94,15 +93,18 @@ Check two fields:
 > `ok` will be `false`. This state used to be silent — it is the bug the
 > `/health` fields above exist to catch. See F-03 in the audit.
 
+Run-by-run enrichment history (not just whether the app is healthy right
+now) is at `GET /api/health/enrichment-history`.
+
 ## Tests
 
 ```bash
 python -m pytest tests/ -q
 ```
 
-The suite is deliberately dependency-light so it runs before the full ML
-stack is installed. It pins the PR 1 security fixes and the data-loading
-behaviour — see [tests/README.md](tests/README.md).
+550+ tests as of Phase 4, most against a real Postgres instance and the
+full ML stack (`docker compose up -d` first) — see
+[tests/README.md](tests/README.md) for what still runs without either.
 
 ---
 
@@ -121,14 +123,17 @@ backend/
   ingest.py        catalogue -> Postgres (idempotent)
   api/             one router module per domain — health, books, search,
                    recommend, questionnaire, feedback, chat, audio, comments,
-                   reading, profile, clusters, auth — plus middleware.py
-                   (the F-38 query-parameter guard). Every served route.
+                   reading, profile, clusters, auth, library — plus
+                   middleware.py (the F-38 query-parameter guard). Every
+                   served route.
   schemas/         Pydantic request models, one module per domain
   services/        orchestration — recommendation (Recommender +
                    QuestionerEngine + ranking glue), catalogue, search, store,
-                   comments, chat, reading, audio, providers/
+                   comments, chat, reading, audio, librarian (the AI
+                   Librarian's tool loop), extraction, library_ingest,
+                   providers/
   ml/              pure model components — data_loader, features, clustering,
-                   similarity, collaborative, ranking, bandit, embeddings,
+                   similarity, genre_popularity, ranking, bandit, embeddings,
                    chunking. No FastAPI, no SQLAlchemy, no services/ imports.
   domain/          entities.py — UserProfile, Comment, Reminder dataclasses,
                    MOOD_GENRE_MAP
@@ -140,6 +145,7 @@ backend/
   alembic/         migrations
   site_ready_books.json   the 29,975-book catalogue (JSONL)
   audio_outputs/   generated audiobooks, one per book_id
+  uploads/         private uploaded books (Phase 4, section 29)
   model_artifacts/ fitted LSA model (gitignored, regenerable)
   routes_auth.py, config.py, db.py, models.py, search.py, store.py, …
                    top-level compatibility shims left by the restructure;
@@ -159,32 +165,42 @@ in `RESTRUCTURE-PROMPT.md` / `RESTRUCTURE-NOTES.md`.
 
 ## Known limitations
 
-Carried deliberately, each tracked in [PROGRESS.md](PROGRESS.md):
+Carried deliberately, each tracked in [PROGRESS.md](PROGRESS.md). This
+section is a frequent source of drift — several items below replace claims
+that were themselves stale (F-12, F-13, F-17, F-19, F-22 were all closed
+well before this rewrite; the old text still described the pre-fix state).
 
-- **Reads are public, writes require auth.** Register via
-  `POST /api/auth/register`, then send `Authorization: Bearer <token>`.
-  Posting and deleting comments is authenticated and ownership-checked
-  (F-07, closed in PR 2). `GET /api/profile/{user_id}` is **not** yet
-  protected — tracked for PR 3.
+- **Not deployed.** Local-only, `127.0.0.1` throughout (OI-3, undecided).
+  Two consequences of that: the rate limiter is correct with nothing in
+  front of it but not proxy-aware, and is deliberately left that way until
+  the deployment shape is decided (F-55); and real collaborative filtering
+  has no user-item data to train on yet, since nobody has used the app
+  (F-14).
 - **Logout cannot revoke a token** before it expires. JWTs are stateless and
   there is no denylist yet; revisit when Redis becomes load-bearing.
-- **Audiobook generation is synchronous and unauthenticated** (F-19). It is
-  no longer destructive, but it is still a resource-exhaustion vector. A rate
-  limit is required before any deployment (OI-5).
-- **All state is in-process memory** (F-12). Restarting loses every comment,
-  reminder and progress record, and the app cannot run more than one worker.
-- **Book "pages" return placeholder text** (F-17). There is no real book text
-  in the system yet.
-- **Every catalogue description is empty** (F-15). The content-based arm of
-  the recommender is effectively title + author + genre only. Fixing this is
-  the Phase 2 critical path.
-- **The learning-to-rank model is trained on constant features against a
-  circular target** (F-13). It logs `val R2: 1.0000` on every boot. That
-  number is an artefact of the target being a function of its own inputs.
-  Do not cite it.
-- **The chatbot never returns book recommendations** (F-22). It classifies
-  intent correctly, then returns a canned string — `respond()` never
-  populates its `books` list. Tracked for PR 2.
+- **Single worker only.** The audiobook and library-ingest job registries
+  (`core/jobs.py`) are in-process — a job accepted by one worker is
+  invisible to another, so `uvicorn --workers 2` is refused at startup
+  rather than failing silently later.
+- **`GET /api/profile/{user_id}` and comment writes are authenticated**
+  (F-07); reads elsewhere are public. Register via
+  `POST /api/auth/register`, then send `Authorization: Bearer <token>`.
+- **Catalogue descriptions are partial and growing.** Coverage is enrichment
+  -bound (Google Books quota, OI-7) — check `/api/health/enrichment-history`
+  or `/health`'s `enrichment` field for the current state, not this file.
+- **Near-tied ranking scores are not bit-reproducible** across separate ML
+  fits (F-51, suspected GPU floating-point non-determinism in the MiniLM
+  embedding pass). Golden-baseline tests pin an evidence-based safe prefix
+  around it; not fixed at the source.
+- **Uploaded books are ingest-only, not readable in-app** (OI-4's
+  copyright posture, extended for Phase 4): a reader's own upload is
+  extracted, chunked, embedded and searchable by the AI Librarian, but its
+  pages are never served back. Only Gutenberg's public-domain text is ever
+  rendered as pages.
+- **Reading DNA (§25) is not built.** No specification exists for it beyond
+  one line in an early planning table (OI-12) — deliberately not guessed
+  at, the same mistake the reading-depth target (F-13/F-26) took most of
+  Phase 3 to correct once already.
 
 ## Contributing
 

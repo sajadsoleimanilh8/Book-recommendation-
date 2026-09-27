@@ -2810,11 +2810,21 @@ begin without a specification to build against.
 
 
 
-### F-24 · The global Python is shared — RECOMMEND A VIRTUALENV
+### F-24 · The global Python is shared — **CLOSED**, status corrected 2026-09-26
 Installing the pinned requirements downgraded `click` and broke an unrelated
 `huggingface-hub`. Repaired, but the project should not be installing into a
 shared interpreter. A `.venv` and a note in the README is a five-minute fix
 worth doing in PR 2.
+
+**Already done, just never marked so — the exact stale-status pattern this
+file keeps catching itself in.** `.venv` has existed and run the full stack
+since well before this entry was found still open; the README's own text
+(line 447 of an earlier draft of this file) says outright "the venv also
+runs the full suite green... which incidentally closes F-24." Found while
+doing something else entirely (checking this table for quick, safe wins)
+and re-verified directly rather than trusted: `.venv/Scripts/python.exe`
+exists, and `README.md`'s Setup section already instructs a venv before
+`pip install`. Closing the status, not the work — the work was done.
 
 
 ## F-62 · The golden drift is not F-51, and it is wider than three tests — **RESOLVED, see F-63/F-64** (2026-09-23)
@@ -3666,3 +3676,75 @@ deliberately-broken, anything-matches regex). Strengthened to place garbage
 *after* a valid header and assert the run's own keys are unchanged, which
 does catch it — the fix was to the test, not the code, since the code was
 already correct.
+
+---
+
+## README audit — found checking F-24, turned into a full pass — 2026-09-26
+
+Started as a five-minute status-correction for F-24. Checking whether the
+README already had the venv note it recommended surfaced that the whole
+file was drifted, badly, in the direction that matters most: telling a
+reader the project is *less* capable and *less* safe than it actually is.
+
+**Confirmed stale, one by one, against the actual current code — not
+assumed from the finding's age:**
+
+- **Node.js/`npm install`** — listed as a requirement. `package.json` and
+  `server.js` do not exist in this repository; confirmed with `find`, not
+  inferred from OI-5's own text. Express was retired 2026-09-21.
+- **`.\scriptsun.ps1`** — the documented launch command. A literal stray
+  carriage-return byte sat where a backslash should be (`.\scripts` + `\r`
+  + `un.ps1`), so copy-pasting it would have failed outright. Took several
+  attempts to fix cleanly — `sed`/`perl` pattern-matching around the
+  embedded control character kept silently failing in ways that looked
+  like they had worked, and a blind `sed -i '<line>s/.../.../'` by line
+  number landed on the wrong line entirely after the file had already
+  grown from earlier edits in the same pass (exactly the "look at the
+  target before overwriting" lesson, briefly not followed and caught
+  immediately after). Resolved by reading the file's actual current
+  content in full and rewriting it with an exact-string tool rather than
+  continuing to guess at shell-escaping.
+- **`GET /api/profile/{user_id}` "not yet protected"** — confirmed
+  protected: `api/profile.py` takes `CurrentUser`, not `OptionalUser`.
+- **"Audiobook generation is synchronous"** (F-19) — confirmed async:
+  `api/audio.py` submits to `jobs.REGISTRY`, unchanged since F-19 closed.
+- **"All state is in-process memory... restarting loses every comment"**
+  (F-12) — confirmed false: `Comment`, `ReadingProgress`, `Reminder` are
+  real, persisted SQLAlchemy models. The one part of this claim that is
+  still true — single-worker only, because the job registries are
+  in-process — survives as its own, correctly-scoped bullet.
+- **"Book pages return placeholder text"** (F-17) — confirmed false:
+  `api/books.py`'s pages route reports real `text_available` state and
+  serves genuine Gutenberg text where it exists.
+- **"Every catalogue description is empty"** (F-15) — confirmed false as
+  stated (29.07% coverage today, not 0%), though genuinely still
+  incomplete — rewritten to point at the live, honest source
+  (`/api/health/enrichment-history`, `/health`) instead of a number that
+  would itself go stale the next time enrichment ran.
+- **"The chatbot never returns book recommendations"** (F-22) — confirmed
+  false, most consequentially: `ChatbotEngine.respond()` calls
+  `self.librarian.answer(...)` and returns real, grounded books from the
+  full tool-calling loop this project has spent multiple phases building,
+  including this same autonomous stretch's own Phase 4 slice 4. The README
+  described a chatbot from before F-22 existed at all.
+
+**What replaced it**: a "Known limitations" section rewritten from only
+currently-true claims, each checked against the code rather than carried
+forward from the last time someone wrote this section — plus the currently
+-accurate deployment/collaborative-filtering/rate-limiter blockers (OI-3,
+F-14, F-55), F-51's ranking non-determinism, Phase 4's ingest-only
+copyright posture, and OI-12's Reading DNA gap, none of which the old
+section mentioned at all. Also updated: the Layout section (missing
+`api/library.py`, `services/librarian.py`, `services/extraction.py`,
+`services/library_ingest.py`, `backend/uploads/`, and the stale
+`ml/collaborative.py` name after F-14's rename), and the Tests section
+(claimed "dependency-light... assert against source text," true of PR 1's
+original ~30 tests, false of the 550+ that now mostly require the real
+database and full ML stack).
+
+Zero code changed — this is a documentation-only commit. Ran the full
+suite once anyway (a habit, not the destructive-recovery two-run bar,
+which does not apply here) to confirm nothing about the working tree state
+was accidentally disturbed while investigating.
+
+---
