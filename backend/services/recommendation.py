@@ -766,6 +766,18 @@ def _ml_to_api(b: Dict[str, Any], rank: int) -> Dict[str, Any]:
     }
 
 def _gutenberg_to_api(g: Dict[str, Any], rank: int) -> Dict[str, Any]:
+    # F-52: this had no "availability" key at all — not even "unknown" —
+    # which raised a bare KeyError for any caller that read book["availability"]
+    # on a result fused in from GutenbergClient.search (every /api/recommend
+    # call queries it, unconditionally, so any request could surface one).
+    # Not routed through `price_and_availability` (the function `_ml_to_api`
+    # uses just above, for the same reason): that infers source from
+    # `book_id`/`thumbnail`, and a Gutenberg search result carries neither —
+    # `infer_source(None, None)` falls through to "google_books", the wrong
+    # answer, not the honest one. This dict's `source` is already known
+    # unambiguously (this function exists only for Gutenberg results), so
+    # the constant `price_and_availability` itself uses for that source
+    # (`0.0, "free_public_domain"`) is hardcoded directly instead.
     return {
         "id": f"gutenberg_{rank}",
         "title": g.get("title", "Unknown"),
@@ -778,6 +790,7 @@ def _gutenberg_to_api(g: Dict[str, Any], rank: int) -> Dict[str, Any]:
         "ratings_count": None,
         "download_count": g.get("download_count", 0),
         "price": 0.0,
+        "availability": "free_public_domain",
         "pages": None,
         "audiobook": False,
         "description": "",

@@ -107,3 +107,66 @@ def test_the_shipped_catalogue_contains_no_real_prices():
         f"{priced} books now carry a real price — section 18's 'unknown' "
         "default should be reconsidered"
     )
+
+
+# -- F-52: _gutenberg_to_api's own shape --------------------------------------
+#
+# Found intermittently as a bare `KeyError: 'availability'` on
+# `POST /api/recommend` results: every call queries GutenbergClient.search
+# unconditionally and fuses whatever it returns into the ranked results
+# (services.recommendation.fuse_and_rank), so any request could surface a
+# Gutenberg-sourced item. `_gutenberg_to_api` built that item's dict without
+# an "availability" key at all — not even "unknown" — so a caller reading
+# book["availability"] (rather than book.get(...)) crashed, but only on the
+# request in which a Gutenberg result actually ranked into the top N: a
+# live external search (gutendex.com) whose results vary run to run, which
+# is exactly the shape of "genuinely intermittent" F-52 described.
+#
+# Reproduced deterministically here rather than by re-triggering the live
+# search enough times to get unlucky: `_gutenberg_to_api` is a pure function
+# of the dict `GutenbergClient.search` returns, and that shape is fixed and
+# known without needing the network to cooperate.
+
+GUTENBERG_SEARCH_RESULT = {
+    "title": "A Free Classic", "author": "Old Author", "genre": "Fiction",
+    "average_rating": None, "ratings_count": None, "download_count": 50_000,
+    "page_count": None, "list_price": 0.0, "source": "gutenberg", "url": "",
+    "final_score": 0.05,
+}
+
+
+def test_a_gutenberg_search_result_carries_an_availability_key():
+    from services.recommendation import _gutenberg_to_api
+
+    api_shape = _gutenberg_to_api(GUTENBERG_SEARCH_RESULT, rank=1)
+    assert "availability" in api_shape, (
+        "F-52: a caller reading book['availability'] on this shape crashes "
+        "with a bare KeyError, intermittently, whenever this is the item "
+        "that ranks into the fused top N"
+    )
+    assert api_shape["availability"] == "free_public_domain"
+    assert api_shape["price"] == 0.0
+
+
+def test_gutenberg_and_catalogue_results_agree_on_availability_after_fusion():
+    """The actual failure mode: a caller iterating `fuse_and_rank`'s output
+    and reading `book["availability"]` unconditionally, the way
+    `test_every_priced_result_actually_has_a_known_price` does.
+    """
+    from services.recommendation import _gutenberg_to_api, _ml_to_api, fuse_and_rank
+
+    catalogue_row = {
+        "id": 1, "title": "A Catalogue Book", "author": "Someone",
+        "genre": "Fiction", "language": "en", "page_count": 200,
+        "average_rating": 4.0, "ratings_count": 10, "list_price": 0.0,
+        "book_id": "9876543", "thumbnail": "https://images.gr-assets.com/x.jpg",
+        "final_score": 0.9,
+    }
+    local = [_ml_to_api(catalogue_row, 1)]
+    gutenberg = [_gutenberg_to_api(GUTENBERG_SEARCH_RESULT, 1)]
+
+    fused = fuse_and_rank(local, gutenberg, top_n=12)
+    assert len(fused) == 2
+    for book in fused:
+        # The exact line that crashed: no .get(), no default.
+        assert book["availability"] in {"free_public_domain", "listed", "unknown"}

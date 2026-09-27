@@ -3594,3 +3594,41 @@ layer rather than the containers or Postgres itself.
 
 ---
 
+## F-52 · Intermittent `KeyError: 'availability'` on `/api/recommend` — **CLOSED 2026-09-26**
+
+Root-caused rather than assumed, per the table's own note that it "needs
+reproducing deliberately." `POST /api/recommend` queries
+`GutenbergClient.search()` — a live call to `https://gutendex.com`,
+unconditionally, on every request — and fuses whatever it returns into the
+ranked results (`fuse_and_rank`). `_gutenberg_to_api`, which shapes those
+results, built a dict with **no `"availability"` key at all** — not even
+`"unknown"` — so any caller reading `book["availability"]` directly (not
+`.get(...)`) crashed the instant a Gutenberg-sourced item ranked into the
+top N. That ranking depends on a live external search whose results vary
+run to run, which is exactly "genuinely intermittent."
+
+**Confirmed deterministically** rather than by re-triggering the live
+search enough times to get unlucky (gutendex.com was itself timing out
+during this investigation — a separate, unrelated network blip):
+`_gutenberg_to_api` is a pure function of the fixed dict shape
+`GutenbergClient.search` returns, so the bug reproduces without the
+network's cooperation at all.
+
+**Fix is not "route it through `price_and_availability`"**, the function
+`_ml_to_api` already uses for exactly this reason (shared logic, so the two
+serialisers cannot disagree) — checked and rejected: that function infers
+source from `book_id`/`thumbnail` via `infer_source`, and a Gutenberg search
+result carries neither. `infer_source(None, None)` falls through to
+`"google_books"`, the wrong answer, not the honest one — reusing it naively
+would have swapped one bug for a worse, silent one. `_gutenberg_to_api`'s
+input source is already unambiguous (the function exists only for Gutenberg
+results), so `price_and_availability`'s own special-cased constant for that
+source (`0.0, "free_public_domain"`) is hardcoded directly instead, with a
+comment explaining why the shared function was not reused here.
+
+**Verified**: 2 new tests in `tests/test_availability.py` — the dict shape
+directly, and the full `fuse_and_rank` path a real caller goes through.
+Sabotage-verified: removed the fix, both tests failed with the exact
+original `KeyError: 'availability'`; reverted, confirmed clean.
+
+---
