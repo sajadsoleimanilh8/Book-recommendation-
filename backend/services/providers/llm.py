@@ -48,6 +48,19 @@ DEFAULT_MODEL = os.getenv("LLM_MODEL", "qwen2.5:7b")
 FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "qwen2.5:3b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
+# Found live, not hypothesised: `urllib.request`'s default opener honours
+# whatever proxy Windows/WinINET has configured system-wide, and does not
+# exempt loopback addresses from it the way curl and most browsers do. On a
+# machine with any system proxy active (a corporate VPN, a debugging tool —
+# nothing to do with Ollama's own health), every call here was routed
+# through that proxy, which reset the connection instead of relaying it to
+# Ollama. Ollama is local by this module's own design decision (its
+# docstring above) — there is never a legitimate reason to proxy a call to
+# it — so this opener is built once, with an empty `ProxyHandler`, to
+# bypass system proxy discovery entirely rather than depend on the
+# environment where this happens to run.
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 class LLMUnavailable(RuntimeError):
     """Every provider in the chain failed — connection refused, timeout, or
@@ -174,7 +187,7 @@ class OllamaProvider:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with _NO_PROXY_OPENER.open(req, timeout=self.timeout) as resp:
                 data = json.load(resp)
         except urllib.error.HTTPError as exc:
             # Ollama answers 404 with {"error": "model 'x' not found"} for a
@@ -184,7 +197,18 @@ class OllamaProvider:
             # URLError below.
             detail = exc.read()[:200].decode("utf-8", "replace")
             raise LLMUnavailable(f"{self.name}: HTTP {exc.code} {detail}") from exc
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+            # `URLError` covers a failed connection *attempt* (refused,
+            # unresolvable host). It does not cover a connection that
+            # succeeded and then failed while the response was being read —
+            # that surfaces as a raw `OSError` subclass (`ConnectionResetError`,
+            # `TimeoutError`, ...), not wrapped in `URLError`, and was
+            # reaching the caller as an unhandled stack trace instead of
+            # `LLMUnavailable`. `OSError` is the common base for both, and
+            # does not touch `json.JSONDecodeError` (a `ValueError`, kept
+            # explicit) or anything raised by malformed response *content*
+            # below this block — only genuine I/O failure becomes "the model
+            # is unavailable," per this file's own section-12 contract.
             raise LLMUnavailable(f"{self.name}: {exc}") from exc
 
         message = data.get("message") or {}

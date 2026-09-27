@@ -40,8 +40,13 @@ from services.providers.llm import (  # noqa: E402
 
 
 def ollama_reachable() -> bool:
+    # Same reasoning as llm._NO_PROXY_OPENER: a bare `urlopen` here honours
+    # whatever system proxy is active and reports Ollama unreachable when a
+    # proxy resets the loopback connection, not when Ollama actually is
+    # down. Found live: all four "really" tests below skipped on a machine
+    # where `curl http://127.0.0.1:11434/api/tags` answered 200.
     try:
-        with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=3):
+        with llm._NO_PROXY_OPENER.open("http://127.0.0.1:11434/api/tags", timeout=3):
             return True
     except Exception:
         return False
@@ -231,9 +236,39 @@ def test_a_dead_primary_really_falls_back_to_the_real_secondary():
 def test_an_unreachable_ollama_is_llm_unavailable_not_a_stack_trace():
     """Nothing is listening on this port. A connection refusal is the most
     likely real-world failure (Ollama not started), and must reach the caller
-    as the one specific exception, never a raw URLError."""
+    as the one specific exception, never a raw URLError.
+
+    Found to be environment-dependent in a way worth recording: on some
+    machines/network stacks, port 1 with nothing listening answers
+    `ConnectionRefusedError` (wrapped in `URLError`); on this one, it
+    answered `ConnectionResetError` instead — a *different* exception,
+    raised later (while reading the response, not while connecting), that
+    the handler below did not catch until this was found. That regression
+    is pinned deterministically in
+    `test_a_connection_reset_mid_response_is_also_llm_unavailable`, rather
+    than relying on this test's port continuing to fail the same way on
+    whatever machine runs it next.
+    """
     with pytest.raises(LLMUnavailable):
         OllamaProvider(DEFAULT_MODEL, base_url="http://127.0.0.1:1", timeout=2).chat(MESSAGES)
+
+
+def test_a_connection_reset_mid_response_is_also_llm_unavailable(monkeypatch):
+    """`URLError` covers a failed *connection attempt*. It does not cover a
+    connection that succeeded and was then reset while the response was
+    being read — that raises a raw `ConnectionResetError` (an `OSError`
+    subclass), which reached the caller as an unhandled stack trace instead
+    of `LLMUnavailable` until this was fixed. Mocked rather than relying on
+    a real socket reset, which is exactly the kind of environment-specific
+    behaviour `test_an_unreachable_ollama_is_llm_unavailable_not_a_stack_trace`'s
+    own docstring found not to be portable.
+    """
+    def _reset(*_a, **_k):
+        raise ConnectionResetError("[WinError 10054] connection reset by peer")
+
+    monkeypatch.setattr(llm._NO_PROXY_OPENER, "open", _reset)
+    with pytest.raises(LLMUnavailable):
+        OllamaProvider(DEFAULT_MODEL).chat(MESSAGES)
 
 
 def test_a_fully_unreachable_chain_raises_llm_unavailable():

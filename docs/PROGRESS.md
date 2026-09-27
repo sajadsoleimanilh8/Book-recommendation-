@@ -3748,3 +3748,63 @@ which does not apply here) to confirm nothing about the working tree state
 was accidentally disturbed while investigating.
 
 ---
+
+## Real bug found while running the "should be a no-op" README suite check — 2026-09-26
+
+The full-suite run meant only to confirm the docs change disturbed nothing
+came back with 3 failures, all in `test_llm_provider.py`, all against
+tests whose own names say they simulate an *unreachable* Ollama —
+suspicious on its own, since Ollama was confirmed running (`curl` → 200)
+moments before. Chased rather than dismissed as flakiness, per the
+standing method.
+
+**Root cause, measured directly rather than guessed**:
+`urllib.request`'s default opener honours whatever proxy Windows/WinINET
+has configured system-wide, and — unlike curl and most browsers — does not
+exempt loopback addresses from it. This machine has a system proxy at
+`127.0.0.1:12334` (`urllib.request.getproxies()`), and every call through
+the default opener to `127.0.0.1:11434` (Ollama) was being routed through
+it and reset. Reproduced directly: a bare `urlopen` against the real,
+live Ollama failed with the identical `ConnectionResetError [WinError
+10054]` the "unreachable" tests were built to simulate — confirming this
+is not a test artefact but a real path the actual `OllamaProvider.chat()`
+goes through in production too, on any machine with any system proxy
+active, for a reason entirely unrelated to Ollama's own health.
+
+**Two fixes, not one**:
+
+1. `_NO_PROXY_OPENER` (`services/providers/llm.py`) — a `urllib` opener
+   built once with an empty `ProxyHandler`, bypassing system proxy
+   discovery entirely. Correct unconditionally here: this module's own
+   docstring states Ollama is local by design decision (2026-09-18), so
+   there is never a legitimate reason to proxy a call to it. `chat()` now
+   uses this opener instead of the module-level `urlopen`.
+2. The exception handler that turns a failed call into `LLMUnavailable`
+   caught `(URLError, TimeoutError, JSONDecodeError)` — which covers a
+   failed *connection attempt* but not a connection that succeeded and was
+   then reset while the response was being read, which raises a raw
+   `ConnectionResetError` (an `OSError` subclass) that was reaching the
+   caller as an unhandled stack trace. Widened to `OSError` (which already
+   covers `TimeoutError`), verified not to swallow
+   `json.JSONDecodeError` (not an `OSError` subclass) or anything raised
+   by malformed response *content* outside the try block.
+
+The test file's own `ollama_reachable()` had the identical bug — it also
+used a bare `urlopen`, so it was reporting Ollama unreachable and silently
+*skipping* four "really" tests against the real models, on a machine where
+Ollama was genuinely healthy. Fixed the same way. The combined effect: sabotaging
+just the production fix (reverting `_NO_PROXY_OPENER` back to plain
+`urlopen`, leaving the test's own probe fixed) now produces four loud,
+correctly-attributed failures instead of four silent skips — a strictly
+better failure mode than before this was found, independent of whether the
+proxy fix itself is ever reverted by accident.
+
+**Verified**: `test_a_connection_reset_mid_response_is_also_llm_unavailable`
+pins the exact `ConnectionResetError` regression deterministically (mocked,
+not relying on this machine's specific proxy setup, which is not portable).
+Sabotage-verified both fixes independently — reverting the exception-catch
+widening reproduces the original unhandled-exception failure exactly;
+reverting the no-proxy opener reproduces all four original failures with
+the identical `WinError 10054` message. All 19 tests in
+`test_llm_provider.py` pass with zero skips (previously 4) once both fixes
+and the test's own probe are in place together.
