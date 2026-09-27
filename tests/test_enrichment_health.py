@@ -172,3 +172,130 @@ def test_uploads_do_not_count_towards_the_backlog():
     body = src.split("def _enrichment_health", 1)[1]
 
     assert "owner_id" in body, "the pending count includes private uploads"
+
+
+# -- F-53's residual enhancement: run history readable from the app --------
+#
+# `/health`'s `enrichment.{pending, last_progress, stalled}` deliberately
+# stays derived from `max(books.enriched_at)`, not from the log — F-53 is
+# exactly the case where the log said a run succeeded and progress still
+# did not happen, so the log can never become a second source of truth
+# about whether enrichment is working. This answers a different question:
+# what has the standing job actually reported, run by run, without needing
+# a terminal on whichever machine happens to be running it.
+
+SAMPLE_LOG = """\
+2026-09-17 14:50:34  exit=0
+2026-09-17 14:50:34        ok                     2
+2026-09-17 14:50:34        processed              2
+2026-09-17 14:50:34        quota_exhausted        False
+2026-09-17 14:50:34        throttled              True
+2026-09-17 14:50:34        description_coverage   23.43%
+2026-09-17 14:50:34        english_still_pending  12669
+2026-09-17 22:35:45  exit=0
+2026-09-17 22:35:45        processed              0
+2026-09-17 22:35:45        quota_exhausted        False
+2026-09-17 22:35:45        throttled              True
+2026-09-17 22:35:45        description_coverage   23.43%
+2026-09-17 22:35:45        english_still_pending  12669
+"""
+
+
+def test_the_parser_reads_every_run_and_its_own_keys():
+    """Keys vary run to run (a barren run logs fewer than one with real
+    progress) — the parser must not assume a fixed schema."""
+    runs = health._parse_enrichment_history(SAMPLE_LOG)
+
+    assert len(runs) == 2
+    assert runs[0]["timestamp"] == "2026-09-17 14:50:34"
+    assert runs[0]["exit_code"] == 0
+    assert runs[0]["ok"] == "2"
+    assert runs[0]["english_still_pending"] == "12669"
+    assert "ok" not in runs[1], "the barren run never logged this key"
+    assert runs[1]["processed"] == "0"
+
+
+def test_the_parser_reads_the_real_log_without_crashing():
+    """Contract with the real, uncontrolled file (`run_daily_enrichment.ps1`
+    writes it, this backend does not) — parsed here to prove the format
+    assumption holds, not to assert on its content, which changes daily."""
+    if not health.ENRICHMENT_HISTORY_LOG.exists():
+        pytest.skip("no history.log on this instance")
+    text = health.ENRICHMENT_HISTORY_LOG.read_text(encoding="utf-8", errors="replace")
+    runs = health._parse_enrichment_history(text)
+    assert isinstance(runs, list)
+    if runs:
+        assert "timestamp" in runs[0] and "exit_code" in runs[0]
+
+
+def test_an_unparseable_line_is_skipped_not_fatal():
+    """F-21's rule applies here too: a monitoring detail must not 500 the
+    endpoint that reports it.
+
+    Two placements matter, not one: garbage *before* the first run header
+    is trivially ignored by the `current is not None` guard regardless of
+    whether `_METRIC_LINE` itself is strict — that alone would pass even
+    with a regex that accepts anything. Garbage *after* a valid header is
+    the real test of the regex, because a too-permissive pattern would
+    silently add a bogus key to that run's dict rather than being rejected,
+    and a bare run count would not show that.
+    """
+    garbled = "this is not a log line at all\n" + SAMPLE_LOG + "neither is this\n"
+    runs = health._parse_enrichment_history(garbled)
+
+    assert len(runs) == 2
+    assert "neither" not in runs[-1], (
+        "a garbage line after a valid header was accepted as a real metric"
+    )
+    assert runs[-1] == {
+        "timestamp": "2026-09-17 22:35:45",
+        "exit_code": 0,
+        "processed": "0",
+        "quota_exhausted": "False",
+        "throttled": "True",
+        "description_coverage": "23.43%",
+        "english_still_pending": "12669",
+    }, "the trailing garbage line changed the last run's own, valid keys"
+
+
+def test_empty_log_is_an_empty_list_not_an_error():
+    assert health._parse_enrichment_history("") == []
+
+
+@pytest.fixture
+def history_log(tmp_path, monkeypatch):
+    log_path = tmp_path / "history.log"
+    monkeypatch.setattr(health, "ENRICHMENT_HISTORY_LOG", log_path)
+    return log_path
+
+
+def test_endpoint_reports_unavailable_when_the_log_does_not_exist(history_log):
+    """Honest about a fresh install or a machine that never ran the
+    scheduled job — not an error, an absence (F-17's shape)."""
+    result = health.enrichment_history()
+    assert result["ok"] is True
+    assert result["available"] is False
+    assert result["runs"] == []
+
+
+def test_endpoint_returns_real_runs_from_the_log(history_log):
+    history_log.write_text(SAMPLE_LOG, encoding="utf-8")
+    result = health.enrichment_history()
+
+    assert result["available"] is True
+    assert result["total_runs_logged"] == 2
+    assert result["returned"] == 2
+    assert result["runs"][-1]["timestamp"] == "2026-09-17 22:35:45"
+
+
+def test_endpoint_bounds_the_returned_runs_but_not_the_reported_total(history_log):
+    """A long-running instance's log grows forever; the endpoint must
+    answer in constant time regardless, while still saying honestly how
+    much history actually exists."""
+    many_runs = SAMPLE_LOG * (health.MAX_HISTORY_RUNS + 5)
+    history_log.write_text(many_runs, encoding="utf-8")
+    result = health.enrichment_history()
+
+    assert result["total_runs_logged"] == 2 * (health.MAX_HISTORY_RUNS + 5)
+    assert result["returned"] == health.MAX_HISTORY_RUNS
+    assert len(result["runs"]) == health.MAX_HISTORY_RUNS

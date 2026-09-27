@@ -27,8 +27,10 @@ main.py has finished importing and startup() has run.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, List
 
 from fastapi import APIRouter
 from sqlalchemy import func as sa_func, select as sa_select
@@ -40,6 +42,24 @@ from db import SessionLocal
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+# F-53's residual enhancement: written by scripts/run_daily_enrichment.ps1
+# (the standing OI-7 job), not by anything in this backend, so there is no
+# existing shared path constant to import — `services.catalogue.PROJECT_ROOT`
+# is computed the same way (`.parents[2]` from a file two levels under the
+# project root) and would land here too, but importing a catalogue-domain
+# constant into a health-domain module for one path felt like the wrong
+# coupling; recomputed locally instead.
+ENRICHMENT_HISTORY_LOG = Path(__file__).resolve().parents[2] / "logs" / "enrichment" / "history.log"
+
+# Bounded for the same reason every other list in this API is: a
+# long-running instance's history.log grows forever, and a health/status
+# endpoint should answer in constant time, not in proportion to how long
+# the job has been running.
+MAX_HISTORY_RUNS = 30
+
+_RUN_HEADER = re.compile(r"^(\S+ \S+)\s+exit=(-?\d+)\s*$")
+_METRIC_LINE = re.compile(r"^(\S+ \S+)\s+(\S+)\s+(.+?)\s*$")
 
 
 @router.get("/health")
@@ -236,4 +256,78 @@ def _enrichment_health() -> Dict[str, Any]:
             f"book(s) still pending — the job may be running green and doing "
             f"nothing (F-53)"
         ) if stalled else None,
+    }
+
+
+def _parse_enrichment_history(text: str) -> List[Dict[str, Any]]:
+    """One dict per run, most recent last — the same order the log itself
+    is written in. A run is a header line (`TIMESTAMP  exit=N`) followed by
+    zero or more `TIMESTAMP  KEY  VALUE` metric lines sharing that
+    timestamp; which keys appear varies by run (a barren run logs fewer
+    than one with real progress), so this reads whatever is actually there
+    rather than assuming a fixed schema.
+
+    Deliberately tolerant of a line it cannot parse (a hand-edited log, a
+    future format change) — this augments `/health`, which must never 500
+    over a monitoring detail (F-21), so a malformed line is skipped rather
+    than raising.
+    """
+    runs: List[Dict[str, Any]] = []
+    current: Dict[str, Any] | None = None
+
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        header = _RUN_HEADER.match(line)
+        if header:
+            if current is not None:
+                runs.append(current)
+            current = {"timestamp": header.group(1), "exit_code": int(header.group(2))}
+            continue
+        metric = _METRIC_LINE.match(line)
+        if metric and current is not None:
+            _, key, value = metric.groups()
+            current[key] = value
+    if current is not None:
+        runs.append(current)
+    return runs
+
+
+@router.get("/api/health/enrichment-history")
+def enrichment_history():
+    """F-53's residual enhancement: the standing job's run-by-run outcome,
+    readable from the app rather than only from `logs/enrichment/history.log`
+    on whatever machine happens to be running it.
+
+    Read-only and derived, same as the rest of `/health` — this is not a
+    second source of truth about progress (`_enrichment_health`'s
+    `max(enriched_at)` remains that, deliberately, because a log line can
+    say a run succeeded when F-53 is exactly the case where that was true
+    and progress still did not happen). This answers a different question:
+    not "is enrichment stalled" but "what has the job actually reported,
+    run by run" — useful once `_enrichment_health` says something is wrong
+    and a human wants to see the last several runs without opening a
+    terminal on the machine.
+    """
+    if not ENRICHMENT_HISTORY_LOG.exists():
+        return {
+            "ok": True,
+            "available": False,
+            "runs": [],
+            "note": f"{ENRICHMENT_HISTORY_LOG} does not exist on this instance",
+        }
+    try:
+        text = ENRICHMENT_HISTORY_LOG.read_text(encoding="utf-8", errors="replace")
+        runs = _parse_enrichment_history(text)
+    except Exception as exc:
+        log.warning(f"enrichment history read failed: {exc}")
+        return {"ok": True, "available": False, "runs": [], "note": f"unreadable: {exc}"}
+
+    recent = runs[-MAX_HISTORY_RUNS:]
+    return {
+        "ok": True,
+        "available": True,
+        "total_runs_logged": len(runs),
+        "returned": len(recent),
+        "runs": recent,
     }

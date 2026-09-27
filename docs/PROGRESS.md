@@ -3632,3 +3632,37 @@ Sabotage-verified: removed the fix, both tests failed with the exact
 original `KeyError: 'availability'`; reverted, confirmed clean.
 
 ---
+
+## F-53's residual enhancement · enrichment run history readable from the app — **CLOSED 2026-09-26**
+
+`GET /api/health/enrichment-history` — the run-by-run outcome the standing
+OI-7 job has actually logged, readable without a terminal on whichever
+machine is running it. Deliberately **not** a second source of truth about
+whether enrichment is working: `_enrichment_health`'s `max(enriched_at)`
+stays that, because F-53 is exactly the case where the log said a run
+succeeded and nothing had actually happened. This answers a different,
+narrower question — what did the job report — useful once
+`_enrichment_health` already says something is wrong and a human wants the
+last several runs without SSH/RDP to the machine.
+
+Parses `logs/enrichment/history.log` (written entirely by
+`run_daily_enrichment.ps1`; this backend has never read it before now) into
+one dict per run, reading whatever keys are actually present rather than
+assuming a fixed schema — a barren run logs fewer keys than one with real
+progress. Bounded to the last 30 runs returned, though `total_runs_logged`
+still reports the true count, so a long-running instance's endpoint answers
+in constant time without hiding how much history exists.
+
+**Verified**: 7 new tests in `tests/test_enrichment_health.py` (18 total in
+the file) — the parser against a synthetic multi-run log, against the real
+log file (existence/shape only, not content, which changes daily), the
+missing-file honest-empty-state, and the bounding behaviour. Sabotage
+-verified twice: the bounding logic (caught immediately) and the
+malformed-line handling — where the first attempt at that test was itself
+too weak (garbage placed only *before* the first run header is trivially
+ignored by an unrelated guard regardless of whether the parser's own regex
+is strict, so a bare run-count assertion passed even against a
+deliberately-broken, anything-matches regex). Strengthened to place garbage
+*after* a valid header and assert the run's own keys are unchanged, which
+does catch it — the fix was to the test, not the code, since the code was
+already correct.
