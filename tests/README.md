@@ -74,3 +74,41 @@ work touches ranking.
 chatbot never populates its `books` list. Strict means it fails the suite if
 it ever *passes*, so whoever fixes F-22 is forced to remove the marker rather
 than leave a stale one behind.
+
+---
+
+## Update — 2026-09-26: both of the above happened; this file did not say so
+
+Found while auditing the top-level `README.md` for unrelated staleness and
+checking whether this file had the same problem. It did, in the two most
+consequential places:
+
+**The xfail is gone.** F-22 was fixed well before this update — the AI
+Librarian's tool loop returns real, grounded books — and
+`test_chatbot_returns_recommendations` no longer carries the marker at all
+(its own docstring: *"was xfail(strict=True) while the chatbot was an
+intent classifier with canned replies... leaving a strict xfail in place
+would have failed the suite the moment the fix worked, which is what
+strict is for"*). Exactly the mechanism this file predicted, having
+actually fired.
+
+**The golden baselines exist**, have existed since well before this
+update, and have been regenerated more than once since (most recently
+2026-09-26, after a restore following unrelated data loss — see
+`docs/PROGRESS.md`, F-62). "Still outstanding" above is the one line in
+this file most likely to send a reader down the wrong path: building a
+second golden-baseline mechanism believing none exists.
+
+**The suite itself has grown far past what this file describes.** 500+
+tests as of Phase 4, most requiring a real Postgres instance and the full
+ML stack (`docker compose up -d`, then a `.venv` per the top-level
+README), not the dependency-light, source-text-assertion style this file's
+opening sections describe as the whole approach. That style still exists
+in a handful of files — the ones this file's original text was written
+about — but it is the minority now, not the plan.
+
+None of this is corrected by editing the sections above: they are an
+accurate record of PR 1's actual constraints and reasoning at the time, the
+same reason `docs/PHASE-0-AUDIT.md` is kept as a dated snapshot rather than
+rewritten. This update exists so a reader does not have to independently
+discover which parts are history and which parts are still the plan.
