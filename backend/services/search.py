@@ -115,6 +115,7 @@ def search_chunks(
     query_vector: Sequence[float],
     *,
     user_id: int | None = None,
+    book_id: int | None = None,
     limit: int = DEFAULT_LIMIT,
     language: str | None = None,
     genre: str | None = None,
@@ -131,6 +132,14 @@ def search_chunks(
     rankings from noise. Caught in testing, where a query encoded with one
     backend against chunks embedded with another returned an empty list
     instead of the exact-match passage.
+
+    `book_id` restricts retrieval to one book — section 32's "Book-Scoped
+    Retrieval", the primitive the Reading Copilot is built on: a question
+    about chapter 4 of *this* book must not be answered from a passage in a
+    different one. It **narrows** `visible_chunks(user_id)` rather than
+    replacing it, and the ordering matters: scoping to a book the reader
+    asked about must never widen what they may see inside it. Another
+    reader's private chunks for the same `book_id` stay invisible.
     """
     limit = max(1, min(int(limit), MAX_LIMIT))
 
@@ -155,6 +164,9 @@ def search_chunks(
         .where(visible_chunks(user_id))
         .where(BookChunk.embedding.isnot(None))
     )
+    if book_id is not None:
+        # AND-ed onto the visibility predicate above, never instead of it.
+        stmt = stmt.where(BookChunk.book_id == book_id)
     if embedding_model:
         stmt = stmt.where(BookChunk.embedding_model == embedding_model)
     stmt = _apply_filters(

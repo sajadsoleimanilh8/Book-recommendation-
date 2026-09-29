@@ -404,3 +404,77 @@ def test_the_lsa_model_name_identifies_the_fitted_space_not_just_the_algorithm()
     # An unfitted backend has no space to identify.
     assert LsaBackend(dim=8).name == "lsa"
     assert np.isfinite(a.encode(["a ship at sea"])).all()
+
+
+# -- section 32's "Book-Scoped Retrieval" ----------------------------------
+#
+# The primitive the Reading Copilot is built on: a question about *this*
+# book must be answered from this book's passages, not from whichever
+# passage in the catalogue happens to be the nearest neighbour. The risk
+# worth testing is not that it narrows too little but that it narrows the
+# wrong dimension — scoping to a book the reader asked about must not
+# become a way to see more inside it than they are allowed to.
+
+
+def test_book_scope_restricts_hits_to_that_book(corpus):
+    """Unscoped, the nearest neighbours come from anywhere in a 6,000-book
+    corpus; scoped, every hit must belong to the requested book."""
+    with SessionLocal() as session:
+        unscoped = search_chunks(
+            session, _vec(PUBLIC_TEXT), limit=50, min_similarity=0.0
+        )
+        scoped = search_chunks(
+            session, _vec(PUBLIC_TEXT), book_id=corpus["book_id"],
+            limit=50, min_similarity=0.0,
+        )
+
+    assert scoped, "book-scoped search found nothing in a book that has chunks"
+    assert {h.book_id for h in scoped} == {corpus["book_id"]}
+    assert len({h.book_id for h in unscoped}) > 1, (
+        "fixture assumption: an unscoped search should span several books, "
+        "otherwise this test proves nothing about narrowing"
+    )
+
+
+def test_book_scope_does_not_widen_visibility(corpus):
+    """The assertion that matters. Alice scopes to the book she shares with
+    Bob: she must get the public chunk and her own, and never Bob's — the
+    same guarantee `visible_chunks` gives unscoped, which `book_id` must
+    narrow rather than replace.
+    """
+    with SessionLocal() as session:
+        hits = search_chunks(
+            session, _vec(BOB_TEXT), user_id=corpus["alice"],
+            book_id=corpus["book_id"], limit=50, min_similarity=0.0,
+        )
+
+    passages = _passages(hits)
+    assert BOB_TEXT not in passages, (
+        "book scoping leaked another reader's private chunk for that book"
+    )
+    assert PUBLIC_TEXT in passages, "the public chunk of the scoped book is missing"
+    assert ALICE_TEXT in passages, "the reader's own private chunk was dropped"
+
+
+def test_book_scope_for_an_anonymous_caller_is_public_only(corpus):
+    with SessionLocal() as session:
+        hits = search_chunks(
+            session, _vec(ALICE_TEXT), user_id=None,
+            book_id=corpus["book_id"], limit=50, min_similarity=0.0,
+        )
+
+    passages = _passages(hits)
+    assert ALICE_TEXT not in passages and BOB_TEXT not in passages
+    assert PUBLIC_TEXT in passages
+
+
+def test_book_scope_to_a_book_with_no_chunks_is_empty_not_unscoped(corpus):
+    """The failure that would be worst here: a scope that silently does
+    nothing. An empty result is correct; falling back to the whole corpus
+    would answer a question about one book with another book's text.
+    """
+    with SessionLocal() as session:
+        hits = search_chunks(
+            session, _vec(PUBLIC_TEXT), book_id=-1, limit=50, min_similarity=0.0
+        )
+    assert hits == []
