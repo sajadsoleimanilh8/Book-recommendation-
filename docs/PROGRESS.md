@@ -3808,3 +3808,94 @@ reverting the no-proxy opener reproduces all four original failures with
 the identical `WinError 10054` message. All 19 tests in
 `test_llm_provider.py` pass with zero skips (previously 4) once both fixes
 and the test's own probe are in place together.
+
+---
+
+## Phase 5 first slice · Reading Copilot (§32) — 2026-09-29
+
+Phase 4 finished with every piece §32's pipeline needs except one, so this
+slice is that piece plus the loop built on it. Section 32's own sequence:
+question, **book-scoped retrieval**, passages, LLM, grounded answer,
+citation.
+
+### The missing primitive: book-scoped retrieval
+
+`search_chunks` could filter by language, genre, year and embedding model
+but not by book, so "explain chapter 4 of *this* book" would have been
+answered from whichever passage in the 6,000-book corpus was the nearest
+neighbour. Added `book_id`.
+
+**The design point, and what its tests target:** it is AND-ed onto
+`visible_chunks(user_id)`, never substituted for it. Scoping to a book the
+reader asked about must not become a way to see more inside that book than
+they may. Sabotage-verified by making it replace the visibility predicate:
+two tests fail, and the anonymous one shows the real severity — an
+unauthenticated caller receiving both readers' private chunks for that
+book. Also tested: scoping to a book with no chunks returns empty rather
+than silently falling back to the corpus, which is the failure that would
+answer a question about one book with another book's text.
+
+### The loop, and the part that is not taken on trust
+
+`services/copilot.py` + `POST /api/books/{book_id}/ask`.
+
+Section 32 requires the assistant to distinguish `Known from book` /
+`Inference` / `Uncertain`. The easy reading is to ask the model for that
+label and print it — which would make the most load-bearing field in the
+response the one nothing verifies. This project has already answered that
+question once, for F-22: the fix for "the model might name a book it never
+saw" was not to ask it nicely. Two checks are cheap and real:
+
+1. **No passages, no knowledge.** If retrieval returned nothing there is
+   nothing in the book to have known, so the label cannot be `known`
+   whatever the model claims — and the model is not called at all, because
+   spending a generation to discover there is nothing to ground on is
+   exactly how a confident answer about an unavailable book gets produced.
+2. **A quoted span must be in a passage.** Words presented as the book's
+   own have to appear in something retrieval actually returned, normalised
+   the same way `librarian._grounding_problem` normalises titles. An
+   unsupported quote downgrades the label to `uncertain` **and is
+   reported** — `label_downgraded_from` and `unsupported_quotes` are in the
+   response, so a caller can tell the label was not the model's own claim.
+
+Deliberately bounded, with reasons rather than omissions:
+
+- **The three-word floor on quote checking.** A two-word quotation is
+  emphasis or a term of art; flagging it would make every answer that
+  stresses a word look like an invention. Tested both ways.
+- **Punctuation and whitespace are normalised before comparing.** A model
+  reflowing a quote is not the failure this guard is for.
+- **`MIN_PASSAGE_SIMILARITY` (0.02) is below `search.MIN_SIMILARITY`.**
+  Catalogue-wide search is choosing between 6,000 books and can afford to
+  be strict; here the book is already decided and the only question is
+  which of *its* passages are relevant.
+- **No memory between calls.** §33's per-(user, book) memory is its own
+  feature with its own storage; a summarised-memory layer belongs on top of
+  this loop, not smuggled into it.
+- **No pages served.** Passages reach the reader as citations supporting an
+  answer, which is retrieval — what OI-4's posture permits for an upload.
+  Rendering the book back is what it does not.
+- **`OptionalUser`, not `CurrentUser`.** `search_chunks` already decides
+  what a caller may see, so an anonymous reader can ask about a
+  public-domain book while a signed-in one additionally reaches their own
+  uploads. `AskRequest` is `extra="forbid"` so a caller-supplied id is a
+  422, not a silently-ignored field.
+- **Rate-limited on `/api/chat`'s limits under its own scope key.** One
+  question is one generation against the single local GPU; the two features
+  get independent buckets at the same ceiling.
+- **A model outage degrades rather than fails.** `LLMUnavailable` (all
+  tiers down, or over capacity) returns the retrieved citations with an
+  honest `uncertain`, because retrieval already succeeded and is useful on
+  its own.
+
+**Verified**: 20 tests. The quote checker directly (supported, invented,
+reflowed, two-word, smart quotes); the label logic against a model that
+lies, a model that omits the label, and a model that is absent; that the
+passages actually reach the prompt (a prompt that forgot them would still
+produce plausible answers — from the model's memory of the book, which is
+what the whole pipeline exists to avoid); and the endpoint end to end
+through the real app with only the model faked. Sabotage-verified both
+checks independently: disabling the downgrade, and disabling the
+no-passages guard — the latter caught by the real-database test too, and it
+produces exactly the predicted failure, a `known_from_book` answer about a
+book the system holds no text for.
