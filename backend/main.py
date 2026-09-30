@@ -46,6 +46,7 @@ from api.profile import router as profile_router
 from api.clusters import router as clusters_router
 from api.library import router as library_router
 from api.copilot import router as copilot_router
+from api.reading_intelligence import router as reading_intelligence_router
 
 
 log = logging.getLogger(__name__)
@@ -128,6 +129,7 @@ app.include_router(profile_router)
 app.include_router(clusters_router)
 app.include_router(library_router)
 app.include_router(copilot_router)
+app.include_router(reading_intelligence_router)
 
 # F-38: reject unknown query parameters. After include_router so the
 # guard can see every route (api/middleware.py explains the wrapper it

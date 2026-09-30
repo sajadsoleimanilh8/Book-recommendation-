@@ -4079,3 +4079,92 @@ actual (unwanted) prompt shown in the failure.
 
 Two consecutive full-suite runs: 575 passed, 2 xfailed, 0 failed,
 identical both times.
+
+## Phase 5 fourth slice · Reading Intelligence (§39) — 2026-09-30
+
+Section 39's own examples were the test of buildability here, the same
+standard applied to every slice this pass:
+
+    "You normally read for 25 minutes in the evening. Continue Chapter 7?"
+    "You haven't opened this book in six days. Want a three-minute recap?"
+
+Both are answerable from data already flowing in — `interaction_events`
+rows of type `READING_PAGE` already fire once per genuine page turn
+(`api/books.py::_record_page_turn`, shipped for F-26) and are already
+attributed to a signed-in reader (OI-6 follow-through). No new client
+contract, no new table: this slice is a read of history that already
+exists, not a new collection mechanism.
+
+### What was deliberately left unclaimed
+
+Two things the examples imply that this module does not say, both logged
+rather than guessed past:
+
+- **Time of day** ("in the evening"). `users` carries no timezone. A
+  server-side UTC timestamp cannot honestly say *evening* for a reader in
+  a different timezone — it would be a confident, specific, wrong claim
+  about *when* someone reads, not an approximation of something true. The
+  nudge below reports a typical **duration** instead, which needs no
+  timezone to be correct.
+- **Completion estimate**, section 39's own listed item. The only total
+  page count on record is recovered by dividing `reading_progress.page` by
+  the client-reported `progress` fraction — unreliable exactly where it
+  matters most, early in a book, where a small denominator magnifies
+  rounding into a wildly wrong total. Dividing one approximation by
+  another and presenting the result as "time left" is the same failure
+  §26 (Explainable Recommendations) was left unbuilt to avoid: a plausible
+  number built on data that is not actually there. Left out; logged here
+  rather than shipped as a confident-looking guess.
+
+### The derivation (`services/reading_intelligence.py`)
+
+`_cluster_sessions`: consecutive page-turn timestamps more than
+`SESSION_GAP_MINUTES` (20) apart start a new sitting — an engineering
+threshold in the same category as `search.MIN_SIMILARITY`, not a claim
+about what the reader actually did between two turns. `_streak_days`:
+consecutive UTC calendar days with at least one genuine turn, plus days
+since the last one — same "only a real page turn counts" filter
+`services/reading_depth.py::aggregate` already applies (`page_size == 1`
+and `had_content`), reused rather than re-derived so the two features
+cannot quietly disagree about what a real page turn is. `_nudge` produces
+one of section 39's two shapes or nothing — an absent nudge is the honest
+answer for a first session or too little history, and inactivity is
+checked before typical-duration, on purpose: telling a reader who has not
+opened a book in a week "you normally read for 25 minutes" would be a
+strange thing to say when the recap offer is the truer one.
+
+### Wired at `GET /api/books/{book_id}/reading-stats`
+
+New router, `api/reading_intelligence.py`, not folded into `api/reading.py`
+or `api/copilot.py`. Its own docstring states the reason plainly: `book_id`
+here is the real `books.id` — the same space `/ask` and `/summary` already
+use, and what `interaction_events`/`reading_progress` are foreign keys to —
+deliberately **not** `api/reading.py`'s positional catalogue id (a
+DataFrame row index + 1, translated internally via `store.resolve_book_pk`
+before anything is stored). Folding this into either existing module would
+have either mixed the two id spaces silently or misfiled a non-LLM feature
+under the copilot router. `CurrentUser`, not `OptionalUser`: every number
+here is one reader's own history, and an anonymous caller has none to
+attribute back to them.
+
+**Verified**: 24 new tests in `tests/test_reading_intelligence.py` —
+session clustering (close turns merge, a long gap splits, the boundary
+itself does not split, duration is start-to-end not a count), streak
+arithmetic (a run of days, a skipped day breaking it, same-day re-reads
+counting once, days-since-last-read), the nudge's priority rule and its
+honest-absence case, then the real storage path: two sessions counted
+correctly end to end, a bulk fetch (`page_size != 1`) and a contentless
+page each correctly excluded, long inactivity reported honestly, another
+reader's page turns never leaking into this reader's numbers, and the
+endpoint requiring a signed-in caller.
+
+Sabotage-verified three times: disabling the session-gap split (caught —
+three turns 55 minutes apart collapsed into one session instead of two);
+disabling the genuine-turn filter (caught by both the bulk-fetch and the
+no-content test simultaneously); and disabling the inactivity nudge's
+priority check (caught — a reader inactive for ten days was told about
+their typical session length instead of offered a recap).
+
+Two consecutive full-suite runs: 599 passed, 2 xfailed, 0 failed,
+identical both times. No test debris left behind — checked directly
+afterward: zero leftover test users, zero orphaned `reading_page` rows.
