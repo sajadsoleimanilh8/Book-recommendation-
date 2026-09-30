@@ -26,7 +26,12 @@ pytestmark = pytest.mark.skipif(
 from db import SessionLocal  # noqa: E402
 from embeddings import get_backend  # noqa: E402
 from models import Book, BookChunk, BookVector, User  # noqa: E402
-from search import search_books, search_chunks, visible_chunks  # noqa: E402
+from search import (  # noqa: E402
+    representative_chunks,
+    search_books,
+    search_chunks,
+    visible_chunks,
+)
 
 ENCODER = get_backend("hashing")
 
@@ -478,3 +483,116 @@ def test_book_scope_to_a_book_with_no_chunks_is_empty_not_unscoped(corpus):
             session, _vec(PUBLIC_TEXT), book_id=-1, limit=50, min_similarity=0.0
         )
     assert hits == []
+
+
+@pytest.fixture
+def spread_corpus():
+    """One book, twenty public chunks at consecutive ordinals — enough
+    positions that "evenly spread" and "the first few" produce visibly
+    different results, which three chunks (as in `corpus`) cannot show.
+    """
+    with SessionLocal() as session:
+        book = session.scalar(select(Book).limit(1))
+        assert book is not None, "test catalogue is empty"
+        book_id = book.id
+
+        original = list(
+            session.scalars(select(BookChunk).where(BookChunk.book_id == book_id))
+        )
+        original_snapshot = [
+            {
+                "user_id": r.user_id,
+                "visibility": r.visibility,
+                "ordinal": r.ordinal,
+                "origin": r.origin,
+                "content": r.content,
+                "char_count": r.char_count,
+                "embedding": r.embedding,
+                "embedding_model": r.embedding_model,
+            }
+            for r in original
+        ]
+        for row in original:
+            session.expunge(row)
+
+        session.execute(BookChunk.__table__.delete().where(BookChunk.book_id == book_id))
+
+        session.add_all(
+            [
+                BookChunk(
+                    book_id=book_id, user_id=None, visibility="public", ordinal=i,
+                    content=f"chunk number {i} of a long public book",
+                    char_count=30, embedding=None, embedding_model=None,
+                )
+                for i in range(20)
+            ]
+        )
+        session.commit()
+        yield book_id
+
+        session.execute(BookChunk.__table__.delete().where(BookChunk.book_id == book_id))
+        session.add_all(
+            BookChunk(book_id=book_id, **fields) for fields in original_snapshot
+        )
+        session.commit()
+
+
+def test_representative_chunks_spans_the_whole_book(spread_corpus):
+    """The failure this guards against: silently returning a prefix (the
+    first `limit` rows) instead of a spread. A prefix would summarise a
+    20-chapter book from its opening pages only.
+    """
+    with SessionLocal() as session:
+        hits = representative_chunks(session, spread_corpus, limit=5)
+
+    ordinals = [h.ordinal for h in hits]
+    assert len(ordinals) == 5
+    assert ordinals == sorted(ordinals)
+    assert ordinals[0] < 5, "expected the sample to start near the beginning"
+    assert ordinals[-1] > 14, (
+        f"sample {ordinals} never reaches the back of the book — this is a "
+        "prefix, not a spread"
+    )
+
+
+def test_representative_chunks_returns_everything_when_book_is_smaller_than_limit(spread_corpus):
+    with SessionLocal() as session:
+        hits = representative_chunks(session, spread_corpus, limit=100)
+    assert len(hits) == 20
+    assert [h.ordinal for h in hits] == list(range(20))
+
+
+def test_representative_chunks_does_not_require_an_embedding(spread_corpus):
+    """Every chunk in `spread_corpus` has `embedding=None` — a summary must
+    still work on an instance with no encoder configured, unlike
+    `search_chunks`, which needs a vector to rank against.
+    """
+    with SessionLocal() as session:
+        hits = representative_chunks(session, spread_corpus, limit=5)
+    assert len(hits) == 5
+
+
+def test_representative_chunks_for_a_book_with_no_chunks_is_empty(spread_corpus):
+    with SessionLocal() as session:
+        hits = representative_chunks(session, -1, limit=5)
+    assert hits == []
+
+
+def test_representative_chunks_does_not_widen_visibility(corpus):
+    """Same guarantee `search_chunks(book_id=...)` gives: scoping to a book
+    must never surface a passage the caller could not already see."""
+    with SessionLocal() as session:
+        hits = representative_chunks(session, corpus["book_id"], user_id=corpus["alice"], limit=50)
+
+    passages = {h.passage for h in hits}
+    assert BOB_TEXT not in passages
+    assert PUBLIC_TEXT in passages and ALICE_TEXT in passages
+
+
+def test_representative_chunks_for_an_anonymous_caller_is_public_only(corpus):
+    with SessionLocal() as session:
+        hits = representative_chunks(session, corpus["book_id"], user_id=None, limit=50)
+
+    passages = {h.passage for h in hits}
+    assert ALICE_TEXT not in passages and BOB_TEXT not in passages
+    assert PUBLIC_TEXT in passages

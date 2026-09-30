@@ -195,6 +195,106 @@ def search_chunks(
     return hits
 
 
+# Section 38's "summaries" need breadth across a whole book, not the top
+# handful of passages nearest to one query — a novel-length book has far
+# more content than this many passages, so the sample is a cross-section,
+# not the text.
+REPRESENTATIVE_DEFAULT_LIMIT = 16
+
+
+@dataclass(frozen=True)
+class BookPassage:
+    """One passage from a book, chosen for its position, not its relevance
+    to anything. Deliberately not `SearchHit`: there was no query, so there
+    is no similarity to report — inventing one (even a fixed 0.0) would let
+    a caller mistake "spread evenly through the book" for "matched a
+    search," which it was not.
+    """
+
+    book_id: int
+    title: str
+    author: str | None
+    chunk_id: int
+    ordinal: int
+    passage: str
+    visibility: str
+    origin: str
+
+    def as_dict(self) -> dict:
+        return {
+            "book_id": self.book_id,
+            "title": self.title,
+            "author": self.author,
+            "chunk_id": self.chunk_id,
+            "ordinal": self.ordinal,
+            "passage": self.passage,
+            "visibility": self.visibility,
+            "origin": self.origin,
+        }
+
+
+def representative_chunks(
+    session: Session,
+    book_id: int,
+    *,
+    user_id: int | None = None,
+    limit: int = REPRESENTATIVE_DEFAULT_LIMIT,
+) -> list[BookPassage]:
+    """Passages spread evenly across one book's own reading order.
+
+    `search_chunks` ranks by distance to a question; a whole-book summary
+    has no question, and ranking its passages against one anyway would bias
+    the sample toward whatever that query happened to be. This instead
+    orders by `ordinal` — a book's own position, not a vector space — and
+    takes evenly spaced positions across the full range, so a novel is not
+    summarised from its first chapter onward.
+
+    Same `visible_chunks(user_id)` predicate as `search_chunks`: a caller
+    must not see more of a book's own passages here than semantic search
+    would already show them. Unlike `search_chunks`, this does not filter
+    by `embedding_model` or require an embedding at all — there is no
+    vector comparison to keep consistent, only the chunk's own stored text,
+    so a book can be summarised even on an instance with no encoder
+    configured.
+    """
+    limit = max(1, int(limit))
+    stmt = (
+        select(
+            BookChunk.id,
+            BookChunk.ordinal,
+            BookChunk.content,
+            BookChunk.visibility,
+            BookChunk.origin,
+            Book.title,
+            Book.author,
+        )
+        .join(Book, Book.id == BookChunk.book_id)
+        .where(visible_chunks(user_id))
+        .where(BookChunk.book_id == book_id)
+        .order_by(BookChunk.ordinal)
+    )
+    rows = session.execute(stmt).all()
+    if len(rows) > limit:
+        # Evenly spaced indices across the full ordinal range, strictly
+        # increasing because the step here is always > 1 — a spread, not
+        # just the first `limit` rows.
+        step = len(rows) / limit
+        rows = [rows[int(i * step)] for i in range(limit)]
+    return [
+        BookPassage(
+            book_id=book_id,
+            title=row.title,
+            author=row.author,
+            chunk_id=row.id,
+            ordinal=row.ordinal,
+            passage=row.content,
+            visibility=row.visibility,
+            origin=row.origin,
+        )
+        for row in rows
+    ]
+
+
 @dataclass(frozen=True)
 class BookHit:
     """A book-level semantic match — F-44's `book_vectors`, not a passage.

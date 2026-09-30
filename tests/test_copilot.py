@@ -32,6 +32,7 @@ from services.copilot import (  # noqa: E402
     KNOWN,
     UNCERTAIN,
     ask_about_book,
+    summarize_book,
     unsupported_quotes,
 )
 
@@ -495,3 +496,128 @@ def test_an_anonymous_caller_leaves_no_memory_behind(app_client):
             select(BookMemory).where(BookMemory.book_id == book_id)
         )
     assert count is None, "an anonymous question was recorded as a reader's memory"
+
+
+# --------------------------------------------------------------------------
+# summarize_book — section 38's "summaries", same grounding discipline
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def representative(monkeypatch):
+    """Replace `representative_chunks` the same way `retrieval` replaces
+    `search_chunks` above: these tests are about the summarisation and
+    quote-checking logic, not about picking rows out of the database."""
+    def _set(hits):
+        monkeypatch.setattr(copilot, "representative_chunks", lambda *a, **k: list(hits))
+
+    return _set
+
+
+def test_no_passages_means_no_model_call_for_a_summary(representative):
+    representative([])
+    llm = _Script("This book is about many things.")
+
+    result = summarize_book(None, book_id=42, llm=llm)
+
+    assert result["ok"] is True
+    assert result["citations"] == []
+    assert result["passages_considered"] == 0
+    assert llm.sent == [], "the model was called with nothing to summarise"
+
+
+def test_no_model_still_returns_the_sampled_passages(representative):
+    representative([_FakeHit(PASSAGE)])
+
+    result = summarize_book(None, book_id=42, llm=None)
+
+    assert result["ok"] is True
+    assert len(result["citations"]) == 1
+    assert result["citations"][0]["passage"] == PASSAGE
+    assert result["model"] is None
+
+
+def test_the_sampled_passages_are_actually_given_to_the_model(representative):
+    representative([_FakeHit(PASSAGE)])
+    llm = _Script("A short summary of the sampled passages.")
+
+    summarize_book(None, book_id=42, llm=llm)
+
+    sent = "\n".join(m["content"] for m in llm.sent[0])
+    assert PASSAGE in sent, "the model was asked to summarise without the passages"
+
+
+def test_summary_citations_are_bounded(representative):
+    representative([_FakeHit(PASSAGE, chunk_id=i) for i in range(20)])
+    llm = _Script("A short summary.")
+
+    result = summarize_book(None, book_id=42, llm=llm)
+
+    assert len(result["citations"]) == copilot.SUMMARY_MAX_CITATIONS
+    assert result["passages_considered"] == 20, (
+        "the count of what was sampled should not be trimmed with the citations"
+    )
+
+
+def test_an_unsupported_quote_in_a_summary_is_reported(representative):
+    """The same guard `ask_about_book` applies to a claimed label applies
+    here to the summary text itself: a quoted span not in any sampled
+    passage is invented, and must be reported, not silently accepted."""
+    representative([_FakeHit(PASSAGE)])
+    llm = _Script('This book opens with "a sun blazed over a calm blue harbour".')
+
+    result = summarize_book(None, book_id=42, llm=llm)
+
+    assert len(result["unsupported_quotes"]) == 1
+
+
+def test_a_summary_with_only_supported_quotes_reports_none(representative):
+    representative([_FakeHit(PASSAGE)])
+    llm = _Script('It opens: "the wind howled through the old manor house".')
+
+    result = summarize_book(None, book_id=42, llm=llm)
+
+    assert result["unsupported_quotes"] == []
+
+
+# --------------------------------------------------------------------------
+# GET /api/books/{book_id}/summary — through the real app
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not database_reachable(), reason="Postgres not reachable")
+def test_the_summary_endpoint_returns_a_summary_with_citations(app_client):
+    _, client, _ = app_client
+    book_id = _first_book_with_chunks()
+    assert book_id is not None, "no public chunks in the test database"
+
+    r = client.get(f"/api/books/{book_id}/summary")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["book_id"] == book_id
+    assert body["citations"], "summarised without citing anything sampled"
+    assert "unsupported_quotes" in body
+
+
+@pytest.mark.skipif(not database_reachable(), reason="Postgres not reachable")
+def test_the_summary_endpoint_is_reachable_anonymously(app_client):
+    _, client, _ = app_client
+    book_id = _first_book_with_chunks()
+
+    r = client.get(f"/api/books/{book_id}/summary")
+    assert r.status_code == 200
+
+
+@pytest.mark.skipif(not database_reachable(), reason="Postgres not reachable")
+def test_a_book_with_no_text_is_summarized_honestly_not_from_another_book(app_client):
+    _, client, scripted = app_client
+
+    r = client.get("/api/books/999999999/summary")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["citations"] == []
+    assert body["passages_considered"] == 0
+    assert scripted.sent == [], "the model was consulted about a book with no text"

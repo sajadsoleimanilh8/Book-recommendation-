@@ -1,8 +1,13 @@
-"""Reading Copilot — POST /api/books/{book_id}/ask — section 32, Phase 5.
+"""Reading Copilot — section 32, Phase 5 — and book summaries — section 38.
 
-Thin: it resolves the encoder and the model, then hands off to
-`services.copilot.ask_about_book`, which owns the pipeline and the
-grounding checks. The reasoning for those lives there.
+POST /api/books/{book_id}/ask and GET /api/books/{book_id}/summary. Both
+thin: they resolve what each pipeline needs, then hand off to
+`services.copilot`, which owns retrieval, the prompt, and the grounding
+checks. The reasoning for those lives there.
+
+The summary route needs no encoder — `services.copilot.summarize_book`
+samples passages by position (`services.search.representative_chunks`),
+not by similarity to a query, so there is no vector to build here.
 
 Section 33's memory is wired in here, at the API layer, and nowhere lower
 — `services.copilot` still does not know this module exists, matching its
@@ -38,7 +43,7 @@ import ratelimit
 from api.search import _get_search_encoder
 from auth import OptionalUser, SessionDep
 from schemas.copilot import AskRequest
-from services.copilot import ask_about_book
+from services.copilot import ask_about_book, summarize_book
 from services.memory import format_prior_context, recent_memory, record_turn
 from services.providers import llm as llm_module
 from services.providers.llm import LLMUnavailable, get_llm_provider
@@ -159,5 +164,55 @@ def ask_about_this_book(
             )
         except Exception as exc:
             log.warning(f"copilot: memory write failed for book {book_id}: {exc}")
+
+    return result
+
+
+@router.get("/api/books/{book_id}/summary")
+def summarize_this_book(
+    book_id: int,
+    request: Request,
+    user: OptionalUser,
+    session: SessionDep,
+):
+    """Summarise one book from passages sampled across it (section 38)."""
+    account_id = user.id if user else None
+    try:
+        ratelimit.hit_all(
+            # Same bucket as /ask: both are one generation against the
+            # single local GPU, and a per-caller ceiling should bound the
+            # two together, not double it by giving each its own budget.
+            ratelimit.caller_keys("copilot", request, account_id),
+            ratelimit.CHAT_LIMIT,
+            ratelimit.CHAT_WINDOW,
+        )
+    except ratelimit.RateLimited as limited:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"error": {"message": str(limited)}},
+            headers={"Retry-After": str(limited.retry_after)},
+        )
+
+    def _summarize(llm):
+        return summarize_book(session, book_id=book_id, user_id=account_id, llm=llm)
+
+    try:
+        provider = get_llm_provider()
+    except Exception as exc:  # pragma: no cover - construction is trivial
+        log.warning(f"copilot: no LLM provider available: {exc}")
+        provider = None
+
+    try:
+        if provider is None:
+            result = _summarize(None)
+        else:
+            with llm_module.slot():
+                result = _summarize(provider)
+    except LLMUnavailable as exc:
+        log.warning(f"copilot: model unavailable for book {book_id} summary: {exc}")
+        result = _summarize(None)
+
+    if not result.get("ok", True):
+        return main.error_response(result.get("error", "could not summarise"))
 
     return result

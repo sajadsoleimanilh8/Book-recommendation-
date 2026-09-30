@@ -3986,3 +3986,96 @@ exited on their own mid-session (the same OI-8 sleep/wake pattern as
 before) partway through building this migration. Restarted from the
 correct directory, data (29,975 books, 145,887 chunks) confirmed intact
 before the migration was applied.
+
+## Phase 5 third slice · book summaries (§38) — 2026-09-30
+
+§37 (Notes as Knowledge) and the rest of §38 (flashcards, quizzes, spaced
+repetition, progress tracking) were assessed and deliberately **not**
+built this pass. Each needs a real product decision this project has no
+standing to make alone — a note's data model, how a "concept" gets
+identified for §37's cross-book graph, which spaced-repetition algorithm,
+what a flashcard even is here — the same shape that kept Reading DNA
+(OI-12) and Explainable Recommendations (§26) unbuilt. §38's first listed
+feature, "summaries," was the one exception: concretely specified, needing
+no invented data model, and §38 itself gives the constraint that makes it
+buildable at all — *"Reuse the same RAG infrastructure. Do not create a
+second independent AI knowledge system."*
+
+### Why this needed a new retrieval primitive, not just a canned question
+
+The obvious shortcut — call `ask_about_book(question="Summarize this
+book")` — was rejected. `search_chunks` ranks passages by similarity to a
+query, and "summarize this book" is itself a query: it would retrieve
+whichever dozen passages happen to sit nearest that phrase in vector
+space, which for a novel-length book is a handful of passages from
+wherever the text happens to use summary-adjacent language, not a
+cross-section of the book. A summary needs breadth, not relevance.
+
+`services/search.py` gains `representative_chunks(session, book_id,
+user_id=None, limit=16)`: orders a book's own chunks by `ordinal` (its
+reading order, not a vector space) and takes evenly spaced positions
+across the full range, so a 20-chapter book is sampled from its beginning,
+middle, and end rather than its opening pages. Same `visible_chunks
+(user_id)` predicate `search_chunks` uses — a caller cannot see more of a
+book's own passages here than semantic search would already show them.
+Deliberately does **not** filter by `embedding_model` or require an
+embedding at all: there is no vector comparison to keep consistent, only
+each chunk's own stored text, so a book can be summarised even on an
+instance with no encoder configured — a strictly wider availability than
+`/ask`, worth noting since it means `GET /api/books/{id}/summary` never
+needs the 503 `/ask` returns when semantic search isn't set up.
+
+### The same grounding discipline, honestly adapted
+
+`services/copilot.py` gains `summarize_book`, built on
+`representative_chunks` instead of `search_chunks`, reusing
+`unsupported_quotes` unchanged: a quoted span in the summary still has to
+appear in a sampled passage, or it did not come from this book's text. No
+`known_from_book`/`inference`/`uncertain` label, on purpose — a summary is
+not one checkable claim the way an answer to a question is, so forcing
+that label onto it would be asking a question the feature doesn't have.
+The honesty a summary owes instead is coverage: the prompt requires the
+model to state, as part of the summary, that it is built from sampled
+excerpts and is not the complete text — sixteen passages spread across a
+novel is a cross-section, and presenting it as a full synopsis would be
+its own kind of fabrication.
+
+No hits (a book with no visible text) short-circuits before the model is
+called, same reasoning as `ask_about_book`'s check 1: nothing retrieved
+means nothing to have summarised, and asking anyway is how a confident
+summary of an unavailable book gets produced. No model available degrades
+to returning the sampled passages alone, section 12's shape.
+
+### Wired at `GET /api/books/{book_id}/summary`
+
+Thin, matching `/ask`: `OptionalUser`, same `copilot` rate-limit bucket as
+`/ask` (`ratelimit.CHAT_LIMIT`/`CHAT_WINDOW`) rather than a second budget —
+both are one generation against the single local GPU, and a per-caller
+ceiling should bound the two together. `GET`, not `POST`: unlike `/ask`
+there is no request body, and summarising a book is a read of a derived
+resource, not a submission.
+
+**Verified**: 6 new tests in `tests/test_search.py` for
+`representative_chunks` (spans the whole ordinal range rather than
+returning a prefix, returns everything when the book is smaller than the
+limit, works with no embedding present, empty for a book with no chunks,
+and the same visibility guarantees `search_chunks(book_id=...)` already
+has — a reader's own private chunk visible, another reader's never). 9 new
+tests in `tests/test_copilot.py`: `summarize_book`'s no-model-call-on-empty-
+retrieval, no-model-still-returns-passages degrade path, the sampled
+passages actually reaching the prompt, citations bounded at
+`SUMMARY_MAX_CITATIONS`, an unsupported quote reported, a fully-supported
+summary reporting none, plus 3 endpoint tests through the real app
+(citations present, reachable anonymously, a book with no text answered
+honestly with the model never consulted).
+
+Sabotage-verified three times: reverting `representative_chunks`'s spread
+to a plain prefix (`rows[:limit]`) — caught immediately, the spread test's
+own failure message names the fault line ("never reaches the back of the
+book — this is a prefix, not a spread"); disabling the quote check in
+`summarize_book` — caught by the unsupported-quote test; and disabling the
+no-hits short-circuit — caught by the model-not-called assertion, with the
+actual (unwanted) prompt shown in the failure.
+
+Two consecutive full-suite runs: 575 passed, 2 xfailed, 0 failed,
+identical both times.

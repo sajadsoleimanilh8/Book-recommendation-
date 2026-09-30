@@ -41,7 +41,7 @@ import logging
 import re
 from typing import Any, Optional
 
-from services.search import search_chunks
+from services.search import representative_chunks, search_chunks
 
 log = logging.getLogger("services.copilot")
 
@@ -246,5 +246,110 @@ def ask_about_book(
         # Reported rather than hidden: a caller is entitled to know the label
         # was not the model's own claim.
         "label_downgraded_from": downgraded_from,
+        "unsupported_quotes": bad_quotes,
+    }
+
+
+# Section 38's "summaries" feature. Built on `representative_chunks`, not
+# `search_chunks` — there is no question here to rank passages against,
+# only a book to sample evenly from. Kept in this module rather than a new
+# one: it is the same retrieve-then-ground shape as `ask_about_book`, reuses
+# its quote-checking, and section 38 itself says not to build a second,
+# independent AI knowledge system.
+REPRESENTATIVE_POOL = 16
+SUMMARY_MAX_CITATIONS = 6
+
+SUMMARY_SYSTEM_PROMPT = """You are a reading assistant producing a summary of a book from a sample of its passages, not the whole book.
+
+Rules, without exception:
+- The passages below are sampled at intervals across the book, in reading order. They are a cross-section, not the full text.
+- Summarise only what these passages show. Do not fill gaps from memory of this book, any edition of it, or any other book.
+- State plainly, as part of the summary, that it is based on sampled excerpts rather than the complete text, so a reader does not mistake it for a full synopsis.
+- When you quote the book, put the quoted words in double quotes and copy them exactly as they appear in a passage. Do not paraphrase inside quotation marks.
+- Keep the summary to one short paragraph."""
+
+
+def summarize_book(
+    session,
+    *,
+    book_id: int,
+    user_id: Optional[int] = None,
+    llm=None,
+) -> dict[str, Any]:
+    """A whole-book summary from evenly sampled passages.
+
+    No `known_from_book`/`inference`/`uncertain` label here: a summary is
+    not one checkable claim the way an answer to a question is, so there is
+    nothing for that label to describe. The honesty this function owes
+    instead is coverage — the prompt requires the model to say the summary
+    is sampled, not complete — and the same quote check `ask_about_book`
+    uses still applies: a quoted span has to appear in a retrieved passage,
+    or it did not come from this book's stored text.
+    """
+    hits = representative_chunks(
+        session, book_id, user_id=user_id, limit=REPRESENTATIVE_POOL
+    )
+
+    citations = [
+        {
+            "chunk_id": h.chunk_id,
+            "ordinal": h.ordinal,
+            "passage": h.passage,
+            "origin": h.origin,
+        }
+        for h in hits[:SUMMARY_MAX_CITATIONS]
+    ]
+
+    if not hits:
+        return {
+            "ok": True,
+            "book_id": book_id,
+            "summary": (
+                "I do not have any of this book's text to summarise, so I "
+                "cannot say. That is either because the book has no stored "
+                "text yet, or none of it is visible to you."
+            ),
+            "citations": [],
+            "passages_considered": 0,
+            "model": None,
+            "unsupported_quotes": [],
+        }
+
+    if llm is None:
+        return {
+            "ok": True,
+            "book_id": book_id,
+            "summary": "The reading assistant is not configured on this instance.",
+            "citations": citations,
+            "passages_considered": len(hits),
+            "model": None,
+            "unsupported_quotes": [],
+        }
+
+    passages = [h.passage for h in hits]
+    numbered = "\n\n".join(
+        f"[passage {i}, position {h.ordinal}]\n{h.passage}"
+        for i, h in enumerate(hits, 1)
+    )
+    response = llm.chat([
+        {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Passages from the book:\n\n{numbered}"},
+    ])
+
+    raw = (response.content or "").strip()
+    bad_quotes = unsupported_quotes(raw, passages)
+    if bad_quotes:
+        log.warning(
+            f"copilot: book {book_id} summary quoted {len(bad_quotes)} span(s) "
+            "no retrieved passage contains"
+        )
+
+    return {
+        "ok": True,
+        "book_id": book_id,
+        "summary": raw or "I cannot summarise this book from the passages sampled.",
+        "citations": citations,
+        "passages_considered": len(hits),
+        "model": getattr(response, "model", None),
         "unsupported_quotes": bad_quotes,
     }
