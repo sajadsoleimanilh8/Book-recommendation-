@@ -3899,3 +3899,90 @@ checks independently: disabling the downgrade, and disabling the
 no-passages guard — the latter caught by the real-database test too, and it
 produces exactly the predicted failure, a `known_from_book` answer about a
 book the system holds no text for.
+
+---
+
+## Phase 5 second slice · AI Book Memory (§33) — 2026-09-30
+
+The natural next layer on `services/copilot.py`, whose own docstring
+already said where this belonged: *"a summarised-memory layer belongs on
+top of it rather than smuggled into it."* Section 33's requirement is
+specific and directly testable: maintain memory per (reader, book), and
+**do not replay raw transcripts forever** — conversation, periodic
+summarisation, structured memory, in that order.
+
+### Enforced at storage, not just in the prompt
+
+`book_memory` (migration `a9011ba4228d`, applied and round-tripped on both
+databases): one row per turn — `user_id`, `book_id`, `summary`,
+`created_at` — append-only, never overwritten. `services/memory.py`'s
+`record_turn` never receives or stores the raw question or the model's
+full answer, only a short summary bounded to `MAX_SUMMARY_CHARS` (240) —
+a caller cannot regress this into transcript storage by passing something
+longer; it is truncated at a word boundary. One row per turn rather than
+one mutable row per (user, book) deliberately: collapsing many turns into
+one entry is a real compaction problem, and reading the most recent N rows
+already gives continuity without ever needing to solve it for this slice.
+
+**Summarisation degrades, it does not fail the turn.** No model available,
+or the model raises: `summarize_turn` falls back to a plain, deterministic
+"Asked: {question}" line rather than losing the memory entry or crashing a
+turn whose actual answer (the valuable part) already succeeded — the same
+section-12 shape the rest of this project follows.
+
+**Not grounded against the book, and does not need to be.** Unlike
+`copilot.ask_about_book`'s answer, a summary compresses a conversation that
+already happened (a question, and an answer that was itself grounded when
+it was produced) rather than making a new claim about the book's content.
+The property that matters here is brevity, not faithfulness-to-the-text,
+which is why this module carries no quote-checking of its own — that
+already lives in `copilot.py`, and duplicating it here would be checking
+the same thing twice for the wrong reason.
+
+### Wired at the API layer only
+
+`api/copilot.py`: reads this reader's recent memory before asking (passed
+into `ask_about_book`'s new, backward-compatible `prior_context` parameter
+— `None` by default, every one of the 20 pre-existing copilot tests
+unaffected), writes a new summary after a real answer exists. `services/copilot.py`
+still does not import or know about `services/memory.py`, matching its own
+stated design. An anonymous caller reads and writes nothing —
+`services.memory` already no-ops for `user_id=None`; the endpoint just
+calls it the same way for every caller rather than branching on identity
+itself.
+
+**The GPU-concurrency detail worth stating:** summarisation is a second,
+separate `llm_module.slot()` acquisition after the main answer's slot is
+released, not held open longer inside it. If that second slot is saturated,
+`record_turn` still runs with `llm=None`, so a busy GPU degrades the
+memory entry's quality rather than losing the turn's memory entirely.
+
+**Verified**: 15 tests in `tests/test_memory.py` (the property that
+matters most — a raw question/answer never survives verbatim in the
+summary — plus truncation, word-boundary cutting, model-outage and
+model-exception fallbacks, and the storage path: round-trip, per-book
+scoping, per-reader scoping, the bounded-and-most-recent-first read, and
+append-only writes proven by asserting two rows exist rather than one).
+2 new tests in `tests/test_copilot.py` proving the wiring end to end
+through the real app: a second question's own prompt to the model
+contains a short derived trace of the first turn and *not* the full first
+answer, and an anonymous caller leaves no row behind at all.
+
+Sabotage-verified three times: dropping the `user_id` filter from
+`recent_memory` (caught immediately — cross-reader memory leakage);
+allowing an anonymous `record_turn` through (caught by the test, and
+independently refused by `book_memory.user_id`'s own `NOT NULL`
+constraint — the database itself has no representation for a memory entry
+with no owner); and disabling the endpoint's own read of prior memory
+(caught by the end-to-end test, with the actual failed prompt shown in the
+assertion — the model was correctly still answering the second question
+from the retrieved passages, just with no memory of the first).
+
+Two consecutive full-suite runs: 560 passed, 2 xfailed, 0 failed,
+identical both times.
+
+Found along the way, unrelated to this slice: Docker containers had again
+exited on their own mid-session (the same OI-8 sleep/wake pattern as
+before) partway through building this migration. Restarted from the
+correct directory, data (29,975 books, 145,887 chunks) confirmed intact
+before the migration was applied.

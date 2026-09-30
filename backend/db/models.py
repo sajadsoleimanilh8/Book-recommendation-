@@ -469,6 +469,44 @@ class Reminder(Base):
     user: Mapped["User"] = relationship(back_populates="reminders")
 
 
+class BookMemory(Base):
+    """Structured, per-(reader, book) memory — section 33, Phase 5.
+
+    "Do not replay raw transcripts forever": this table never holds a
+    question or an answer verbatim, only a short summary the Reading
+    Copilot (services/copilot.py) produced from one turn. One row per
+    turn, append-only — never overwritten, never merged — so the memory
+    a reader has built up over a book is a real, inspectable history
+    rather than one mutable blob a bug could silently corrupt or a later
+    write could quietly erase.
+
+    Deliberately not one row per (user_id, book_id): section 33's example
+    ("previously asked about the narrator's motivation in Chapter 4") is
+    itself one specific fact from one specific turn, and collapsing many
+    turns into a single row is exactly the compaction problem this slice
+    does not need to solve to satisfy the spec — reading the most recent
+    N rows already gives continuity without ever holding a full
+    transcript.
+    """
+
+    __tablename__ = "book_memory"
+    __table_args__ = (
+        Index("ix_book_memory_user_book", "user_id", "book_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    book_id: Mapped[int] = mapped_column(
+        ForeignKey("books.id", ondelete="CASCADE"), nullable=False
+    )
+    # The structured summary itself — short by construction (services.memory
+    # bounds it), never the raw question or the model's full answer.
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = TimestampCol()
+
+
 # ==========================================================================
 # Observability — the answer to F-13
 # ==========================================================================

@@ -127,12 +127,20 @@ def ask_about_book(
     user_id: Optional[int] = None,
     llm=None,
     embedding_model: Optional[str] = None,
+    prior_context: Optional[str] = None,
 ) -> dict[str, Any]:
     """One turn of section 32's pipeline. Returns a plain dict.
 
     `query_vector` and `llm` are injected rather than built here, for the
     same reason `LibrarianDeps` injects its dependencies: this stays
     testable without an encoder or a model, and never imports `main`.
+
+    `prior_context` (section 33): plain text prepended to the prompt, ahead
+    of the retrieved passages. This function does not build it, store it,
+    or know it came from `services/memory.py` — the same reason this
+    module's own docstring gives for keeping memory a layer on top rather
+    than smuggled in here. `None` (every caller before this parameter
+    existed) leaves every existing test's behaviour unchanged.
     """
     question = (question or "").strip()
     if not question:
@@ -198,12 +206,13 @@ def ask_about_book(
         f"[passage {i}, position {h.ordinal}]\n{h.passage}"
         for i, h in enumerate(hits, 1)
     )
+    context_block = f"{prior_context}\n\n" if prior_context else ""
     response = llm.chat([
         {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "user",
             "content": (
-                f"Passages from the book:\n\n{numbered}\n\nQuestion: {question}"
+                f"{context_block}Passages from the book:\n\n{numbered}\n\nQuestion: {question}"
             ),
         },
     ])

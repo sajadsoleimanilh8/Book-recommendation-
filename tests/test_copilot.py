@@ -369,3 +369,129 @@ def test_a_book_with_no_text_is_answered_honestly_not_from_another_book(app_clie
     assert body["citations"] == []
     assert body["passages_considered"] == 0
     assert scripted.sent == [], "the model was consulted about a book with no text"
+
+
+# --------------------------------------------------------------------------
+# Section 33's memory, wired through the real endpoint
+# --------------------------------------------------------------------------
+
+
+class _RoutingScript:
+    """Distinguishes the main answer prompt from `services.memory`'s
+    summarisation prompt, so a test can assert on each separately instead
+    of both collapsing to one fixed reply."""
+
+    def __init__(self, answer_content, summary_content):
+        self.answer_content = answer_content
+        self.summary_content = summary_content
+        self.sent = []
+
+    def chat(self, messages, *, tools=None):
+        self.sent.append(messages)
+        text = messages[-1]["content"]
+        content = self.summary_content if "Summarise this one exchange" in text else self.answer_content
+
+        class _R:
+            pass
+
+        r = _R()
+        r.content = content
+        r.model = "routing-script"
+        r.tool_calls = []
+        return r
+
+
+@pytest.fixture
+def signed_in_client(fitted_app, monkeypatch):
+    """A registered reader, not an anonymous one — memory is per reader and
+    no-ops entirely for `user_id=None`, so exercising it needs an account."""
+    import uuid
+
+    import ratelimit
+
+    main_mod, client = fitted_app
+    ratelimit.reset()
+
+    tag = uuid.uuid4().hex[:12]
+    r = client.post(
+        "/api/auth/register",
+        json={"email": f"copilot-{tag}@example.com", "password": "correct horse battery"},
+    )
+    assert r.status_code < 400, r.text
+    token = r.json()["access_token"]
+    user_id = r.json()["user"]["id"]
+
+    yield client, {"Authorization": f"Bearer {token}"}, user_id
+
+    ratelimit.reset()
+    from db import SessionLocal
+    from models import User
+
+    with SessionLocal() as session:
+        u = session.get(User, user_id)
+        if u is not None:
+            session.delete(u)  # book_memory cascades
+            session.commit()
+
+
+@pytest.mark.skipif(not database_reachable(), reason="Postgres not reachable")
+def test_a_second_question_carries_the_first_ones_memory(signed_in_client, monkeypatch):
+    """The end-to-end proof of section 33: ask about a book, ask again, and
+    the second call's own prompt to the model must contain a trace of the
+    first — not the raw question or full answer (that would be exactly the
+    transcript replay section 33 forbids), a short derived summary.
+    """
+    client, headers, _ = signed_in_client
+    book_id = _first_book_with_chunks()
+    assert book_id is not None
+
+    scripted = _RoutingScript(
+        answer_content="It opens on a dark and stormy night.\nGROUNDING: inference",
+        summary_content="Asked about how the book opens; told it starts on a stormy night.",
+    )
+    monkeypatch.setattr("api.copilot.get_llm_provider", lambda: scripted)
+
+    first = client.post(
+        f"/api/books/{book_id}/ask", json={"question": "How does it open?"}, headers=headers
+    )
+    assert first.status_code == 200, first.text
+
+    second = client.post(
+        f"/api/books/{book_id}/ask", json={"question": "Tell me more."}, headers=headers
+    )
+    assert second.status_code == 200, second.text
+
+    # The message actually sent to the model for the second question.
+    second_answer_call = next(
+        m for m in scripted.sent
+        if "Summarise this one exchange" not in m[-1]["content"]
+        and m is not scripted.sent[0]
+    )
+    sent_text = second_answer_call[-1]["content"]
+
+    assert "Asked about how the book opens" in sent_text, (
+        "the first turn's memory did not reach the second turn's prompt"
+    )
+    assert "It opens on a dark and stormy night" not in sent_text, (
+        "the full first answer leaked into the prompt instead of a summary of it"
+    )
+
+
+@pytest.mark.skipif(not database_reachable(), reason="Postgres not reachable")
+def test_an_anonymous_caller_leaves_no_memory_behind(app_client):
+    """No account, no row -- `services.memory` already guarantees this;
+    this is the endpoint-level confirmation that the wiring respects it."""
+    from db import SessionLocal
+    from models import BookMemory
+    from sqlalchemy import select
+
+    _, client, _ = app_client
+    book_id = _first_book_with_chunks()
+
+    client.post(f"/api/books/{book_id}/ask", json={"question": "What happens?"})
+
+    with SessionLocal() as session:
+        count = session.scalar(
+            select(BookMemory).where(BookMemory.book_id == book_id)
+        )
+    assert count is None, "an anonymous question was recorded as a reader's memory"
