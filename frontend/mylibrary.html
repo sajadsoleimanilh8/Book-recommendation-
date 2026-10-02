@@ -55,7 +55,7 @@
       <p>
         Books you own a copy of, kept private to your account. Once a file is
         processed you can summarise it, ask questions about it, and find it
-        in passage search.
+        in passage search. EPUB, PDF and TXT.
       </p>
     </div>
 
@@ -65,10 +65,10 @@
       <!-- Upload ------------------------------------------------------- -->
       <section class="panel">
         <div class="drop" id="drop">
-          <p><strong>Drop an EPUB or TXT file here</strong></p>
+          <p><strong>Drop an EPUB, PDF or TXT file here</strong></p>
           <p class="muted" style="margin:6px 0 12px;">or</p>
           <label class="btn btn-secondary" for="file">Choose a file</label>
-          <input type="file" id="file" accept=".epub,.txt" />
+          <input type="file" id="file" accept=".epub,.pdf,.txt" />
           <p class="note" id="chosen"></p>
         </div>
 
@@ -87,7 +87,11 @@
           <button class="btn btn-primary" id="uploadBtn" disabled>Upload</button>
         </div>
         <div id="uploadOut" class="note"></div>
-        <p class="note">EPUB and TXT, up to 50&nbsp;MB. PDF extraction is planned but not built yet (§29).</p>
+        <p class="note">
+          EPUB, PDF and TXT, up to 50&nbsp;MB. A PDF needs a text layer
+          — a scan of a book is images of words, and reading those needs
+          OCR, which is not supported.
+        </p>
       </section>
 
       <!-- Library ------------------------------------------------------ -->
@@ -104,8 +108,8 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const MAX_BYTES = 50 * 1024 * 1024;   // mirrors MAX_UPLOAD_BYTES
-    const SUPPORTED = ['epub', 'txt'];    // mirrors SUPPORTED_FORMATS
-    const DEFERRED = ['pdf'];             // mirrors DEFERRED_FORMATS (§29)
+    const SUPPORTED = ['epub', 'pdf', 'txt'];  // mirrors SUPPORTED_FORMATS
+    const DEFERRED = [];                       // mirrors DEFERRED_FORMATS (§29)
 
     let chosenFile = null;
 
@@ -145,8 +149,11 @@
       // Checked here as well as on the server. The server is the authority;
       // this only saves a reader a 50 MB round trip to be told no.
       if (DEFERRED.includes(ext)) {
+        // Empty today. Kept so a format accepted by the spec before its
+        // extractor exists gets a clear refusal rather than a file that
+        // uploads and then goes nowhere.
         out.className = 'err';
-        out.textContent = 'PDF uploads are planned (§29) but extraction is not built yet. Upload EPUB or TXT for now.';
+        out.textContent = `.${ext} is planned but extraction is not built yet.`;
       } else if (!SUPPORTED.includes(ext)) {
         out.className = 'err';
         out.textContent = `Unsupported file type ".${ext}". Upload an EPUB or TXT file.`;
@@ -322,7 +329,7 @@
 
         if (!books.length) {
           out.className = 'muted';
-          out.textContent = 'Nothing uploaded yet. Add an EPUB or TXT file above.';
+          out.textContent = 'Nothing uploaded yet. Add an EPUB, PDF or TXT file above.';
           return;
         }
 

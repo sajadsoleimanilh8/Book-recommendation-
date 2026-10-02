@@ -17,7 +17,7 @@ Full evidence for every `F-` reference is in [docs/PHASE-0-AUDIT.md](docs/PHASE-
 | 2b — Book intelligence | **Shipped** 2026-08-29 | §22 BookChunk, §27 semantic search, §18 availability honesty. Found F-34…F-37. |
 | S — Structure restructure | **Complete** 2026-09-10, branch `refactor/structure-cleanup` | Cleanup + Phase C (engine.py 1722→22) + Phase D (main.py 1842→165). Zero behaviour change: 264 passed / 3 xfailed and the 9 golden baselines unmoved throughout. Found F-49, F-50, B-10…B-13. |
 | 3 — AI recommendation + Librarian | **Shipped**, two deliberate gaps | Librarian tool loop with grounding guard (F-22), reading-depth relevance target (F-26), bandit, book vectors (F-44). **Not built:** §26 explainable recommendations (would need either guessed scope or data that does not exist yet) and Reading DNA (OI-12, no spec). Both are product calls, not backlog. |
-| 4 — Personal library | **Shipped** 2026-09-25, except PDF | §21/§22 isolation, §29 upload + extraction (EPUB/TXT), §30 background ingest, §31/§59 private Librarian search. Found F-57…F-61, F-64. **PDF extraction deferred as a later slice** — deferred, not blocked. |
+| 4 — Personal library | **Shipped** 2026-09-25; PDF 2026-10-02 | §21/§22 isolation, §29 upload + extraction (EPUB/TXT, PDF added 2026-10-02), §30 background ingest, §31/§59 private Librarian search. Found F-57…F-61, F-64. **PDF extraction deferred as a later slice** — deferred, not blocked. |
 | 5 — AI reading | **In progress** | Shipped: §32 Reading Copilot, §33 AI Book Memory, §38's "summaries" slice, §39's tracking/nudge slice. **Not built:** §37 notes-as-knowledge, the rest of §38 (flashcards, quizzes, spaced repetition) — each needs a product decision, logged where they were assessed. F-26a also closes here and is now due. |
 | 6–12 | **Barely started** | Phase 6 has the August audiobook endpoint, now reachable from the UI (F-66 closed 2026-10-02; F-18 still open — no audio has ever been generated, so the engine itself is still unexercised in anger). Phase 7 (dashboard, mood §40) and Phase 8 (evaluation, which owns F-51) not begun. |
 
@@ -3255,12 +3255,17 @@ parser: `.txt` must decode as UTF-8, `.epub` must be a valid zip whose
 without reading it, since `zf.read` decompresses whatever the archive
 claims and a crafted entry could otherwise expand to gigabytes inside one
 request. Fully validating EPUB structure is extraction's job, a later
-slice. **PDF is deliberately rejected for now**, not queued: section 29
-lists it as a supported format, but its extraction pass does not exist yet,
-and accepting it would mean a file sitting at `upload_status="uploaded"`
-indefinitely with nothing telling the reader that nothing is coming — the
-same "honest not-yet beats a silent stall" reasoning as F-17 and F-53. One
-line to remove once PDF extraction ships.
+slice. A `.pdf` must carry a `%PDF-` marker in its opening bytes — looked
+for in the first 1,024 rather than only at offset 0, since some producers
+emit junk first and every reader tolerates it.
+
+~~**PDF is deliberately rejected for now**, not queued: accepting it would
+mean a file sitting at `upload_status="uploaded"` indefinitely with nothing
+telling the reader that nothing is coming.~~ **Shipped 2026-10-02** — see
+"PDF extraction" below. `DEFERRED_FORMATS` is now empty but kept, because
+the upload route still branches on it: the next format the spec accepts
+before its extractor exists gets a clear refusal rather than a file that
+goes nowhere.
 
 **Storage is never influenced by caller input.** The file on disk is named
 `{server-generated uuid}.{validated extension}`; `source_filename` keeps
@@ -4496,4 +4501,84 @@ was `/pages`, which is F-68.
 The upload limiter also showed itself working: ten uploads an hour, and a
 run of tests exhausted it and got a 429 with `Retry-After`, which is the
 branch `mylibrary.html` already handles.
+
+## PDF extraction — §29's third format, 2026-10-02
+
+EPUB and TXT shipped with the Phase 4 upload slice; PDF was listed by the
+spec and held back, because queuing PDFs with no extractor would have left
+files at `uploaded` forever behind a pipeline that could not read them.
+`services/extraction.extract_pdf` closes that.
+
+**The dependency is a choice, so it is recorded as one.** `pypdf==6.19.0`,
+BSD-3-Clause, pure Python, no system libraries. PyMuPDF extracts better and
+is faster, and is AGPL — an obligation this project should take
+deliberately if it takes it at all, not pick up through a text extractor.
+Worth revisiting if extraction fidelity turns out to matter more than the
+licence.
+
+### The case this slice exists to get right
+
+Not a PDF that works — a PDF that *looks* like it works. A scan is images
+of words: valid file, valid pages, valid structure, zero characters. With no
+guard it extracts ~nothing, chunks into nothing, embeds nothing, and the row
+is still marked `ready`. The reader gets a book in their library that
+silently cannot answer a single question about itself, and nothing anywhere
+reports a problem.
+
+That is the F-66 shape exactly — a path that reads as success because the
+failure has no voice — so it gets its own exception and its own message:
+
+| | |
+|---|---|
+| guard | mean characters per page < 50 (`MIN_CHARS_PER_PAGE`) |
+| raised | `NoTextLayer`, distinct from "extraction failed" |
+| told to the reader | that it is most likely a scan, that reading scans needs OCR, and that a text-exported PDF or an EPUB will work |
+
+The threshold is an **average over the document**, not a per-page rule,
+because real books have blank versos and photographic plates; a document
+that is mostly text must not be refused for the pages that are not. Both
+sides are pinned: one dense page among six empty ones extracts fine, while
+30 pages carrying one character each is refused.
+
+`NoTextLayer` is deliberately not "extraction failed". Nothing went wrong —
+the file was read correctly and has no characters in it. One of those is a
+bug to report; the other is "this file cannot work here", and the reader can
+act on the difference.
+
+### The rest
+
+* **Encrypted PDFs.** Many are "encrypted" with an empty user password
+  purely to set permission flags; those are decrypted and read, because
+  refusing them would turn away readable books. A real password is reported
+  as something the reader can fix, not as a failure. An encryption method
+  pypdf cannot handle says so.
+* **One unreadable page does not lose the other 399.** A page that throws is
+  logged and skipped; the chars-per-page check still has to pass afterwards,
+  so skipping pages cannot quietly become a way to accept a husk.
+* **Pages join with `PAGE_SEPARATOR`**, the same shape `extract_epub`
+  produces from spine items, so the chunker sees one format regardless of
+  how the book arrived.
+* **Known fidelity limit:** reading order comes from pypdf and is good for
+  single-column prose. A heavily multi-column layout can interleave. That is
+  a limit worth knowing, not a failure, and it is not detectable the way an
+  absent text layer is.
+
+### Tests
+
+`tests/test_pdf_extraction.py`, 15 tests. The fixtures are **hand-built
+PDFs** — a catalogue, a page tree, content streams and a real xref table —
+rather than a test-only writer dependency, and the first test checks the
+builder itself, since a wrong builder would make every test below pass or
+fail for the wrong reason.
+
+Both ends are covered. A real PDF upload goes all the way through to `ready`
+and then answers a question about itself *with citations*. A scanned PDF
+upload fails loudly: the job reports `failed`, the reason reaches the client,
+and the row does not end up `ready`.
+
+`test_the_upload_page_mirrors_the_servers_format_lists` is the drift guard:
+`mylibrary.html` checks the extension before sending a 50 MB file, so the
+format list exists twice, and the copy in the page fell behind the moment
+this shipped. The server stays the authority; the test keeps the convenience
+copy honest.
 

@@ -192,6 +192,20 @@ def test_reingesting_the_catalogue_does_not_delete_uploads(upload):
 
 
 def test_catalogue_only_excludes_uploads_and_keeps_catalogue(upload):
+    """`catalogue_only` must remove exactly the uploads and nothing else.
+
+    The assertion used to be `len(catalogue) == len(everything) - 1`, which
+    said the same thing only while this fixture's upload was the *only* one
+    in the database. That held until PDF extraction shipped and its
+    end-to-end tests began leaving uploads of their own inside the same
+    session — then this failed, in a full run but never alone, which is the
+    most expensive way for a test to be wrong.
+
+    Stated as the invariant instead: the rows removed are precisely the rows
+    that have an owner. That is what `catalogue_only` claims, it does not
+    depend on how many uploads exist, and it still fails if the helper takes
+    one catalogue row too many.
+    """
     from sqlalchemy import select
 
     from models import Book, catalogue_only
@@ -199,11 +213,13 @@ def test_catalogue_only_excludes_uploads_and_keeps_catalogue(upload):
     _, book_id = upload
     everything = _ids(select(Book.id))
     catalogue = _ids(catalogue_only(select(Book.id)))
+    owned = _ids(select(Book.id).where(Book.owner_id.isnot(None)))
 
     assert book_id in everything, "the fixture did not create an upload"
+    assert book_id in owned, "the fixture's upload has no owner_id"
     assert book_id not in catalogue
-    assert len(catalogue) == len(everything) - 1, (
-        "catalogue_only removed more than the upload"
+    assert everything - catalogue == owned, (
+        "catalogue_only did not remove exactly the owned rows"
     )
 
 

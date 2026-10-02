@@ -213,3 +213,31 @@ def test_the_book_page_covers_every_grounding_label():
         "book.html has wording for label(s) the backend never emits: "
         + ", ".join(sorted(invented))
     )
+
+
+def test_the_upload_page_mirrors_the_servers_format_lists():
+    """`mylibrary.html` checks the extension before sending a file, so a
+    reader with a 50 MB book is told no without the round trip. That means
+    the list exists twice, and the copy in the page can fall behind — which
+    it did the moment PDF extraction shipped, leaving a page that refused a
+    format the server had started accepting.
+
+    The server stays the authority; this only keeps the convenience copy
+    honest.
+    """
+    import main  # noqa: F401  (import order: main must load first)
+    from api import library
+
+    page = (FRONTEND / "mylibrary.html").read_text(encoding="utf-8")
+
+    def js_list(name):
+        match = re.search(rf"const {name} = \[(.*?)\]", page)
+        assert match, f"{name} not found in mylibrary.html"
+        return set(re.findall(r"'([a-z0-9]+)'", match.group(1)))
+
+    assert js_list("SUPPORTED") == set(library.SUPPORTED_FORMATS), (
+        "mylibrary.html's SUPPORTED list has drifted from SUPPORTED_FORMATS"
+    )
+    assert js_list("DEFERRED") == set(library.DEFERRED_FORMATS), (
+        "mylibrary.html's DEFERRED list has drifted from DEFERRED_FORMATS"
+    )

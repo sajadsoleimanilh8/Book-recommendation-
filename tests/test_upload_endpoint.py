@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import sys
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -137,11 +138,40 @@ def uploader(client):
         ).all()
         for p in paths:
             if p:
-                (main.UPLOADS_DIR / p).unlink(missing_ok=True)
+                _unlink_when_free(main.UPLOADS_DIR / p)
         user = session.get(User, user_id)
         if user is not None:
             session.delete(user)  # books.owner_id cascades
             session.commit()
+
+
+def _unlink_when_free(path, attempts: int = 25, pause: float = 0.2) -> None:
+    """Delete an upload, waiting out the ingest job that may still hold it.
+
+    An accepted upload queues `process_upload` on `jobs.LIBRARY_REGISTRY`,
+    which opens the file to extract it. Tearing down while that is in flight
+    races the job, and the race has two sides: on Windows the unlink fails
+    with `PermissionError` (WinError 32) because the file is open, and on any
+    platform a successful unlink makes the job fail with `FileNotFoundError`
+    mid-extraction. Both were observed — the second as a teardown warning
+    long before the first was hit.
+
+    Waiting briefly lets the job finish and makes the deletion the last thing
+    to happen rather than a coin toss. A file that is still locked after five
+    seconds is left on disk rather than failing the test it belongs to; the
+    uploads directory is gitignored and this is the test database's own
+    scratch.
+    """
+    import time
+
+    for attempt in range(attempts):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                return
+            time.sleep(pause)
 
 
 def _auth(token: str) -> dict:
@@ -303,7 +333,82 @@ def test_upload_epub_succeeds(uploader):
         assert all(c.visibility == "private" for c in chunks)
 
 
-def test_upload_rejects_pdf_as_deferred(uploader):
+def test_upload_accepts_pdf_now_that_extraction_exists(uploader):
+    """This asserted a 400 and the deferred-format message until PDF
+    extraction shipped (2026-10-02). The refusal was correct while there was
+    no extractor — a queued PDF would have sat at `uploaded` forever — and
+    is wrong now, so the test says the opposite rather than being deleted:
+    the point it was guarding (that the two refusal paths are distinct) is
+    still worth keeping, and now lives in the two tests below.
+
+    The bytes here are not a real PDF beyond the header, so the upload is
+    accepted (the header check is all the upload route does) and extraction
+    is what fails, asynchronously. That split is the contract:
+    `_validate_content` rules out the obvious mismatch, and judging the file
+    properly is extraction's job.
+    """
+    r = uploader["client"].post(
+        "/api/library/upload",
+        headers=_auth(uploader["token"]),
+        files={"file": ("book.pdf", b"%PDF-1.4 fake but well-formed-looking", "application/pdf")},
+        data={"attests_ownership": "true"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["file_format"] == "pdf"
+    with SessionLocal() as session:
+        stored = session.scalar(select(Book).where(Book.owner_id == uploader["user_id"]))
+        assert stored is not None, "an accepted upload must be stored"
+        assert stored.file_format == "pdf"
+
+    # Let the queued ingest finish before the fixture deletes the file under
+    # it. A test that starts async work owns waiting for it; leaving that to
+    # teardown is how the WinError 32 race appeared in the first place.
+    if body.get("job_id"):
+        for _ in range(30):
+            state = uploader["client"].get(f"/api/library/jobs/{body['job_id']}").json()
+            if state.get("status") in ("done", "succeeded", "failed", "error"):
+                break
+            time.sleep(0.5)
+        # Extraction *should* fail here: the bytes are a header and nothing
+        # else. That is the contract being asserted — the upload route
+        # accepts on the header check, and judging the file is extraction's
+        # job, reported asynchronously rather than at upload time.
+        assert state.get("status") in ("failed", "error"), state
+
+
+def test_upload_rejects_a_file_that_is_not_a_pdf_at_all(uploader):
+    """The content check, which is what remains of the old PDF refusal:
+    extension-first, content-checked. A renamed zip is turned away before
+    anything is stored."""
+    r = uploader["client"].post(
+        "/api/library/upload",
+        headers=_auth(uploader["token"]),
+        files={"file": ("book.pdf", b"PK actually a zip", "application/pdf")},
+        data={"attests_ownership": "true"},
+    )
+    assert r.status_code == 400
+    msg = r.json()["error"]["message"].lower()
+    assert "pdf" in msg
+    with SessionLocal() as session:
+        assert session.scalar(select(Book).where(Book.owner_id == uploader["user_id"])) is None
+
+
+def test_a_deferred_format_would_still_get_its_own_message(uploader, monkeypatch):
+    """`DEFERRED_FORMATS` is empty now but the branch is kept, so the next
+    format the spec accepts before its extractor exists gets a clear refusal
+    rather than a file that uploads and goes nowhere. Checked by deferring a
+    format rather than by waiting for one.
+
+    This is what the old `test_upload_rejects_pdf_as_deferred` was really
+    protecting: that the deferred path is distinguishable from the generic
+    "unsupported" one.
+    """
+    from api import library
+
+    monkeypatch.setattr(library, "SUPPORTED_FORMATS", {"epub", "txt"})
+    monkeypatch.setattr(library, "DEFERRED_FORMATS", {"pdf"})
+
     r = uploader["client"].post(
         "/api/library/upload",
         headers=_auth(uploader["token"]),
@@ -312,14 +417,10 @@ def test_upload_rejects_pdf_as_deferred(uploader):
     )
     assert r.status_code == 400
     msg = r.json()["error"]["message"].lower()
-    # Specifically the deferred-format message, not just "unsupported" —
-    # "pdf" alone would also appear in the generic rejection's echoed
-    # extension (".pdf"), which would let this test pass even if the
-    # dedicated DEFERRED_FORMATS branch were deleted entirely.
+    # The dedicated branch, not the generic one — "pdf" alone would also
+    # appear in the generic rejection's echoed extension.
     assert "not built yet" in msg or "extraction" in msg
     assert "unsupported" not in msg
-    with SessionLocal() as session:
-        assert session.scalar(select(Book).where(Book.owner_id == uploader["user_id"])) is None
 
 
 def test_upload_rejects_unsupported_extension(uploader):

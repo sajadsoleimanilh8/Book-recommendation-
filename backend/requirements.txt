@@ -44,6 +44,11 @@ email-validator==2.3.0   # pydantic EmailStr
 EbookLib==0.20            # EPUB spine/manifest/OPF parsing
 beautifulsoup4==4.15.0    # strip an EPUB spine item's XHTML down to prose
 lxml==6.1.3               # EbookLib's own XML parser (not called directly)
+pypdf==6.19.0             # PDF text-layer extraction. Chosen over PyMuPDF,
+                          # which extracts better but is AGPL — an obligation
+                          # this project should take deliberately, not pick up
+                          # through a text extractor. pypdf is BSD-3-Clause,
+                          # pure Python, and needs no system libraries.
 
 # --- Tests ---
 pytest==9.1.1

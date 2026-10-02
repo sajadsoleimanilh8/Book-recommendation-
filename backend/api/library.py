@@ -43,14 +43,16 @@ log = logging.getLogger("api.library")
 
 router = APIRouter()
 
-# Section 29 lists EPUB, PDF and TXT as the initial formats. PDF is accepted
-# by the spec but its extraction pass is explicitly the *next* slice, not
-# this one — queuing PDFs now would mean files sitting at "uploaded" behind
-# a pipeline that does not exist, with nothing telling the reader that
-# nothing is coming. Rejected here with a clear reason instead, and this is
-# the one line to remove once PDF extraction ships.
-SUPPORTED_FORMATS = {"epub", "txt"}
-DEFERRED_FORMATS = {"pdf"}
+# Section 29's three initial formats, all three now extractable. PDF was
+# held back in the Phase 4 slice on purpose — queuing PDFs with no extractor
+# would have left files at "uploaded" behind a pipeline that could not read
+# them — and `services/extraction.extract_pdf` is what unblocked it.
+#
+# `DEFERRED_FORMATS` is kept rather than deleted: it is empty today, and the
+# upload route still branches on it, so the next format that arrives before
+# its extractor gets a clear refusal instead of a file that goes nowhere.
+SUPPORTED_FORMATS = {"epub", "pdf", "txt"}
+DEFERRED_FORMATS: set[str] = set()
 
 # Generous for text-primary content (even an image-heavy EPUB rarely nears
 # this), bounded against one caller filling the disk. A documented,
@@ -91,6 +93,16 @@ def _validate_content(fmt: str, content: bytes) -> str | None:
             content.decode("utf-8")
         except UnicodeDecodeError:
             return "The file's content is not valid UTF-8 text."
+        return None
+
+    if fmt == "pdf":
+        # The header is the cheap, decisive check: a PDF starts with %PDF-
+        # and a version. Producers sometimes emit a few bytes of junk first,
+        # which readers tolerate, so the marker is looked for in the opening
+        # bytes rather than only at offset 0. Not a parse — that is
+        # extraction's job, and the comment above says why.
+        if b"%PDF-" not in content[:1024]:
+            return "The file does not look like a valid PDF (no %PDF- header)."
         return None
 
     if fmt == "epub":
@@ -182,9 +194,13 @@ def upload_book(
     ext = Path(original_name).suffix.lstrip(".").lower()
 
     if ext in DEFERRED_FORMATS:
+        # Named from `ext`, not hardcoded. This said "PDF" until PDF
+        # extraction shipped, at which point the branch still worked and its
+        # message was about the one format it could no longer be reached for.
+        usable = ", ".join(sorted(f".{f}" for f in SUPPORTED_FORMATS))
         return main.error_response(
-            "PDF uploads are part of the plan (section 29) but extraction "
-            "for PDF is not built yet — upload EPUB or TXT for now.",
+            f".{ext} uploads are part of the plan (section 29) but extraction "
+            f"for {ext} is not built yet — upload {usable} for now.",
         )
     if ext not in SUPPORTED_FORMATS:
         return main.error_response(
