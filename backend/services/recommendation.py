@@ -700,8 +700,17 @@ def apply_filters(
     q: Optional[str] = None,
     max_price: Optional[float] = None,
     mood: Optional[str] = None,
+    audiobook: Optional[bool] = None,
 ) -> List[Dict[str, Any]]:
     out = data[:]  # Create a copy
+    if audiobook is not None:
+        # F-66 follow-on. `/books` sorts by rating, and the narratable books
+        # are exactly the ones with no ratings (Gutenberg), so they sit at
+        # the bottom of 29,975 rows. The audiobook page reads
+        # `/books?limit=50` and therefore could never see a single book it
+        # was able to play — the page was fixed and still had nothing to
+        # offer. This is the filter that lets it ask for what it can use.
+        out = [b for b in out if bool(b.get("audiobook")) is audiobook]
     if genre:
         out = [b for b in out if genre.lower() in b.get("genre", "").lower()]
     if language:

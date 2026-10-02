@@ -345,33 +345,64 @@
 
         async function loadBooks() {
             const select = document.getElementById('bookSelect');
+
+            const addOption = (book, idx, group) => {
+                const opt = document.createElement('option');
+                opt.value = idx;
+                opt.textContent = `${book.title} by ${book.author}`;
+                opt.dataset.id = book.id;
+                opt.dataset.title = book.title;
+                opt.dataset.author = book.author;
+                opt.dataset.desc = book.description || '';
+                opt.dataset.thumbnail = book.thumbnail || '';
+                opt.dataset.hasAudio = book.audiobook ? 'true' : 'false';
+                group.appendChild(opt);
+            };
+
             try {
-                // Try to fetch from API if running
-                const res = await fetch(`${API_BASE}/books?limit=50`);
-                if (!res.ok) throw new Error('API not reachable');
-                
-                const data = await res.json();
-                const books = data.items || [];
-                
-                // Filter only books with audiobook flag or if you want to allow TTS for all
-                // Here we assume if audiobook:true, it has a file. If not, we might TTS it.
-                // For this demo, let's list all books but indicate how they will be played.
-                
+                // F-66 follow-on: `/books` sorts by rating, and the books
+                // that can be narrated are exactly the ones with no ratings
+                // (Project Gutenberg), so they sit at the bottom of 29,975
+                // rows. Asking for the top 50 returned a list with *nothing*
+                // playable in it — the player was fixed and still had
+                // nothing to offer. Narratable books are now requested
+                // explicitly, and the two kinds are labelled rather than
+                // mixed into one list that implies they behave alike.
+                const [narratableRes, generalRes] = await Promise.all([
+                    fetch(`${API_BASE}/books?limit=50&audiobook=true`),
+                    fetch(`${API_BASE}/books?limit=50`),
+                ]);
+                if (!narratableRes.ok || !generalRes.ok) throw new Error('API not reachable');
+
+                const narratable = (await narratableRes.json()).items || [];
+                const general = ((await generalRes.json()).items || [])
+                    .filter(b => !b.audiobook);
+
                 select.innerHTML = '<option value="">Select a book...</option>';
-                
-                books.forEach((book, idx) => {
-                    const opt = document.createElement('option');
-                    opt.value = idx; // Use index as ID for simplicity in this demo
-                    opt.textContent = `${book.title} by ${book.author}`;
-                    opt.dataset.id = book.id;
-                    opt.dataset.title = book.title;
-                    opt.dataset.author = book.author;
-                    opt.dataset.desc = book.description || '';
-                    opt.dataset.thumbnail = book.thumbnail || '';
-                    opt.dataset.hasAudio = book.audiobook || false;
-                    select.appendChild(opt);
-                });
-                
+                let idx = 1;
+
+                if (narratable.length) {
+                    const group = document.createElement('optgroup');
+                    group.label = 'Narrated audiobook — Project Gutenberg';
+                    narratable.forEach(book => addOption(book, idx++, group));
+                    select.appendChild(group);
+                }
+
+                if (general.length) {
+                    // Naming what this actually is. `startTTS` reads
+                    // `book.description`, so it narrates the blurb, not the
+                    // book — and only 29% of the catalogue has one. Calling
+                    // it "audiobook" was part of what made F-66 invisible.
+                    const group = document.createElement('optgroup');
+                    group.label = 'Description read aloud by your browser';
+                    general.forEach(book => addOption(book, idx++, group));
+                    select.appendChild(group);
+                }
+
+                if (!narratable.length && !general.length) {
+                    select.innerHTML = '<option value="">No books available</option>';
+                }
+
             } catch (err) {
                 console.error('Error loading books:', err);
                 select.innerHTML = '<option value="">Failed to load books (Is backend running?)</option>';

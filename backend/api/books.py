@@ -41,6 +41,7 @@ def get_books(
     mood: Optional[str] = None,
     language: Optional[str] = None,
     rating_min: Optional[float] = None,
+    audiobook: Optional[bool] = None,
 ) -> Dict[str, Any]:
     items = apply_filters(
         main.BOOKS,
@@ -48,7 +49,8 @@ def get_books(
         rating_min=rating_min,
         language=language,
         q=q,
-        mood=mood
+        mood=mood,
+        audiobook=audiobook,
     )
     items = sorted(
         items,

@@ -202,3 +202,43 @@ def test_format_gives_the_same_answer_as_the_flag(flag):
     # The specific case that was wrong: a long book from a source that
     # cannot be narrated.
     assert infer_format({**GOODREADS, "pages": 900}) == "Print"
+
+
+# -- the page has to be able to reach a book it can play ------------------
+
+
+def test_the_player_can_actually_reach_a_narratable_book():
+    """Found while proving F-18 end to end, and it made the F-66 fix moot in
+    practice: `/books` sorts by rating, and the books that can be narrated
+    are exactly the ones with no ratings (Gutenberg), so they sit at the
+    bottom of 29,975 rows. The player read `/books?limit=50` and got a list
+    with nothing playable in it — fixed page, nothing to offer.
+    """
+    from fastapi.testclient import TestClient
+
+    import main
+
+    with TestClient(main.app) as client:
+        plain = client.get("/books?limit=50").json()["items"]
+        asked = client.get("/books?limit=50&audiobook=true").json()["items"]
+
+    # The gap itself: the default list is no use to this page.
+    assert sum(1 for b in plain if b["audiobook"]) == 0, (
+        "the top-50-by-rating list now contains narratable books; if that is "
+        "deliberate, this test should be rewritten rather than deleted"
+    )
+    # And the filter that closes it.
+    assert asked, "no narratable books returned"
+    assert all(b["audiobook"] for b in asked)
+    assert all(b["format"] == "Audiobook" for b in asked), "format must agree"
+
+
+def test_the_filter_is_a_filter_in_both_directions():
+    from fastapi.testclient import TestClient
+
+    import main
+
+    with TestClient(main.app) as client:
+        no = client.get("/books?limit=20&audiobook=false").json()["items"]
+
+    assert no and not any(b["audiobook"] for b in no)
