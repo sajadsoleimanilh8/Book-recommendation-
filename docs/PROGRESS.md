@@ -3520,6 +3520,9 @@ Carried deliberately, with the reason. Each has a closing phase.
 | ~~F-52~~ | ~~`test_every_priced_result_actually_has_a_known_price` fails intermittently — a `KeyError: 'availability'`.~~ | **Closed 2026-09-26** — root-caused by deterministic reproduction rather than re-running the flake: `_gutenberg_to_api()` omitted the key entirely, because `price_and_availability()`'s `infer_source()` misclassified a bare Gutenberg dict (no `book_id`, no `thumbnail`) as `google_books`. Fixed at the source and covered by two new tests | ✅ |
 | ~~F-65~~ | ~~**The standing enrichment job has made zero progress since 2026-09-25, and the reason is that it starts before the network does.**~~ | **Closed 2026-10-02** — all three remedies, on the product owner's approval. (a) A preflight asks Open Library (free, unauthenticated) before the first book and waits out a cold network across 15/30/60/120s; a pass that reaches nothing marks nothing and now exits **2**, so "Last Result: 0" can no longer mean both outcomes. (b) The breaker needs 3 strikes **spanning ≥120s**, with 5/20/60/120s backoff between them, bounded by a 600s total sleep budget — a burst of instant 403s no longer ends the day's pass, while a sustained refusal still stops it. 403 stays out of the retry ladder, as before: retrying a real one spends quota to learn nothing. (c) `describe_http_error` records the `<title>`, 600 characters of body and the `Via` / `X-Debug-Tracking-Id` / `Server` / `Content-Type` / `Retry-After` / `WWW-Authenticate` headers. WakeToRun left off. Verified live: preflight green in 2.9s, then a 20-book pass returned 18 ok / 1 partial / 1 not_found — the first progress since 2026-09-25 | ✅ |
 | ~~F-66~~ | ~~**The audiobook player has never called the audiobook API.** `frontend/Audiobook.html:453` fetches `/audio/{id}`, which is not a registered route.~~ | **Closed 2026-10-02** — three faults, each hiding the next, and the reported URL was only the third. (1) `audiobook` was `pages > 350`: not a statement about audio at all, flagging **7,150** books of which **236** were synthesisable while **6,071** that were went unflagged — `_gutenberg_to_api` hardcoded `False` for the one source that works, so the flag was nearer inverted than imprecise. (2) The flag reached the player via `dataset.hasAudio`, and `dataset` values are strings: `"false"` is truthy, so *every* book took the real-audio branch regardless. (3) That branch fetched the unregistered URL and 404'd into a `catch` that started browser speech, so the failure was inaudible. Fixed: `audiobook_available()` in `services/catalogue.py` now answers from `source == "gutenberg"` (what `AudiobookEngine.generate` can actually fetch text for) and is shared by all three serialisers; the player calls `/api/audiobook/{id}/stream`, probes with HEAD to tell "not generated yet" from a real failure, and the F-19 generate/poll client that was never written now exists behind an explicit button. `format`'s `"Audiobook" if pages > 350` is the same falsehood in a third guise but has **no consumer anywhere** — left in place and noted rather than removed in the same change | ✅ |
+| **F-67** | **64.5% of the catalogue displays a rating nobody gave.** **13,035** google_books rows carry `average_rating = 4.0035747133` with `ratings_count = **0**` — a rating with zero ratings, which cannot be anything but fabricated; the constant is within 0.001 of the mean rating of all rated rows (4.00404…), so it is mean imputation. **All 6,307** gutenberg rows carry a flat `rating = 4.0, ratings_count = 100` — identical for every one, so the count is invented too. Together **19,342 of 29,977 (64.5%)**. `/books` **sorts** by this value and `rating_min` **filters** on it, so ranking and filtering are both driven by imputed numbers, and the UI prints them as fact | Found 2026-10-02 while building the Phase 4/5 frontend — the new book page needed to know whether a rating was safe to print. Exactly the F-36 pattern (every row had `list_price = 0.00`, rendered as "Free") and the F-66 pattern (a flag asserting what it could not know), and larger than both. Section 18's rule is about price and availability; the same principle plainly covers ratings. **Not fixed** — what to show instead (null, "unrated", a count threshold, dropping the field) is a product decision, as "unknown" was for F-36. The new `book.html` omits rating deliberately. Noticed in passing: the sort has no count threshold, so two 5-star ratings outrank 4.78M at 4.5 | **Needs a decision** |
+| **F-68** | **An uploaded book cannot be read, only summarised.** `GET /api/books/{id}/pages` resolves through `main.BOOK_BY_ID`, the in-memory catalogue of 29,975 rows, so an upload (DB id ~88,000) is never found and every page request 404s — even after Extract → Chunk → Embed has completed and the row says `ready`. Summary, ask and reading-stats all work on the same book, because those go through the database | Found 2026-10-02 by running the upload flow end to end. Same root shape as F-66's stream route: a per-book endpoint keyed to the catalogue rather than to the book. **Not fixed** — the fix needs an ownership check (`owned_by`, which exists) or one signed-in reader could page through another's private upload, so it is a slice with a privacy dimension and its own tests, not a lookup change. `mylibrary.html` says plainly that reading is unavailable rather than linking to a 404 | **Needs building** |
+| ~~F-69~~ | ~~**`questionnair.html` shipped a nav of four dead links.**~~ | **Closed 2026-10-02** — Discover / Library / Audio / Settings were all `href="#"`. Pointed at real pages, and `test_no_page_ships_a_dead_placeholder_nav` now allows at most one `href="#"` per nav (the convention for marking the current page). `chatbot.html` remains the one page with no nav and no `#auth-slot` at all — left alone, since giving it one is a layout change rather than a fix | ✅ |
 
 ---
 
@@ -4413,4 +4416,83 @@ docs endpoints and would have passed while proving nothing.
 itself remains unexercised outside its tests. The path to it is open now;
 whether to actually run synthesis against a third-party TTS service is a
 decision, not a fix.
+
+## Phase 4/5 frontend — the features that had no UI, 2026-10-02
+
+Five shipped backend features had nothing in the app that called them:
+upload + library, the Copilot `/ask`, summary, reading-stats, and semantic
+search. Three pages now cover all five.
+
+| page | features | auth |
+|---|---|---|
+| `search.html` | semantic search, books and passages, with language/genre/year filters | optional (a token includes the reader's own uploads) |
+| `book.html` | summary, ask, reading-stats, per book | reading-stats only |
+| `mylibrary.html` | upload with the §30 attestation, ingest-job polling, the reader's own books | required |
+
+Nine of the ten pages now link them; `chatbot.html` is the exception and
+has no nav to extend (F-69).
+
+**Built from the route table, not from guesses.** F-66 was a page fetching
+a URL nobody served, and the code comment admitted it was assumed. So every
+endpoint here was read out of the OpenAPI schema first and then called live
+to see its real response shape before any markup was written. That caught
+things no amount of reading would have: `/api/library` returns rows keyed
+`book_id`, not `id`; auth takes `email`, not `username`; `/api/books/{id}`
+returns the book unwrapped.
+
+It also caught a mistake of exactly the F-66 kind in this work. `book.html`
+had wording for three grounding labels — `known_from_book`, `not_in_book`
+and `general_knowledge`. Only the first exists. `copilot.py` emits `KNOWN`,
+`INFERENCE` and `UNCERTAIN`; the other two were plausible siblings of a real
+value, invented and never checked, and a live `uncertain` response would
+have rendered as a bare slug. Driving the pages against the running app is
+what found it, which is the argument for doing that rather than trusting a
+careful read.
+
+### The guards
+
+`tests/test_frontend_routes.py` generalises F-66's one-page check to all of
+them: every `/api/…` URL a page or shared script names is asserted against
+the app's OpenAPI paths, every page-to-page link against the filesystem, and
+`book.html`'s grounding labels against `copilot.py`'s own constants, so a
+fourth label fails a test rather than rendering a slug. All three were
+verified to bite: a bad URL, a missing page file and an invented label each
+fail with a message naming the real alternatives.
+
+Two deliberate limits, stated rather than implied: a URL assembled by
+concatenation that the scanner cannot see is not checked, and prose is
+excluded, because the F-65 and F-66 write-ups both quote endpoints in
+comments — counting those would fail the guard on its own documentation.
+
+### What the pages say that the old ones did not
+
+* **Citations are shown, not summarised.** Summary and ask both return the
+  passages they used; both are rendered. A grounded answer the reader
+  cannot check is just a confident one.
+* **The API's self-reporting is surfaced.** `label_downgraded_from` and
+  `unsupported_quotes` are the backend telling on itself — that the label
+  was not the model's own claim, or that a quote was removed because no
+  retrieved passage contained it. Both are displayed rather than dropped.
+* **Zero is distinguished from broken.** `sessions_considered: 0` is the
+  common case for reading-stats and now reads "you have not read this book
+  yet", not a row of dashes.
+* **Ratings are omitted** — see F-67. 64.5% of them are imputed, and this
+  was the page that would have printed them.
+* **`has_description: false`** is shown as a pill in book-scope search:
+  that result's vector was built from title and author alone, because 71%
+  of the catalogue still has no description (F-15).
+
+### Verified live
+
+Each page's exact request sequence was driven against the running app: both
+search scopes plus filters; book, summary, ask and the 401 on reading-stats;
+and the whole upload path — attestation refused without the claim, PDF
+refused with the §29 message, a real TXT accepted, the ingest job polled to
+`done` (4 chunks, 4 embedded, `ready`), the library listing it, and summary,
+ask and reading-stats all answering for that uploaded book. The one failure
+was `/pages`, which is F-68.
+
+The upload limiter also showed itself working: ten uploads an hour, and a
+run of tests exhausted it and got a 429 with `Retry-After`, which is the
+branch `mylibrary.html` already handles.
 

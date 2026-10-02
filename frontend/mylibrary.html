@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>My uploads · DigiKitab</title>
+  <link rel="stylesheet" href="./css/styles.css" />
+  <style>
+    .drop { border: 1.5px dashed rgba(255,255,255,.2); border-radius: 14px;
+            padding: 28px; text-align: center; transition: background .15s, border-color .15s; }
+    .drop.over { border-color: rgba(124,156,255,.8); background: rgba(124,156,255,.08); }
+    .drop input[type=file] { display: none; }
+    .attest { display: flex; gap: 10px; align-items: flex-start; margin: 16px 0;
+              font-size: 14px; line-height: 1.6; }
+    .attest input { margin-top: 4px; flex: 0 0 auto; }
+    .upload-row { border: 1px solid rgba(255,255,255,.08); border-radius: 12px;
+                  padding: 14px 16px; margin-bottom: 10px; display: flex;
+                  gap: 16px; align-items: center; flex-wrap: wrap;
+                  background: rgba(255,255,255,.03); }
+    .upload-row .grow { flex: 1 1 240px; }
+    .upload-row h3 { font-size: 16px; margin-bottom: 3px; }
+    .upload-row .meta { font-size: 13px; opacity: .68; }
+    .pill { font-size: 12px; padding: 3px 10px; border-radius: 999px;
+            background: rgba(255,255,255,.08); }
+    .pill.ready { background: rgba(86,224,197,.2); }
+    .pill.work { background: rgba(255,200,120,.2); }
+    .pill.bad { background: rgba(255,140,140,.22); }
+    .muted { opacity: .72; }
+    .err { color: #ffb4b4; }
+    .ok { color: #8fe6c8; }
+    .note { font-size: 13px; opacity: .7; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <a class="brand" href="./index.html"><span class="brand-badge">DK</span><span>DigiKitab Next</span></a>
+      <nav class="nav">
+        <a href="./index.html">Home</a>
+        <a href="./filter.html">Library</a>
+        <a href="./search.html">Search</a>
+        <a class="active" href="./mylibrary.html">My uploads</a>
+        <a href="./chatbot.html">Chat</a>
+        <a href="./Audiobook.html">Audio</a>
+        <a href="./user.html">Workspace</a>
+      </nav>
+      <!-- OI-6: rendered by auth.js's mountAuthNav() into #auth-slot. -->
+      <span id="auth-slot"></span>
+    </div>
+  </header>
+
+  <main class="container section">
+    <div class="section-title">
+      <h2>My uploads</h2>
+      <p>
+        Books you own a copy of, kept private to your account. Once a file is
+        processed you can summarise it, ask questions about it, and find it
+        in passage search.
+      </p>
+    </div>
+
+    <div id="gate"></div>
+
+    <div id="app" style="display:none;">
+      <!-- Upload ------------------------------------------------------- -->
+      <section class="panel">
+        <div class="drop" id="drop">
+          <p><strong>Drop an EPUB or TXT file here</strong></p>
+          <p class="muted" style="margin:6px 0 12px;">or</p>
+          <label class="btn btn-secondary" for="file">Choose a file</label>
+          <input type="file" id="file" accept=".epub,.txt" />
+          <p class="note" id="chosen"></p>
+        </div>
+
+        <!-- Section 30: the claim comes before any file handling, and the
+             server refuses without it. Stating it plainly here rather than
+             burying it, because it is a legal assertion the reader makes. -->
+        <label class="attest">
+          <input type="checkbox" id="attest" />
+          <span>
+            I own a legal copy of this book. DigiKitab stores it privately to
+            my account and does not share or redistribute it.
+          </span>
+        </label>
+
+        <div class="actions">
+          <button class="btn btn-primary" id="uploadBtn" disabled>Upload</button>
+        </div>
+        <div id="uploadOut" class="note"></div>
+        <p class="note">EPUB and TXT, up to 50&nbsp;MB. PDF extraction is planned but not built yet (§29).</p>
+      </section>
+
+      <!-- Library ------------------------------------------------------ -->
+      <section class="section">
+        <div class="section-title">
+          <h2>Your books</h2>
+        </div>
+        <div id="libOut" class="muted">Loading…</div>
+      </section>
+    </div>
+  </main>
+
+  <script src="./js/auth.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const MAX_BYTES = 50 * 1024 * 1024;   // mirrors MAX_UPLOAD_BYTES
+    const SUPPORTED = ['epub', 'txt'];    // mirrors SUPPORTED_FORMATS
+    const DEFERRED = ['pdf'];             // mirrors DEFERRED_FORMATS (§29)
+
+    let chosenFile = null;
+
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (m) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[m]));
+    }
+
+    function fmtBytes(n) {
+      if (n == null) return '—';
+      if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+      if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+      return `${n} B`;
+    }
+
+    function fmtDate(iso) {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      return isNaN(d) ? '—' : d.toLocaleDateString(undefined,
+        { year: 'numeric', month: 'short', day: 'numeric' });
+    }
+
+    // --- choosing a file --------------------------------------------------
+
+    function setChosen(file) {
+      chosenFile = file || null;
+      const out = $('uploadOut');
+      out.className = 'note';
+      out.textContent = '';
+
+      if (!chosenFile) { $('chosen').textContent = ''; refreshButton(); return; }
+
+      const ext = (chosenFile.name.split('.').pop() || '').toLowerCase();
+      $('chosen').textContent = `${chosenFile.name} · ${fmtBytes(chosenFile.size)}`;
+
+      // Checked here as well as on the server. The server is the authority;
+      // this only saves a reader a 50 MB round trip to be told no.
+      if (DEFERRED.includes(ext)) {
+        out.className = 'err';
+        out.textContent = 'PDF uploads are planned (§29) but extraction is not built yet. Upload EPUB or TXT for now.';
+      } else if (!SUPPORTED.includes(ext)) {
+        out.className = 'err';
+        out.textContent = `Unsupported file type ".${ext}". Upload an EPUB or TXT file.`;
+      } else if (chosenFile.size === 0) {
+        out.className = 'err';
+        out.textContent = 'That file is empty.';
+      } else if (chosenFile.size > MAX_BYTES) {
+        out.className = 'err';
+        out.textContent = `That file is ${fmtBytes(chosenFile.size)}; the limit is 50 MB.`;
+      }
+      refreshButton();
+    }
+
+    function fileIsUsable() {
+      if (!chosenFile) return false;
+      const ext = (chosenFile.name.split('.').pop() || '').toLowerCase();
+      return SUPPORTED.includes(ext) && chosenFile.size > 0 && chosenFile.size <= MAX_BYTES;
+    }
+
+    function refreshButton() {
+      $('uploadBtn').disabled = !(fileIsUsable() && $('attest').checked);
+    }
+
+    $('file').addEventListener('change', (e) => setChosen(e.target.files[0]));
+    $('attest').addEventListener('change', refreshButton);
+
+    const drop = $('drop');
+    for (const ev of ['dragenter', 'dragover']) {
+      drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); });
+    }
+    for (const ev of ['dragleave', 'drop']) {
+      drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('over'); });
+    }
+    drop.addEventListener('drop', (e) => {
+      if (e.dataTransfer.files && e.dataTransfer.files[0]) setChosen(e.dataTransfer.files[0]);
+    });
+
+    // --- uploading --------------------------------------------------------
+
+    $('uploadBtn').addEventListener('click', async () => {
+      if (!fileIsUsable() || !$('attest').checked) return;
+      const btn = $('uploadBtn');
+      const out = $('uploadOut');
+      btn.disabled = true;
+      out.className = 'note';
+      out.textContent = `Uploading ${chosenFile.name}…`;
+
+      const form = new FormData();
+      form.append('file', chosenFile);
+      form.append('attests_ownership', 'true');
+
+      try {
+        // No Content-Type header: the browser sets the multipart boundary,
+        // and overriding it produces a body the server cannot parse.
+        const res = await AUTH.authFetch('/api/library/upload', {
+          method: 'POST', body: form,
+        });
+
+        if (res.status === 429) {
+          const wait = res.headers.get('Retry-After');
+          const body = await res.json().catch(() => ({}));
+          out.className = 'err';
+          out.textContent = (body.error?.message || 'Too many uploads.') +
+            (wait ? ` Try again in ${wait}s.` : '');
+          return;
+        }
+        if (res.status === 401) { showGate(true); return; }
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          out.className = 'err';
+          out.textContent = data.error?.message || data.detail ||
+                            `Upload failed (${res.status}).`;
+          return;
+        }
+
+        out.className = 'ok';
+        out.textContent = data.message || 'Uploaded.';
+        setChosen(null);
+        $('file').value = '';
+        $('attest').checked = false;
+        await loadLibrary();
+
+        // The upload is durable before processing starts, so a saturated
+        // queue means "not yet", not "lost". Only poll when there is a job.
+        if (data.job_id) {
+          await pollIngest(data.job_id, data.book_id);
+        } else {
+          out.className = 'note';
+          out.textContent = `${data.message} Processing is queued and will start shortly.`;
+        }
+      } catch (e) {
+        console.error('upload failed', e);
+        out.className = 'err';
+        out.textContent = 'Could not reach the upload service.';
+      } finally {
+        refreshButton();
+      }
+    });
+
+    /** Poll an ingest job: Extract → Chunk → Embed → ready (§29). */
+    async function pollIngest(jobId, bookId) {
+      const out = $('uploadOut');
+      const deadline = Date.now() + 10 * 60 * 1000;
+      let delay = 1000;
+
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(delay * 1.5, 5000);
+
+        let job;
+        try {
+          const res = await fetch(`/api/library/jobs/${encodeURIComponent(jobId)}`);
+          if (res.status === 404) {
+            out.className = 'note';
+            out.textContent = 'Processing finished a while ago (the job record has expired).';
+            await loadLibrary();
+            return;
+          }
+          job = await res.json();
+        } catch (e) {
+          console.error('ingest poll failed', e);
+          out.className = 'err';
+          out.textContent = 'Lost contact while processing. Reload to see the current state.';
+          return;
+        }
+
+        if (job.status === 'done' || job.status === 'succeeded') {
+          const r = job.result || {};
+          out.className = 'ok';
+          out.textContent = r.chunks != null
+            ? `Processed: ${r.chunks} chunk(s), ${r.embedded} embedded. Ready to search and ask about.`
+            : 'Processed and ready.';
+          await loadLibrary();
+          return;
+        }
+        if (job.status === 'failed' || job.status === 'error') {
+          out.className = 'err';
+          out.textContent = `Processing failed: ${job.error || 'unknown error'}. ` +
+                            'The file is stored; you can delete and re-upload it.';
+          await loadLibrary();
+          return;
+        }
+        out.className = 'note';
+        out.textContent = `Processing… (${job.status})`;
+      }
+
+      out.className = 'note';
+      out.textContent = 'Still processing — reload the page to check again.';
+    }
+
+    // --- the library ------------------------------------------------------
+
+    const STATUS_PILL = {
+      ready: ['ready', 'ready'],
+      uploaded: ['work', 'awaiting processing'],
+      processing: ['work', 'processing'],
+      failed: ['bad', 'processing failed'],
+    };
+
+    async function loadLibrary() {
+      const out = $('libOut');
+      try {
+        const res = await AUTH.authFetch('/api/library');
+        if (res.status === 401) { showGate(true); return; }
+        if (!res.ok) {
+          out.className = 'err';
+          out.textContent = `Could not load your library (${res.status}).`;
+          return;
+        }
+        const data = await res.json();
+        const books = data.books || [];
+
+        if (!books.length) {
+          out.className = 'muted';
+          out.textContent = 'Nothing uploaded yet. Add an EPUB or TXT file above.';
+          return;
+        }
+
+        out.className = '';
+        out.innerHTML = books.map((b) => {
+          const [kind, label] = STATUS_PILL[b.upload_status] || ['', b.upload_status || 'unknown'];
+          const ready = b.upload_status === 'ready';
+          return `
+            <div class="upload-row">
+              <div class="grow">
+                <h3>${esc(b.title)}</h3>
+                <div class="meta">
+                  ${esc(b.author || 'Unknown author')} ·
+                  ${esc((b.file_format || '').toUpperCase())} ·
+                  ${fmtBytes(b.file_size_bytes)} ·
+                  added ${fmtDate(b.created_at)}
+                </div>
+              </div>
+              <span class="pill ${kind}">${esc(label)}</span>
+              <div class="actions">
+                ${ready
+                  ? `<a class="btn btn-secondary" href="./book.html?id=${encodeURIComponent(b.book_id)}">Summarise &amp; ask</a>`
+                  : '<span class="muted" style="font-size:13px;">available once processed</span>'}
+              </div>
+            </div>`;
+        }).join('') +
+        `<p class="note">
+           ${books.length} book${books.length === 1 ? '' : 's'}, visible only to you.
+           Reading uploaded books page by page is not available yet — summarising,
+           asking and passage search are.
+         </p>`;
+      } catch (e) {
+        console.error('library load failed', e);
+        out.className = 'err';
+        out.textContent = 'Could not reach the library service.';
+      }
+    }
+
+    // --- the sign-in gate -------------------------------------------------
+
+    function showGate(expired) {
+      const next = encodeURIComponent(location.pathname + location.search);
+      $('app').style.display = 'none';
+      $('gate').innerHTML = `
+        <div class="panel">
+          <p>${expired ? 'Your session has expired.' : 'Uploads belong to an account, so this page needs you signed in.'}</p>
+          <div class="actions" style="margin-top:12px;">
+            <a class="btn btn-primary" href="./login.html?next=${next}">Log in</a>
+          </div>
+        </div>`;
+    }
+
+    AUTH.mountAuthNav();
+    if (!AUTH.isLoggedIn()) {
+      showGate(false);
+    } else {
+      $('app').style.display = '';
+      loadLibrary();
+    }
+  </script>
+</body>
+</html>

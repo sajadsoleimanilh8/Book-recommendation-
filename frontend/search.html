@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Semantic search · DigiKitab</title>
+  <link rel="stylesheet" href="./css/styles.css" />
+  <style>
+    /* Page-local only. Anything reusable belongs in styles.css. */
+    .search-bar { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+    .search-bar .grow { flex: 1 1 320px; }
+    .field label { display: block; font-size: 13px; opacity: .75; margin-bottom: 6px; }
+    .scope-toggle { display: inline-flex; border: 1px solid rgba(255,255,255,.14);
+                    border-radius: 10px; overflow: hidden; }
+    .scope-toggle button { background: transparent; color: #eef3ff; border: 0;
+                           padding: 10px 16px; cursor: pointer; font-size: 14px; }
+    .scope-toggle button[aria-pressed="true"] { background: rgba(124,156,255,.22); }
+    .result { border: 1px solid rgba(255,255,255,.08); border-radius: 14px;
+              padding: 16px 18px; margin-bottom: 12px; background: rgba(255,255,255,.03); }
+    .result h3 { font-size: 17px; margin-bottom: 4px; }
+    .result .meta { font-size: 13px; opacity: .7; display: flex; gap: 14px;
+                    flex-wrap: wrap; margin-bottom: 8px; }
+    .passage { font-size: 14px; line-height: 1.7; white-space: pre-wrap;
+               border-left: 2px solid rgba(124,156,255,.5); padding-left: 12px;
+               margin-top: 8px; opacity: .9; }
+    .score { font-variant-numeric: tabular-nums; }
+    .pill { font-size: 12px; padding: 2px 9px; border-radius: 999px;
+            background: rgba(255,255,255,.08); }
+    .pill.own { background: rgba(86,224,197,.18); }
+    .empty { opacity: .72; padding: 28px 0; }
+    .err { color: #ffb4b4; }
+    .backend-note { font-size: 12px; opacity: .6; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <a class="brand" href="./index.html"><span class="brand-badge">DK</span><span>DigiKitab Next</span></a>
+      <nav class="nav">
+        <a href="./index.html">Home</a>
+        <a href="./filter.html">Library</a>
+        <a class="active" href="./search.html">Search</a>
+        <a href="./mylibrary.html">My uploads</a>
+        <a href="./chatbot.html">Chat</a>
+        <a href="./Audiobook.html">Audio</a>
+        <a href="./user.html">Workspace</a>
+      </nav>
+      <!-- OI-6: rendered by auth.js's mountAuthNav() into #auth-slot. -->
+      <span id="auth-slot"></span>
+    </div>
+  </header>
+
+  <main class="container section">
+    <div class="section-title">
+      <h2>Semantic search</h2>
+      <p>
+        Search by meaning rather than keyword. <strong>Books</strong> ranks whole
+        titles; <strong>Passages</strong> searches inside the text we hold and
+        shows the matching excerpt.
+      </p>
+    </div>
+
+    <div class="panel">
+      <div class="search-bar">
+        <div class="field grow">
+          <label for="q">What are you looking for?</label>
+          <input class="input" id="q" type="search" autocomplete="off"
+                 placeholder="a quiet novel about grief at sea" />
+        </div>
+        <div class="field">
+          <label>Scope</label>
+          <div class="scope-toggle" role="group" aria-label="Search scope">
+            <button type="button" id="scopeBooks" aria-pressed="true">Books</button>
+            <button type="button" id="scopePassages" aria-pressed="false">Passages</button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="limit">Results</label>
+          <select class="select" id="limit">
+            <option>10</option><option>20</option><option>40</option>
+          </select>
+        </div>
+        <div class="actions">
+          <button class="btn btn-primary" id="goBtn">Search</button>
+        </div>
+      </div>
+
+      <div class="search-bar" style="margin-top:14px;">
+        <div class="field">
+          <label for="language">Language</label>
+          <input class="input" id="language" maxlength="8" placeholder="en" style="width:110px;" />
+        </div>
+        <div class="field">
+          <label for="genre">Genre</label>
+          <input class="input" id="genre" maxlength="64" placeholder="any" style="width:180px;" />
+        </div>
+        <div class="field">
+          <label for="minYear">From year</label>
+          <input class="input" id="minYear" type="number" min="0" max="2100" style="width:120px;" />
+        </div>
+        <div class="field">
+          <label for="maxYear">To year</label>
+          <input class="input" id="maxYear" type="number" min="0" max="2100" style="width:120px;" />
+        </div>
+      </div>
+    </div>
+
+    <div id="status" class="empty"></div>
+    <div id="results"></div>
+    <div id="backendNote" class="backend-note"></div>
+  </main>
+
+  <script src="./js/auth.js"></script>
+  <script>
+    // Same origin, same reasoning as every other page: the backend serves
+    // these files, so a second origin would be one more thing to keep in
+    // step. AUTH.API_BASE exists for the same reason.
+    const API_BASE = '';
+
+    const els = {
+      q: document.getElementById('q'),
+      limit: document.getElementById('limit'),
+      language: document.getElementById('language'),
+      genre: document.getElementById('genre'),
+      minYear: document.getElementById('minYear'),
+      maxYear: document.getElementById('maxYear'),
+      go: document.getElementById('goBtn'),
+      status: document.getElementById('status'),
+      results: document.getElementById('results'),
+      note: document.getElementById('backendNote'),
+      scopeBooks: document.getElementById('scopeBooks'),
+      scopePassages: document.getElementById('scopePassages'),
+    };
+
+    let byPassage = false;
+    let inFlight = null;
+
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (m) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[m]));
+    }
+
+    function setScope(passages) {
+      byPassage = passages;
+      els.scopeBooks.setAttribute('aria-pressed', String(!passages));
+      els.scopePassages.setAttribute('aria-pressed', String(passages));
+      if (els.q.value.trim()) search();
+    }
+    els.scopeBooks.addEventListener('click', () => setScope(false));
+    els.scopePassages.addEventListener('click', () => setScope(true));
+
+    els.go.addEventListener('click', search);
+    els.q.addEventListener('keydown', (e) => { if (e.key === 'Enter') search(); });
+
+    async function search() {
+      const q = els.q.value.trim();
+      if (!q) {
+        els.status.textContent = 'Type something to search for.';
+        els.results.innerHTML = '';
+        els.note.textContent = '';
+        return;
+      }
+
+      // The endpoint validates these, so only send what was filled in —
+      // an empty `language=` is a different request from no language.
+      const params = new URLSearchParams({ q, limit: els.limit.value });
+      if (byPassage) params.set('by_passage', 'true');
+      for (const [key, el] of [['language', els.language], ['genre', els.genre],
+                               ['min_year', els.minYear], ['max_year', els.maxYear]]) {
+        const v = el.value.trim();
+        if (v) params.set(key, v);
+      }
+
+      els.status.textContent = 'Searching…';
+      els.results.innerHTML = '';
+      els.note.textContent = '';
+
+      // A later query must win even if an earlier one answers after it.
+      const token = {};
+      inFlight = token;
+
+      try {
+        // Signed in or not, this endpoint answers — but a token lets it
+        // include the reader's own uploads, so send one when we have it.
+        const res = AUTH.isLoggedIn()
+          ? await AUTH.authFetch(`/api/search/semantic?${params}`)
+          : await fetch(`${API_BASE}/api/search/semantic?${params}`);
+        if (inFlight !== token) return;
+
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          const msg = body.detail || body.error?.message || `Search failed (${res.status}).`;
+          els.status.innerHTML = `<span class="err">${esc(
+            typeof msg === 'string' ? msg : JSON.stringify(msg))}</span>`;
+          return;
+        }
+
+        const data = await res.json();
+        render(data);
+      } catch (e) {
+        if (inFlight !== token) return;
+        console.error('semantic search failed', e);
+        els.status.innerHTML = '<span class="err">Could not reach the search service.</span>';
+      }
+    }
+
+    function render(data) {
+      const items = data.items || [];
+      if (!items.length) {
+        els.status.textContent = `Nothing matched “${data.query}”.`;
+        return;
+      }
+      els.status.textContent =
+        `${data.total ?? items.length} result${items.length === 1 ? '' : 's'} for “${data.query}”`;
+
+      els.results.innerHTML = items.map((it) => {
+        const score = typeof it.similarity === 'number' ? it.similarity.toFixed(3) : '—';
+        const bits = [`<span class="score">similarity ${score}</span>`];
+
+        if (byPassage) {
+          if (it.ordinal != null) bits.push(`passage #${esc(it.ordinal)}`);
+          // `visibility` and `origin` come from the endpoint; "own" means
+          // this is the reader's own upload, which is worth saying plainly
+          // rather than leaving it to look like a catalogue result.
+          if (it.visibility && it.visibility !== 'public') {
+            bits.push(`<span class="pill own">${esc(it.visibility)}</span>`);
+          }
+          if (it.origin) bits.push(`<span class="pill">${esc(it.origin)}</span>`);
+        } else if (it.has_description === false) {
+          // Honest about *why* a match may look thin: 71% of the catalogue
+          // still has no description (F-15), so the vector behind this row
+          // was built from title and author alone.
+          bits.push('<span class="pill">no description yet</span>');
+        }
+
+        const passage = byPassage && it.passage
+          ? `<div class="passage">${esc(it.passage)}</div>` : '';
+
+        return `
+          <article class="result">
+            <h3>${esc(it.title || 'Untitled')}</h3>
+            <div class="meta">
+              <span>${esc(it.author || 'Unknown')}</span>
+              ${bits.map((b) => `<span>${b}</span>`).join('')}
+            </div>
+            <div class="actions">
+              <a class="btn btn-secondary" href="./book.html?id=${encodeURIComponent(it.book_id)}">Open</a>
+            </div>
+            ${passage}
+          </article>`;
+      }).join('');
+
+      // Which engine answered, and over what. Worth surfacing: the
+      // comment embedder falls back when the vocabulary is too small, and
+      // a reader comparing two searches should be able to see that.
+      const note = [];
+      if (data.backend) note.push(`engine: ${data.backend}`);
+      if (data.scope) note.push(`scope: ${data.scope}`);
+      els.note.textContent = note.join(' · ');
+    }
+
+    AUTH.mountAuthNav();
+
+    // Deep-linkable: ?q=... runs the search on load.
+    const initial = new URLSearchParams(location.search);
+    if (initial.get('q')) {
+      els.q.value = initial.get('q');
+      if (initial.get('by_passage') === 'true') setScope(true);
+      else search();
+    } else {
+      els.status.textContent = 'Search the catalogue by meaning.';
+    }
+  </script>
+</body>
+</html>

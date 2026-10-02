@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Book · DigiKitab</title>
+  <link rel="stylesheet" href="./css/styles.css" />
+  <style>
+    .book-head { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
+    .book-head img { width: 132px; border-radius: 12px; display: block; }
+    .book-head .meta { flex: 1 1 320px; }
+    .book-head h1 { font-size: 26px; margin-bottom: 4px; }
+    .book-head .byline { opacity: .75; margin-bottom: 10px; }
+    .pill { font-size: 12px; padding: 3px 10px; border-radius: 999px;
+            background: rgba(255,255,255,.08); margin-right: 6px; }
+    .pill.good { background: rgba(86,224,197,.18); }
+    .pill.warn { background: rgba(255,200,120,.18); }
+    .grounding { font-size: 13px; opacity: .85; margin-bottom: 10px; }
+    .answer { white-space: pre-wrap; line-height: 1.75; }
+    .citation { border-left: 2px solid rgba(124,156,255,.5); padding: 8px 0 8px 12px;
+                margin-top: 10px; font-size: 14px; opacity: .88; white-space: pre-wrap; }
+    .citation .cite-meta { font-size: 12px; opacity: .65; margin-bottom: 4px;
+                           white-space: normal; }
+    .stat-row { display: flex; gap: 26px; flex-wrap: wrap; }
+    .stat-row .stat { min-width: 120px; }
+    .stat-row .stat strong { display: block; font-size: 22px; }
+    .stat-row .stat span { font-size: 13px; opacity: .7; }
+    .muted { opacity: .72; }
+    .err { color: #ffb4b4; }
+    details.raw { margin-top: 12px; font-size: 13px; opacity: .75; }
+    .ask-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+    .ask-row .grow { flex: 1 1 320px; }
+    .spinner { opacity: .7; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <a class="brand" href="./index.html"><span class="brand-badge">DK</span><span>DigiKitab Next</span></a>
+      <nav class="nav">
+        <a href="./index.html">Home</a>
+        <a href="./filter.html">Library</a>
+        <a href="./search.html">Search</a>
+        <a href="./mylibrary.html">My uploads</a>
+        <a href="./chatbot.html">Chat</a>
+        <a href="./Audiobook.html">Audio</a>
+        <a href="./user.html">Workspace</a>
+      </nav>
+      <!-- OI-6: rendered by auth.js's mountAuthNav() into #auth-slot. -->
+      <span id="auth-slot"></span>
+    </div>
+  </header>
+
+  <main class="container section">
+    <div class="panel" id="headPanel">
+      <div class="book-head">
+        <img id="cover" alt="" style="display:none;" />
+        <div class="meta">
+          <h1 id="title">Loading…</h1>
+          <div class="byline" id="byline"></div>
+          <div id="pills"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Summary -------------------------------------------------------- -->
+    <section class="section">
+      <div class="section-title">
+        <h2>Summary</h2>
+        <p>Written from passages of the book itself, with the excerpts it used.</p>
+      </div>
+      <div class="panel" id="summaryPanel">
+        <div class="actions">
+          <button class="btn btn-primary" id="summaryBtn">Summarise this book</button>
+        </div>
+        <div id="summaryOut" class="muted" style="margin-top:12px;"></div>
+      </div>
+    </section>
+
+    <!-- Copilot ask ---------------------------------------------------- -->
+    <section class="section">
+      <div class="section-title">
+        <h2>Ask about this book</h2>
+        <p>
+          Answers are grounded in the text we hold. When the book does not
+          answer a question, that is what it says — it does not guess.
+        </p>
+      </div>
+      <div class="panel">
+        <div class="ask-row">
+          <div class="grow">
+            <input class="input" id="question" maxlength="500"
+                   placeholder="Who is the narrator, and what do they want?" />
+          </div>
+          <div class="actions">
+            <button class="btn btn-primary" id="askBtn">Ask</button>
+          </div>
+        </div>
+        <div id="askOut" style="margin-top:14px;"></div>
+      </div>
+    </section>
+
+    <!-- Reading stats -------------------------------------------------- -->
+    <section class="section">
+      <div class="section-title">
+        <h2>Your reading</h2>
+        <p>Measured from your own page turns. Signed in only — these are yours.</p>
+      </div>
+      <div class="panel" id="statsPanel">
+        <div class="muted" id="statsOut">Loading…</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="./js/auth.js"></script>
+  <script>
+    const API_BASE = '';
+    const bookId = new URLSearchParams(location.search).get('id');
+
+    const $ = (id) => document.getElementById(id);
+
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (m) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[m]));
+    }
+
+    /** Render the excerpts an answer or summary was built from.
+     *
+     *  These are the point, not decoration: a grounded answer the reader
+     *  cannot check is just a confident one. `origin` and `visibility`
+     *  come straight from the endpoint. */
+    function renderCitations(citations) {
+      if (!citations || !citations.length) {
+        return '<div class="muted" style="margin-top:10px;">No excerpts were cited.</div>';
+      }
+      return citations.map((c) => {
+        const bits = [];
+        if (c.ordinal != null) bits.push(`passage #${esc(c.ordinal)}`);
+        if (typeof c.similarity === 'number') bits.push(`similarity ${c.similarity.toFixed(3)}`);
+        if (c.origin) bits.push(esc(c.origin));
+        return `<div class="citation">
+                  <div class="cite-meta">${bits.join(' · ')}</div>${esc(c.passage)}
+                </div>`;
+      }).join('');
+    }
+
+    /** The honest-reporting bits both endpoints return. */
+    function renderProvenance(data) {
+      const bits = [];
+      if (data.passages_considered != null) {
+        bits.push(`<span class="pill">${esc(data.passages_considered)} passages considered</span>`);
+      }
+      if (data.model) bits.push(`<span class="pill">${esc(data.model)}</span>`);
+      // Both of these are the API telling on itself, so both get shown.
+      if (data.label_downgraded_from) {
+        bits.push(`<span class="pill warn">label downgraded from ${esc(data.label_downgraded_from)}</span>`);
+      }
+      if (Array.isArray(data.unsupported_quotes) && data.unsupported_quotes.length) {
+        bits.push(`<span class="pill warn">${data.unsupported_quotes.length} unsupported quote(s) removed</span>`);
+      }
+      return bits.join(' ');
+    }
+
+    // The three labels copilot.py actually emits (KNOWN / INFERENCE /
+    // UNCERTAIN). Worth stating where they come from: a label the page has
+    // no wording for renders as a bare slug, which is how a UI quietly
+    // stops explaining itself. `uncertain` is also what the backend
+    // downgrades *to* when the model omits its GROUNDING line or quotes a
+    // span no retrieved passage contains — `label_downgraded_from` then
+    // says so, and renderProvenance shows it.
+    const GROUNDING_TEXT = {
+      known_from_book: ['good', 'Answered from the book’s own text.'],
+      inference: ['warn', 'Reasoned from the book’s passages, which do not say it outright.'],
+      uncertain: ['warn', 'The passages found do not support an answer.'],
+    };
+
+    // --- the book itself --------------------------------------------------
+
+    async function loadBook() {
+      if (!bookId) {
+        $('title').textContent = 'No book selected';
+        $('byline').innerHTML = '<a href="./search.html">Search for one</a>';
+        return null;
+      }
+      try {
+        const res = await fetch(`${API_BASE}/api/books/${encodeURIComponent(bookId)}`);
+        if (!res.ok) {
+          $('title').textContent = res.status === 404 ? 'Book not found' : 'Could not load book';
+          $('byline').innerHTML = '<a href="./search.html">Search for another</a>';
+          return null;
+        }
+        const data = await res.json();
+        const b = data.book || data.item || data;
+
+        document.title = `${b.title || 'Book'} · DigiKitab`;
+        $('title').textContent = b.title || 'Untitled';
+        $('byline').textContent = b.author || 'Unknown';
+        if (b.thumbnail) { $('cover').src = b.thumbnail; $('cover').style.display = 'block'; }
+
+        const pills = [];
+        if (b.genre && b.genre !== 'Unknown') pills.push(esc(b.genre));
+        if (b.language) pills.push(esc(b.language));
+        if (b.published_year) pills.push(esc(b.published_year));
+        if (b.source) pills.push(esc(b.source));
+        // Section 18: never print a price we do not know.
+        if (b.availability === 'free_public_domain') pills.push('free · public domain');
+        else if (b.availability === 'listed' && b.price != null) pills.push(`$${esc(b.price)}`);
+        else pills.push('price unknown');
+        if (b.audiobook) {
+          pills.push('<a href="./Audiobook.html?book=' +
+                     encodeURIComponent(b.id ?? bookId) + '">available as audiobook</a>');
+        }
+        $('pills').innerHTML = pills.map((p) => `<span class="pill">${p}</span>`).join('');
+        return b;
+      } catch (e) {
+        console.error('book load failed', e);
+        $('title').textContent = 'Could not reach the server';
+        return null;
+      }
+    }
+
+    // --- summary ----------------------------------------------------------
+
+    $('summaryBtn').addEventListener('click', async () => {
+      const btn = $('summaryBtn');
+      const out = $('summaryOut');
+      btn.disabled = true;
+      out.className = 'spinner';
+      out.textContent = 'Reading passages and summarising…';
+      try {
+        const res = await fetch(`${API_BASE}/api/books/${encodeURIComponent(bookId)}/summary`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          out.className = 'err';
+          out.textContent = data.error?.message || data.detail ||
+                            `Could not summarise this book (${res.status}).`;
+          return;
+        }
+        out.className = '';
+        out.innerHTML = `
+          <div>${renderProvenance(data)}</div>
+          <p class="answer" style="margin-top:10px;">${esc(data.summary)}</p>
+          <details class="raw" open>
+            <summary>Excerpts this summary is based on</summary>
+            ${renderCitations(data.citations)}
+          </details>`;
+      } catch (e) {
+        console.error('summary failed', e);
+        out.className = 'err';
+        out.textContent = 'Could not reach the summary service.';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // --- ask --------------------------------------------------------------
+
+    async function ask() {
+      const q = $('question').value.trim();
+      const out = $('askOut');
+      if (!q) { out.innerHTML = '<span class="muted">Type a question first.</span>'; return; }
+
+      $('askBtn').disabled = true;
+      out.className = 'spinner';
+      out.textContent = 'Looking through the book…';
+      try {
+        const res = await fetch(`${API_BASE}/api/books/${encodeURIComponent(bookId)}/ask`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: q }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          out.className = 'err';
+          out.textContent = data.error?.message || data.detail ||
+                            `Could not answer that (${res.status}).`;
+          return;
+        }
+
+        const [kind, label] = GROUNDING_TEXT[data.grounding]
+          || ['warn', `grounding: ${data.grounding || 'unreported'}`];
+        out.className = '';
+        out.innerHTML = `
+          <div class="grounding">
+            <span class="pill ${kind}">${esc(label)}</span> ${renderProvenance(data)}
+          </div>
+          <p class="answer">${esc(data.answer)}</p>
+          <details class="raw" ${data.citations?.length ? 'open' : ''}>
+            <summary>Excerpts this answer is based on</summary>
+            ${renderCitations(data.citations)}
+          </details>`;
+      } catch (e) {
+        console.error('ask failed', e);
+        out.className = 'err';
+        out.textContent = 'Could not reach the copilot.';
+      } finally {
+        $('askBtn').disabled = false;
+      }
+    }
+    $('askBtn').addEventListener('click', ask);
+    $('question').addEventListener('keydown', (e) => { if (e.key === 'Enter') ask(); });
+
+    // --- reading stats ----------------------------------------------------
+
+    function fmtMinutes(m) {
+      if (m == null) return '—';
+      return m >= 60 ? `${Math.floor(m / 60)}h ${Math.round(m % 60)}m` : `${Math.round(m)}m`;
+    }
+
+    async function loadStats() {
+      const out = $('statsOut');
+      if (!AUTH.isLoggedIn()) {
+        const next = encodeURIComponent(location.pathname + location.search);
+        out.innerHTML = `<a href="./login.html?next=${next}">Log in</a> to see your reading stats for this book.`;
+        return;
+      }
+      try {
+        const res = await AUTH.authFetch(`/api/books/${encodeURIComponent(bookId)}/reading-stats`);
+        if (res.status === 401) {
+          const next = encodeURIComponent(location.pathname + location.search);
+          out.innerHTML = `Your session has expired. <a href="./login.html?next=${next}">Log in again</a>.`;
+          return;
+        }
+        if (!res.ok) {
+          out.className = 'err';
+          out.textContent = `Could not load your reading stats (${res.status}).`;
+          return;
+        }
+        const s = await res.json();
+
+        // Zero sessions is the common case and deserves saying plainly,
+        // rather than a row of dashes that looks like a failure.
+        if (!s.sessions_considered) {
+          out.className = 'muted';
+          out.innerHTML = 'You have not read this book yet, so there is nothing to measure.' +
+            (s.current_page ? ` Last page recorded: ${esc(s.current_page)}.` : '');
+          return;
+        }
+
+        out.className = '';
+        out.innerHTML = `
+          <div class="stat-row">
+            <div class="stat"><strong>${s.percent != null ? esc(Math.round(s.percent)) + '%' : '—'}</strong><span>progress</span></div>
+            <div class="stat"><strong>${esc(s.current_page ?? '—')}</strong><span>current page</span></div>
+            <div class="stat"><strong>${esc(s.streak_days)}</strong><span>day streak</span></div>
+            <div class="stat"><strong>${esc(s.sessions_considered)}</strong><span>sessions</span></div>
+            <div class="stat"><strong>${fmtMinutes(s.last_session_minutes)}</strong><span>last session</span></div>
+            <div class="stat"><strong>${fmtMinutes(s.typical_session_minutes)}</strong><span>typical session</span></div>
+          </div>
+          ${s.days_since_last_read != null
+            ? `<p class="muted" style="margin-top:12px;">Last read ${esc(s.days_since_last_read)} day(s) ago.</p>` : ''}
+          ${s.nudge ? `<p style="margin-top:10px;">${esc(s.nudge)}</p>` : ''}`;
+      } catch (e) {
+        console.error('reading stats failed', e);
+        out.className = 'err';
+        out.textContent = 'Could not reach the reading-stats service.';
+      }
+    }
+
+    AUTH.mountAuthNav();
+    (async () => {
+      const b = await loadBook();
+      if (b || bookId) loadStats();
+    })();
+  </script>
+</body>
+</html>
