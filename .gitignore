@@ -14,6 +14,13 @@ __pycache__/
 .venv/
 venv/
 
+# Reader uploads. These are private books someone attested they own
+# (section 30) and are never regenerable from the repo, so the directory is
+# kept and its contents are not. Four test uploads were committed in
+# 7ea976f before this rule existed; removed in the commit that added it.
+backend/uploads/*
+!backend/uploads/.gitkeep
+
 # Generated audio (regenerable; see F-06)
 backend/audio_outputs/*.mp3
 audiobook.mp3
