@@ -52,6 +52,17 @@ class GoogleBooksProvider:
             params["key"] = self.api_key
         return f"{API_ROOT}?{urllib.parse.urlencode(params)}"
 
+    def probe_url(self) -> str:
+        """The smallest real request that exercises the whole path — F-65.
+
+        It costs one unit of the daily quota, which is the price of not
+        spending a whole day's pass discovering the same thing book by book.
+        A TCP or DNS check would be free and would not do: the F-65 refusal
+        arrived *with* `Via` and `X-Debug-Tracking-Id` headers, so the socket
+        opened fine and something answered. Only a real request sees that.
+        """
+        return self._url(q="hamlet", maxResults=1, fields="totalItems")
+
     # --- BookProvider ------------------------------------------------------
 
     def search_books(self, query: str, filters: dict | None = None) -> list[NormalizedBook]:

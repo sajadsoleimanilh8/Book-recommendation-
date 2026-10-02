@@ -147,6 +147,91 @@ class ProviderUnreachable(ProviderThrottled):
     """
 
 
+# Headers worth keeping when a request is refused. A 403 from Google's own
+# API and a 403 from something sitting in front of it look identical in the
+# status line; these are what tell them apart.
+#
+#   Via                     a proxy announcing itself
+#   X-Debug-Tracking-Id     Google's own request id, quotable in a report
+#   Server / Content-Type   an HTML error page is almost never from the API
+#   Retry-After             how long the refuser wants to be left alone
+#   WWW-Authenticate        a portal asking for credentials
+DIAGNOSTIC_HEADERS = (
+    "Via",
+    "X-Debug-Tracking-Id",
+    "Server",
+    "Content-Type",
+    "Retry-After",
+    "WWW-Authenticate",
+)
+
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+
+
+def describe_http_error(exc: urllib.error.HTTPError, body: str = "") -> str:
+    """A refusal, described in enough detail to diagnose without a repro.
+
+    F-65: the old message was `HTTP 403 (blocked, not a miss): {body[:120]}`.
+    120 characters of an HTML error page is the doctype and an opening
+    `<head>` — it never reached the part that says who refused or why, so
+    five days of logs could not distinguish an expired key from a proxy
+    standing in the way. That is the whole reason the stall took elimination
+    to diagnose rather than reading.
+    """
+    bits = [f"HTTP {exc.code} {exc.reason}"]
+
+    headers = getattr(exc, "headers", None)
+    if headers is not None:
+        seen = [
+            f"{h}={headers.get(h)!r}"
+            for h in DIAGNOSTIC_HEADERS
+            if headers.get(h) is not None
+        ]
+        if seen:
+            bits.append("headers: " + ", ".join(seen))
+
+    if body:
+        # An HTML error page says what it is in its <title>; the body around
+        # it is markup. Lead with the title, then a cut long enough to be
+        # worth reading.
+        title = _TITLE_RE.search(body)
+        if title:
+            collapsed = " ".join(title.group(1).split())
+            if collapsed:
+                bits.append(f"title: {collapsed!r}")
+        bits.append(f"body: {body[:600]!r}")
+
+    return "; ".join(bits)
+
+
+def probe(url: str, *, timeout: float = 10.0) -> None:
+    """One real request, no retries, raising what it found — F-65 (a).
+
+    Used by the preflight. `fetch_json`'s retry ladder is deliberately not
+    reused: the point here is to learn the current state of the path in one
+    shot, not to paper over it. Returns None on success.
+    """
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp.read(1)
+        return
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read()[:4000].decode("utf-8", "replace")
+        except Exception:
+            pass
+        detail = describe_http_error(exc, body)
+        if exc.code == 429 and "per day" in body.lower():
+            raise QuotaExceeded(f"daily quota exhausted: {detail}") from exc
+        # Everything else is "the path is not usable right now", which is
+        # what the caller is asking about.
+        raise ProviderUnreachable(detail) from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise ProviderUnreachable(f"{type(exc).__name__}: {exc}") from exc
+
+
 def fetch_json(
     url: str,
     *,
@@ -171,23 +256,34 @@ def fetch_json(
         except urllib.error.HTTPError as exc:
             body = ""
             try:
-                body = exc.read()[:400].decode("utf-8", "replace")
+                # Read enough to find a <title> and a readable extract. The
+                # old 400-byte read could not span the doctype of an HTML
+                # error page (F-65).
+                body = exc.read()[:4000].decode("utf-8", "replace")
             except Exception:
                 pass
 
             if exc.code == 429 and "per day" in body.lower():
-                raise QuotaExceeded(f"daily quota exhausted: {body[:200]}") from exc
+                raise QuotaExceeded(
+                    f"daily quota exhausted: {describe_http_error(exc, body)}"
+                ) from exc
 
             if exc.code == 404:
                 return None
 
             if exc.code == 403:
+                # Still outside the retry ladder, deliberately: a real 403 is
+                # an answer, not a hiccup, and retrying it burns quota to
+                # learn nothing. What changed in F-65 is only how much of it
+                # gets written down.
                 raise ProviderUnreachable(
-                    f"HTTP 403 (blocked, not a miss): {body[:120]}"
+                    f"blocked, not a miss: {describe_http_error(exc, body)}"
                 ) from exc
 
             if exc.code not in RETRY_STATUS:
-                log.warning(f"HTTP {exc.code} for {url.split('?')[0]}: {body[:120]}")
+                log.warning(
+                    f"{url.split('?')[0]}: {describe_http_error(exc, body)}"
+                )
                 return None
 
             if attempt == max_attempts:
@@ -196,7 +292,7 @@ def fetch_json(
                 # instead of grinding through thousands more books that will
                 # each waste the same four attempts.
                 raise ProviderThrottled(
-                    f"HTTP {exc.code} after {attempt} attempts: {body[:120]}"
+                    f"after {attempt} attempts: {describe_http_error(exc, body)}"
                 ) from exc
 
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:

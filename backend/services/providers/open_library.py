@@ -51,6 +51,12 @@ SEARCH_FIELDS = ",".join(
 class OpenLibraryProvider:
     name = "open_library"
 
+    def probe_url(self) -> str:
+        """A free reachability check — F-65. Open Library has no quota, so
+        this costs nothing and is the first thing the preflight asks: if even
+        this fails, the network is not up and no provider will answer."""
+        return f"{SEARCH_URL}?{urllib.parse.urlencode({'q': 'hamlet', 'limit': 1})}"
+
     def __init__(self, min_interval: float = 0.5, fetch_description: bool = True):
         self.limiter = RateLimiter(min_interval)
         self.fetch_description = fetch_description
