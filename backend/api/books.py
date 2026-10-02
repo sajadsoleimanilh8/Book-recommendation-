@@ -132,6 +132,49 @@ def _record_page_turn(
     )
 
 
+def _uploads_are_not_rendered(session, book_id: int, user, page: int, page_size: int):
+    """Answer `/pages` for an id that is not in the catalogue — F-68, OI-4.
+
+    Two outcomes, and the difference between them is the point:
+
+    * **The owner** gets `text_available: False` and a reason naming the
+      policy. Their book is ingested and answers questions; being told
+      "Book not found" when they open it says the app lost it.
+    * **Everyone else** gets exactly what a nonexistent id gets. Not a
+      "forbidden", not a different message, not a different status — the
+      same `error_response` with the same text, built here rather than
+      phrased separately, so the two cannot drift apart. A 403 would confirm
+      the book exists, which for a private upload is the thing being
+      protected (§21/§22, and the structural guarantee `owned_by` gives
+      elsewhere).
+
+    No page turn is recorded either way. `_record_page_turn` exists to
+    measure reading depth, and nothing is being read.
+    """
+    not_found = main.error_response("Book not found", status.HTTP_404_NOT_FOUND)
+
+    if user is None:
+        return not_found
+
+    book = session.get(models.Book, book_id)
+    # `owner_id` is the marker, not `source == "upload"` — the same
+    # structural check the isolation tests pin.
+    if book is None or book.owner_id is None or book.owner_id != user.id:
+        return not_found
+
+    return {
+        "items": [],
+        "total": 0,
+        "page": page,
+        "page_size": page_size,
+        "text_available": False,
+        "reason": (
+            "This is your own upload. DigiKitab can search it and answer "
+            "questions grounded in it, but it does not display its pages."
+        ),
+    }
+
+
 @router.get("/api/books/{book_id}/pages")
 def book_pages_route(
     book_id: int,
@@ -153,7 +196,18 @@ def book_pages_route(
     """
     b = main.BOOK_BY_ID.get(book_id)
     if not b:
-        return main.error_response("Book not found", status.HTTP_404_NOT_FOUND)
+        # Not in the catalogue. It may still be an upload, which is keyed by
+        # database id and never enters `BOOK_BY_ID` — F-68 was filed as a bug
+        # for that and closed as by-design: OI-4's Phase 4 extension makes
+        # uploads ingest-only, so extraction, chunking, embedding and
+        # retrieval are permitted and **rendering a page is not**. Nothing
+        # here starts serving upload pages.
+        #
+        # What changes is only what the *owner* is told. A reader whose own
+        # book answers questions but 404s on open cannot tell a policy from a
+        # fault, so they get the same honest empty state any text-less book
+        # gets, with the reason naming the policy.
+        return _uploads_are_not_rendered(session, book_id, user, page, page_size)
 
     book_pk = store.resolve_book_pk(session, b)
     record = session.get(models.BookText, book_pk) if book_pk is not None else None

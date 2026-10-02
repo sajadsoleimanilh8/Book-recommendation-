@@ -3526,7 +3526,7 @@ Carried deliberately, with the reason. Each has a closing phase.
 | ~~F-65~~ | ~~**The standing enrichment job has made zero progress since 2026-09-25, and the reason is that it starts before the network does.**~~ | **Closed 2026-10-02** — all three remedies, on the product owner's approval. (a) A preflight asks Open Library (free, unauthenticated) before the first book and waits out a cold network across 15/30/60/120s; a pass that reaches nothing marks nothing and now exits **2**, so "Last Result: 0" can no longer mean both outcomes. (b) The breaker needs 3 strikes **spanning ≥120s**, with 5/20/60/120s backoff between them, bounded by a 600s total sleep budget — a burst of instant 403s no longer ends the day's pass, while a sustained refusal still stops it. 403 stays out of the retry ladder, as before: retrying a real one spends quota to learn nothing. (c) `describe_http_error` records the `<title>`, 600 characters of body and the `Via` / `X-Debug-Tracking-Id` / `Server` / `Content-Type` / `Retry-After` / `WWW-Authenticate` headers. WakeToRun left off. Verified live: preflight green in 2.9s, then a 20-book pass returned 18 ok / 1 partial / 1 not_found — the first progress since 2026-09-25 | ✅ |
 | ~~F-66~~ | ~~**The audiobook player has never called the audiobook API.** `frontend/Audiobook.html:453` fetches `/audio/{id}`, which is not a registered route.~~ | **Closed 2026-10-02** — three faults, each hiding the next, and the reported URL was only the third. (1) `audiobook` was `pages > 350`: not a statement about audio at all, flagging **7,150** books of which **236** were synthesisable while **6,071** that were went unflagged — `_gutenberg_to_api` hardcoded `False` for the one source that works, so the flag was nearer inverted than imprecise. (2) The flag reached the player via `dataset.hasAudio`, and `dataset` values are strings: `"false"` is truthy, so *every* book took the real-audio branch regardless. (3) That branch fetched the unregistered URL and 404'd into a `catch` that started browser speech, so the failure was inaudible. Fixed: `audiobook_available()` in `services/catalogue.py` now answers from `source == "gutenberg"` (what `AudiobookEngine.generate` can actually fetch text for) and is shared by all three serialisers; the player calls `/api/audiobook/{id}/stream`, probes with HEAD to tell "not generated yet" from a real failure, and the F-19 generate/poll client that was never written now exists behind an explicit button. `format`'s `"Audiobook" if pages > 350` is the same falsehood in a third guise but has **no consumer anywhere** — left in place and noted rather than removed in the same change | ✅ |
 | **F-67** | **64.5% of the catalogue displays a rating nobody gave.** **13,035** google_books rows carry `average_rating = 4.0035747133` with `ratings_count = **0**` — a rating with zero ratings, which cannot be anything but fabricated; the constant is within 0.001 of the mean rating of all rated rows (4.00404…), so it is mean imputation. **All 6,307** gutenberg rows carry a flat `rating = 4.0, ratings_count = 100` — identical for every one, so the count is invented too. Together **19,342 of 29,977 (64.5%)**. `/books` **sorts** by this value and `rating_min` **filters** on it, so ranking and filtering are both driven by imputed numbers, and the UI prints them as fact | Found 2026-10-02 while building the Phase 4/5 frontend — the new book page needed to know whether a rating was safe to print. Exactly the F-36 pattern (every row had `list_price = 0.00`, rendered as "Free") and the F-66 pattern (a flag asserting what it could not know), and larger than both. Section 18's rule is about price and availability; the same principle plainly covers ratings. **Not fixed** — what to show instead (null, "unrated", a count threshold, dropping the field) is a product decision, as "unknown" was for F-36. The new `book.html` omits rating deliberately. Noticed in passing: the sort has no count threshold, so two 5-star ratings outrank 4.78M at 4.5 | **Needs a decision** |
-| **F-68** | **An uploaded book cannot be read, only summarised.** `GET /api/books/{id}/pages` resolves through `main.BOOK_BY_ID`, the in-memory catalogue of 29,975 rows, so an upload (DB id ~88,000) is never found and every page request 404s — even after Extract → Chunk → Embed has completed and the row says `ready`. Summary, ask and reading-stats all work on the same book, because those go through the database | Found 2026-10-02 by running the upload flow end to end. Same root shape as F-66's stream route: a per-book endpoint keyed to the catalogue rather than to the book. **Not fixed** — the fix needs an ownership check (`owned_by`, which exists) or one signed-in reader could page through another's private upload, so it is a slice with a privacy dimension and its own tests, not a lookup change. `mylibrary.html` says plainly that reading is unavailable rather than linking to a 404 | **Needs building** |
+| ~~F-68~~ | ~~**An uploaded book cannot be read, only summarised.** `GET /api/books/{id}/pages` resolves through `main.BOOK_BY_ID` and 404s for an upload even when it is `ready`.~~ | **Closed 2026-10-02 — by design, and filed in error.** OI-4's Phase 4 extension (confirmed 2026-09-20, extended 2026-09-22) draws the line explicitly: *extraction and retrieval are permitted, rendering is not.* A reader gets a private reading assistant over their own book, not a reader for it. README's Known limitations says the same. I should have read OI-4 before calling this a bug — the behaviour was correct and only the **message** was wrong: the owner got `404 Book not found` for a book that was demonstrably present and answering questions with citations, which reads as the app having lost it rather than as a policy. Fixed only that: the owner now gets the same honest empty state any text-less book gets (`text_available: false`) with a reason naming the policy, and no "yet" — nothing is queued behind it. Page reading for uploads was **not** built and must not be | ✅ |
 | **F-70** | **The LTR's training target is a linear combination of two of its own input features, so the ranker spends 14.8s of every boot learning a two-term formula.** `val R² 1.0000` in the boot log is the tell — a learned ranker does not legitimately score perfectly. `_relevance` is `(n·depth + k·prior)/(n+k)`, and with `books_with_readers: 0` — the current state — `n = 0` returns `prior = 0.4·(average_rating/5) + 0.6·(log1p(ratings_count)/count_scale)` exactly. `ranking.py:_features` supplies `average_rating/5.0` and `log1p(ratings_count)` as columns 4 and 10 of 10. A boosted tree fits that to arbitrary precision | Found 2026-10-02 while scoping F-20. Same family as F-54 (a field justifying a bug) and as the F-26 lesson documented in `train()` itself, which explains that four features were once constant and therefore dead weight — this is the mirror image, a leaked target. It resolves itself once real readers exist, because `shrink()` moves the target off the prior as `n` grows. **Compounds F-67:** the prior is computed from `average_rating` and `ratings_count`, and 64.5% of those are fabricated, so while there are no readers the definition of "relevance" driving the ranker is a formula over imputed numbers. **Not fixed** — two options, both in `docs/F-20-SCOPE.md` §5: skip training while `n = 0` (removes 14.8s, changes no ranking) or drop the two leaking features (changes rankings, moves golden baselines) | **Needs a decision** |
 | ~~F-69~~ | ~~**`questionnair.html` shipped a nav of four dead links.**~~ | **Closed 2026-10-02** — Discover / Library / Audio / Settings were all `href="#"`. Pointed at real pages, and `test_no_page_ships_a_dead_placeholder_nav` now allows at most one `href="#"` per nav (the convention for marking the current page). `chatbot.html` remains the one page with no nav and no `#auth-slot` at all — left alone, since giving it one is a layout change rather than a fix | ✅ |
 
@@ -4581,4 +4581,59 @@ and the row does not end up `ready`.
 format list exists twice, and the copy in the page fell behind the moment
 this shipped. The server stays the authority; the test keeps the convenience
 copy honest.
+
+## F-68 — closed by design; what was actually wrong was the message
+
+Filed 2026-10-02 as "an uploaded book cannot be read, only summarised", and
+that is not a bug. OI-4, extended for Phase 4 on 2026-09-22, states the line
+in terms that leave no room:
+
+> **extraction and retrieval are permitted, rendering is not.** A chunk may
+> be embedded, searched, and quoted back as grounding for an answer. A page
+> may not be served as a page.
+
+I found the 404 by running the upload flow end to end and filed it without
+checking the open decisions first. The finding cost nothing except its own
+write-up, but the lesson is the cheap one to learn: a per-book endpoint
+refusing to serve an upload is as likely to be a decision as a defect, and
+this repo writes its decisions down.
+
+**What was genuinely wrong.** The owner of an ingested upload asked for its
+pages and got `404 Book not found` — for a book that the same session had
+just summarised and answered questions about, with citations. A reader cannot
+tell that from the app having mislaid their file. The policy was right and
+unreadable.
+
+So `/pages` now answers an id outside the catalogue in one of two ways, and
+the distance between them is the whole design:
+
+| caller | answer |
+|---|---|
+| the owner of that upload | `200` with `text_available: false`, `items: []`, and a reason naming the policy |
+| any other signed-in reader | `404`, byte-identical to a nonexistent id |
+| an anonymous caller | `404`, byte-identical to a nonexistent id |
+
+**Not a 403.** A "forbidden" confirms the book exists, and for a private
+upload existence is the thing being protected (§21/§22, the same guarantee
+`owned_by` gives structurally elsewhere). Both 404s are built from one
+`error_response` call in one place rather than phrased separately, so they
+cannot drift into distinguishability.
+
+No page turn is recorded on either path. `_record_page_turn` measures reading
+depth and nothing is being read — unlike the catalogue's text-less branch,
+where the request is a real content gap worth logging (F-26).
+
+**Tests.** `tests/test_upload_pages_policy.py`. The one that matters is
+`test_another_reader_cannot_tell_the_upload_exists`, which compares a
+non-owner's response to a nonexistent id's *in full*, not just the status.
+Verified to bite: returning `403 Not your book` for a non-owner fails it.
+`test_the_upload_is_ingested_and_answers_questions` is the premise — without
+it the rest could pass against a book that simply failed to ingest, proving
+nothing about the rendering line. `test_no_page_of_an_upload_is_ever_served`
+checks page 1, 2 and 50, because a policy that holds only at the first offset
+is not a policy.
+
+`mylibrary.html` said "Reading uploaded books page by page is not available
+**yet**". That was wrong in a way worth fixing: "yet" promises a feature
+nobody intends to ship. It now states what the product does and does not do.
 

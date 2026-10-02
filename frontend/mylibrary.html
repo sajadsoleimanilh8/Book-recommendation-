@@ -356,10 +356,14 @@
               </div>
             </div>`;
         }).join('') +
+        // "not available yet" was wrong, and wrong in a way worth getting
+        // right: OI-4 makes uploads ingest-only on purpose, so this is a
+        // line the product draws, not a feature queued behind it. Saying
+        // "yet" promises something nobody intends to ship.
         `<p class="note">
            ${books.length} book${books.length === 1 ? '' : 's'}, visible only to you.
-           Reading uploaded books page by page is not available yet — summarising,
-           asking and passage search are.
+           DigiKitab searches your uploads and answers questions grounded in
+           them; it does not display their pages.
          </p>`;
       } catch (e) {
         console.error('library load failed', e);
