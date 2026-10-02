@@ -229,6 +229,14 @@
                     ▶ Play Audiobook
                 </button>
 
+                <!-- F-66: generation is user-initiated. `generate` fetches the
+                     text from Project Gutenberg and synthesises it, so it is a
+                     deliberate click, never something the page does on load. -->
+                <button id="generateBtn" class="btn-primary" style="display:none;"
+                        onclick="handleGenerate()">
+                    ⚙ Generate audiobook
+                </button>
+
                 <!-- Status Message -->
                 <div id="statusMsg" class="status-msg info" style="display:none;"></div>
 
@@ -369,6 +377,20 @@
                 select.innerHTML = '<option value="">Failed to load books (Is backend running?)</option>';
             }
 
+            // The questionnaire links here as ./Audiobook.html?book=<id>.
+            // That parameter used to be ignored, so "Listen" landed the
+            // reader on an unselected dropdown of fifty other books.
+            const wanted = new URLSearchParams(location.search).get('book');
+            if (wanted) {
+                const match = Array.from(select.options)
+                    .find(o => o.dataset.id === wanted);
+                if (match) {
+                    select.value = match.value;
+                } else {
+                    showStatus('That book is not in the current list - pick one below.', 'info');
+                }
+            }
+
             // Listen for selection
             select.addEventListener('change', (e) => {
                 const idx = e.target.value;
@@ -382,10 +404,19 @@
                     author: e.target.options[idx].dataset.author,
                     desc: e.target.options[idx].dataset.desc,
                     thumbnail: e.target.options[idx].dataset.thumbnail,
-                    hasAudio: e.target.options[idx].dataset.hasAudio
+                    // F-66: `dataset` values are strings. This read back
+                    // "false" for a book with no audiobook, and "false" is
+                    // truthy, so every book took the real-audio branch and
+                    // hit the broken URL - which is why the fallback to
+                    // browser speech looked universal rather than selective.
+                    hasAudio: e.target.options[idx].dataset.hasAudio === 'true'
                 };
                 updateUI();
             });
+
+            if (select.value) {
+                select.dispatchEvent(new Event('change'));
+            }
         }
 
         function updateUI() {
@@ -409,13 +440,19 @@
             
             // Show/Hide TTS specific controls
             const voiceSelect = document.getElementById('voiceSelect');
+            // F-66: `hasAudio` says this book *can* be narrated (it is a
+            // Gutenberg text), not that a file exists. Claiming "Real
+            // Audiobook file available" from that flag was the visible half of
+            // the bug - the page then fetched an unregistered URL, 404'd, and
+            // quietly played browser speech instead.
             if (currentBook.hasAudio) {
-                voiceSelect.parentElement.style.display = 'none';
-                showStatus('Real Audiobook file available.', 'info');
+                voiceSelect.parentElement.style.display = 'flex';
+                showStatus('Available as a narrated audiobook. Press play to check for it.', 'info');
             } else {
                 voiceSelect.parentElement.style.display = 'flex';
-                showStatus('No audio file found. Will use Text-to-Speech.', 'info');
+                showStatus('Not available as a narrated audiobook - Text-to-Speech only.', 'info');
             }
+            document.getElementById('generateBtn').style.display = 'none';
             
             playerControls.style.display = 'none';
             document.getElementById('playBtn').style.display = 'block';
@@ -445,37 +482,163 @@
             showStatus('Loading...', 'info');
 
             if (currentBook.hasAudio) {
-                // Mode: Real Audio File
-                audioMode = 'real';
-                try {
-                    // Assuming the API serves audio at /audio/{id} or similar
-                    // Adjust URL based on your backend structure
-                    const audioUrl = `${API_BASE}/audio/${currentBook.id}`; 
-                    
-                    realAudioEl.src = audioUrl;
-                    realAudioEl.load();
-                    
-                    const playPromise = realAudioEl.play();
-                    if (playPromise !== undefined) {
-                        playPromise.then(() => {
-                            isPlaying = true;
-                            playPauseBtn.textContent = '⏸';
-                            playerControls.style.display = 'block';
-                            document.getElementById('playBtn').style.display = 'none';
-                            showStatus('Playing real audio file.', 'success');
-                        }).catch(e => {
-                            console.error("Playback failed, falling back to TTS", e);
-                            startTTS(); // Fallback
-                        });
-                    }
-                } catch (e) {
-                    console.error("Error loading audio file", e);
-                    startTTS(); // Fallback if file not found
-                }
+                await playGeneratedAudio();
             } else {
-                // Mode: TTS
+                // Nothing to stream and nothing to generate: only Gutenberg
+                // texts can be synthesised. TTS is the honest option here,
+                // and the status line already said so.
                 startTTS();
             }
+        }
+
+        /** The stream URL. F-66: this was `/audio/{id}`, which is not a
+         *  registered route - every request 404'd, the catch fell through to
+         *  browser speech, and the whole `/api/audiobook/*` backend sat
+         *  unused. The real route is below, and `audiobook_stream` 404s until
+         *  a file has actually been generated. */
+        function streamUrl(bookId) {
+            return `${API_BASE}/api/audiobook/${bookId}/stream`;
+        }
+
+        /** Play the generated file, or offer to generate it. */
+        async function playGeneratedAudio() {
+            const url = streamUrl(currentBook.id);
+
+            // Probe first so "not generated yet" can be told apart from a
+            // real failure. HEAD is served by the same GET route and avoids
+            // pulling the whole mp3 just to find out whether it is there.
+            let present;
+            try {
+                const probe = await fetch(url, { method: 'HEAD' });
+                present = probe.ok;
+                if (!probe.ok && probe.status !== 404) {
+                    showStatus(`Could not reach the audio service (${probe.status}).`, 'error');
+                    return;
+                }
+            } catch (e) {
+                console.error('Stream probe failed', e);
+                showStatus('Could not reach the audio service.', 'error');
+                return;
+            }
+
+            if (!present) {
+                showStatus('No audiobook has been generated for this title yet.', 'info');
+                document.getElementById('generateBtn').style.display = 'block';
+                document.getElementById('playBtn').style.display = 'none';
+                return;
+            }
+
+            audioMode = 'real';
+            realAudioEl.src = url;
+            realAudioEl.load();
+            try {
+                await realAudioEl.play();
+                isPlaying = true;
+                playPauseBtn.textContent = '⏸';
+                playerControls.style.display = 'block';
+                document.getElementById('playBtn').style.display = 'none';
+                document.getElementById('generateBtn').style.display = 'none';
+                showStatus('Playing the generated narration.', 'success');
+            } catch (e) {
+                // The file is there but this browser would not play it. Say
+                // so, rather than silently substituting a different thing.
+                console.error('Playback failed', e);
+                audioMode = 'none';
+                showStatus('The audiobook exists but this browser refused to play it.', 'error');
+            }
+        }
+
+        /** POST /api/audiobook/generate, then poll the job it returns. F-19
+         *  made generation asynchronous - 202 plus a poll URL - and this is
+         *  the client half that was never written. */
+        async function handleGenerate() {
+            const genBtn = document.getElementById('generateBtn');
+            genBtn.disabled = true;
+            showStatus('Requesting narration...', 'info');
+
+            let job;
+            try {
+                const res = await fetch(`${API_BASE}/api/audiobook/generate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        book_id: currentBook.id,
+                        book_name: currentBook.title,
+                        language: 'en',
+                    }),
+                });
+
+                if (res.status === 429 || res.status === 503) {
+                    // Both carry Retry-After and both are deliberate refusals
+                    // (rate limit, saturated queue), not errors to retry at.
+                    const wait = res.headers.get('Retry-After');
+                    const body = await res.json().catch(() => ({}));
+                    showStatus(
+                        `${(body.error && body.error.message) || 'Service busy.'}` +
+                        (wait ? ` Try again in ${wait}s.` : ''), 'error');
+                    genBtn.disabled = false;
+                    return;
+                }
+                if (!res.ok) {
+                    const body = await res.json().catch(() => ({}));
+                    showStatus((body.error && body.error.message) ||
+                               `Generation failed (${res.status}).`, 'error');
+                    genBtn.disabled = false;
+                    return;
+                }
+                job = await res.json();
+            } catch (e) {
+                console.error('Generate request failed', e);
+                showStatus('Could not reach the audio service.', 'error');
+                genBtn.disabled = false;
+                return;
+            }
+
+            const ok = await pollJob(job.job_id);
+            genBtn.disabled = false;
+            if (ok) {
+                genBtn.style.display = 'none';
+                document.getElementById('playBtn').style.display = 'block';
+                await playGeneratedAudio();
+            }
+        }
+
+        /** Poll a generation job to a terminal state. Returns true on
+         *  success. A 404 means the job is gone - the registry ages results
+         *  out after 15 minutes and says so deliberately. */
+        async function pollJob(jobId) {
+            const deadline = Date.now() + 10 * 60 * 1000;
+            let delay = 1000;
+            while (Date.now() < deadline) {
+                await new Promise(r => setTimeout(r, delay));
+                delay = Math.min(delay * 1.5, 5000);
+
+                let job;
+                try {
+                    const res = await fetch(`${API_BASE}/api/audiobook/jobs/${jobId}`);
+                    if (res.status === 404) {
+                        showStatus('The generation job expired before it finished.', 'error');
+                        return false;
+                    }
+                    job = await res.json();
+                } catch (e) {
+                    console.error('Poll failed', e);
+                    showStatus('Lost contact with the audio service.', 'error');
+                    return false;
+                }
+
+                if (job.status === 'done' || job.status === 'succeeded') {
+                    showStatus('Narration ready.', 'success');
+                    return true;
+                }
+                if (job.status === 'failed' || job.status === 'error') {
+                    showStatus(`Generation failed: ${job.error || 'unknown error'}`, 'error');
+                    return false;
+                }
+                showStatus(`Generating narration... (${job.status})`, 'info');
+            }
+            showStatus('Generation is taking longer than expected - try again later.', 'error');
+            return false;
         }
 
         function startTTS() {

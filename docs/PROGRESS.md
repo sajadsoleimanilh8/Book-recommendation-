@@ -19,7 +19,7 @@ Full evidence for every `F-` reference is in [docs/PHASE-0-AUDIT.md](docs/PHASE-
 | 3 — AI recommendation + Librarian | **Shipped**, two deliberate gaps | Librarian tool loop with grounding guard (F-22), reading-depth relevance target (F-26), bandit, book vectors (F-44). **Not built:** §26 explainable recommendations (would need either guessed scope or data that does not exist yet) and Reading DNA (OI-12, no spec). Both are product calls, not backlog. |
 | 4 — Personal library | **Shipped** 2026-09-25, except PDF | §21/§22 isolation, §29 upload + extraction (EPUB/TXT), §30 background ingest, §31/§59 private Librarian search. Found F-57…F-61, F-64. **PDF extraction deferred as a later slice** — deferred, not blocked. |
 | 5 — AI reading | **In progress** | Shipped: §32 Reading Copilot, §33 AI Book Memory, §38's "summaries" slice, §39's tracking/nudge slice. **Not built:** §37 notes-as-knowledge, the rest of §38 (flashcards, quizzes, spaced repetition) — each needs a product decision, logged where they were assessed. F-26a also closes here and is now due. |
-| 6–12 | **Barely started** | Phase 6 has the August audiobook endpoint only (F-18 open, and the frontend never calls the API — F-66). Phase 7 (dashboard, mood §40) and Phase 8 (evaluation, which owns F-51) not begun. |
+| 6–12 | **Barely started** | Phase 6 has the August audiobook endpoint, now reachable from the UI (F-66 closed 2026-10-02; F-18 still open — no audio has ever been generated, so the engine itself is still unexercised in anger). Phase 7 (dashboard, mood §40) and Phase 8 (evaluation, which owns F-51) not begun. |
 
 **The frontend is the standing gap across Phases 4 and 5.** Every feature
 listed as shipped above is backend-only: upload, `/ask`, `/summary`,
@@ -3519,7 +3519,7 @@ Carried deliberately, with the reason. Each has a closing phase.
 | **F-54** | **`cf_sim` and `content_sim` have always been `0.0` for every book.** Found while renaming F-14. Both are read in `_to_api` as `round(_safe_float(b.get("cf_sim")), 3)`, and **nothing anywhere assigns them** — so `_safe_float(None)` returns 0.0 and the API reports two similarity scores that are structurally constant. Same family as the `taste_vector_dim: 0` claim removed from `/api/feedback` (Waiting-on-you #3): a field describing a measurement that never happens. No consumer found — neither name appears in the frontend | **Decided 2026-09-22: removed, not populated.** Swept for consumers first — no frontend page read either field, no test asserted on one, nothing else in the backend referenced them, and this repo has no git remote, so there was no contract to break. The honest values (`content_s`, `genre_pop_s`) are both in scope at scoring time, but nothing asked for per-component scores and `ml_score` already exposes the blend — filling them would have been building a feature to justify a bug. Also removed from `_gutenberg_to_api`, where they were `None` rather than `0.0`: **the two payload shapes did not even agree with each other**, which is its own small argument that nothing was reading them | Closed 2026-09-22 |
 | ~~F-52~~ | ~~`test_every_priced_result_actually_has_a_known_price` fails intermittently — a `KeyError: 'availability'`.~~ | **Closed 2026-09-26** — root-caused by deterministic reproduction rather than re-running the flake: `_gutenberg_to_api()` omitted the key entirely, because `price_and_availability()`'s `infer_source()` misclassified a bare Gutenberg dict (no `book_id`, no `thumbnail`) as `google_books`. Fixed at the source and covered by two new tests | ✅ |
 | **F-65** | **The standing enrichment job has made zero progress since 2026-09-25, and the reason is that it starts before the network does.** Every run since logs `processed 0, throttled True, quota_exhausted False`, coverage frozen at 29.07%, 20,281 still pending. Diagnosed 2026-10-01 by elimination, each step measured, none assumed: the API key is **valid** (one keyed request returned a clean JSON `400 Required parameter: q`, and the exact volume lookup the job issues first returned `200` with real JSON); the **quota is untouched** (a keyless request gets the shared-anonymous `429`, the keyed one does not); **DNS is clean** (`www.googleapis.com` → real `172.217.x.x`, no hosts entry); **no proxy** (`ProxyEnable=0`, nothing listening on the `127.0.0.1:12334` port from the Ollama bug, `urllib.request.getproxies()` empty); **not the legacy host** (both `www.googleapis.com/books/v1` and `books.googleapis.com` answer JSON); **not the User-Agent** (identical responses with and without the job's bot-style UA); **not Docker cold-start** (runs with Docker already up fail identically); **not the client stack** (the job's own `fetch_json` code path succeeds on a settled network). What is left is **when** it runs: the task is scheduled for 04:00 with `WakeToRun=False` and `StartWhenAvailable=True`, so it fires the instant the machine wakes — which is why observed start times cluster at 10:30–12:45 instead of 04:00. `RunOnlyIfNetworkAvailable=True` only checks that an adapter has a route, not that the internet is reachable, so the first requests go out over a just-associated connection. The symptoms match that exactly: an SSL handshake timeout on one run, and on the rest an HTTP 403 whose body is **HTML, not the Books API's JSON** — something other than Google answering | **Why it stays stuck rather than self-healing, which is the actionable half:** `fetch_json` raises on 403 with **zero retries** (403 is deliberately excluded from `RETRY_STATUS`), `ProviderUnreachable` subclasses `ProviderThrottled`, and `THROTTLE_LIMIT = 3` aborts the entire run. So three instant failures end the day's pass in **6 seconds** (10-01: start 12:44:51, done 12:44:57) and nothing retries for ~24h. A transient network state costs a full day of quota. **Diagnosis only — not fixed, per instruction.** Two candidate remedies, both cheap: gate the pass on a real reachability check before the first book, and/or stop treating a bare 403 as instantly fatal (retry it with backoff like 429, or require consecutive throttles to be spread over time rather than milliseconds). **Also worth fixing regardless of cause:** `fetch_json` truncates the 403 body to 120 chars and logs no response headers, so the only evidence left behind is a generic HTML `<head>` — the `<title>`, the body text past the cut, and `Via`/`X-Debug-Tracking-Id` would have identified the rejecter on day one and made this diagnosis a two-minute job instead of a long one | **Needs the remedy decision** |
-| **F-66** | **The audiobook player has never called the audiobook API.** `frontend/Audiobook.html:453` fetches `/audio/{id}`, which is not a registered route — the real endpoints are `/api/audiobook/{book_id}` and `/api/audiobook/{book_id}/stream`. The fetch 404s, the page falls back to browser speech synthesis, and because the fallback *works* the failure is invisible: playback happens, so nothing looks broken. The entire Phase 6 backend — the job registry, the 120s timeout, the single-GPU slot, the poll endpoint — has therefore never been exercised from the UI | Reported by the product owner 2026-10-01. Same family as F-54 (`cf_sim`/`content_sim` read but never assigned) and the `taste_vector_dim: 0` claim: a path that reads as working because the honest-fallback branch is indistinguishable from success. **Not yet fixed** | **Needs building** |
+| ~~F-66~~ | ~~**The audiobook player has never called the audiobook API.** `frontend/Audiobook.html:453` fetches `/audio/{id}`, which is not a registered route.~~ | **Closed 2026-10-02** — three faults, each hiding the next, and the reported URL was only the third. (1) `audiobook` was `pages > 350`: not a statement about audio at all, flagging **7,150** books of which **236** were synthesisable while **6,071** that were went unflagged — `_gutenberg_to_api` hardcoded `False` for the one source that works, so the flag was nearer inverted than imprecise. (2) The flag reached the player via `dataset.hasAudio`, and `dataset` values are strings: `"false"` is truthy, so *every* book took the real-audio branch regardless. (3) That branch fetched the unregistered URL and 404'd into a `catch` that started browser speech, so the failure was inaudible. Fixed: `audiobook_available()` in `services/catalogue.py` now answers from `source == "gutenberg"` (what `AudiobookEngine.generate` can actually fetch text for) and is shared by all three serialisers; the player calls `/api/audiobook/{id}/stream`, probes with HEAD to tell "not generated yet" from a real failure, and the F-19 generate/poll client that was never written now exists behind an explicit button. `format`'s `"Audiobook" if pages > 350` is the same falsehood in a third guise but has **no consumer anywhere** — left in place and noted rather than removed in the same change | ✅ |
 
 ---
 
@@ -4259,3 +4259,93 @@ rejecter on day one. Worth fixing on its own terms, independent of this
 finding — the same argument F-53 made for reporting against ground truth:
 an error that does not record what it was cannot be diagnosed later, only
 re-encountered.
+
+## F-66 · The audiobook player had never called the audiobook API
+
+Reported by the product owner 2026-10-01 as one wrong URL. It was three
+faults stacked, and each one concealed the one beneath it.
+
+**Fault 1 — the flag was not about audio.** Both payload builders set
+`audiobook` from page count:
+
+| builder | rule | result |
+|---|---|---|
+| `services/catalogue.py:_row_to_book` | `pages > 350` | the `/books` payload the player reads |
+| `services/recommendation.py:_ml_to_api` | `page_count > 350` | the same claim on the ML path |
+| `services/recommendation.py:_gutenberg_to_api` | `False`, hardcoded | **the only source that can be synthesised** |
+
+Measured against the database before changing it:
+
+| | books |
+|---|---|
+| flagged as having an audiobook | 7,150 |
+| …of those, actually synthesisable | 236 |
+| synthesisable but unflagged | 6,071 |
+| flagged correctly after the fix | 6,307 (all Gutenberg, nothing else) |
+
+So 96.7% of the headphone badges were false, and the books that could
+genuinely be narrated were the ones being denied. The flag drove a 🎧 badge
+on `chatbot.html` and `questionnair.html` and the "Listen" button, so this
+was a false claim shown to readers in three places, not an internal detail.
+
+What actually decides it: `AudiobookEngine.generate` calls
+`GutenbergClient.get_text(book_name)` — the text is fetched from Project
+Gutenberg over the network, not read from the local `book_texts` table. Only
+Gutenberg rows can be synthesised, which the catalogue already knows for
+free. `chatbot.html`'s own help text had said "Generate audiobooks from
+Project Gutenberg" all along; only the flag disagreed.
+
+`audiobook_available()` now lives beside `price_and_availability` and
+`price_within` in `services/catalogue.py`, shared by all three serialisers
+for the reason those two are: when this logic sat inline, three builders gave
+three different answers to one question, which is how F-36 and F-54 happened.
+It reports **"can be made"**, not "exists" — a flag cannot know the latter
+without stat-ing the disk for every row of every list response, and a stale
+"exists" is a worse lie than an honest "available on request".
+
+**Fault 2 — `dataset` values are strings.** The flag reached the player as
+`opt.dataset.hasAudio = book.audiobook || false`, read back as
+`dataset.hasAudio`. That yields the *string* `"false"`, which is truthy, so
+`if (currentBook.hasAudio)` was true for every book regardless of the flag.
+This is why the fallback looked universal rather than selective: every book,
+Gutenberg or not, took the real-audio branch and hit the broken URL.
+
+**Fault 3 — the URL, as reported.** `/audio/{id}` is not a registered route;
+the real one is `/api/audiobook/{book_id}/stream`. The code comment admitted
+the guess — *"Assuming the API serves audio at /audio/{id} or similar; adjust
+URL based on your backend structure"* — and it was never adjusted. Every
+request 404'd into a `catch` that called `startTTS()`, so the page always
+played *something*. The failure was inaudible, which is why it survived.
+
+Fixing the URL alone would have changed nothing observable: `audio_outputs/`
+is empty, nothing has ever generated a file, and `audiobook_stream` 404s
+until something does. `POST /api/audiobook/generate` was never called by
+anything but its own tests — F-19 built the async job machinery (202, a poll
+URL, a 15-minute result TTL) for a client that was never written. It exists
+now, behind an explicit button: generation fetches from Gutenberg and
+synthesises via gTTS, so it is a deliberate click, never something the page
+does on load. 429 and 503 are reported as the deliberate refusals they are
+rather than retried.
+
+Two smaller things found in the same path and fixed with it: the
+questionnaire linked to `./audiobook.html` while the file is
+`Audiobook.html` — `StaticFiles` is case-sensitive on Linux, so "Listen"
+worked only on the Windows dev box — and the `?book=<id>` that link passes
+was ignored, landing the reader on an unselected dropdown of fifty others.
+
+**The guard.** `tests/test_audiobook_availability.py` reads the player's
+`${API_BASE}`-rooted URLs out of the page (code lines only; prose mentions
+them too) and asserts each one against the app's OpenAPI paths. Verified
+against the bug: reinstating `/audio/{id}` fails it with *"`/audio/{}` is not
+a registered route. Registered audiobook routes: /api/audiobook/generate,
+/api/audiobook/jobs/{}, /api/audiobook/{}, /api/audiobook/{}/stream"*. The
+route table has to be read after startup and through the schema — the
+routers are attached in the startup hook and wrapped in `_IncludedRouter`
+objects with no `.path`, so a flat read of `app.routes` sees only the four
+docs endpoints and would have passed while proving nothing.
+
+**Still open.** F-18: no audio has ever been generated, so `AudiobookEngine`
+itself remains unexercised outside its tests. The path to it is open now;
+whether to actually run synthesis against a third-party TTS service is a
+decision, not a fix.
+

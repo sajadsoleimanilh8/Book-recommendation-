@@ -157,6 +157,46 @@ def price_and_availability(row: Dict[str, Any]) -> tuple[Optional[float], str, s
     return None, "unknown", source
 
 
+def audiobook_available(row: Dict[str, Any]) -> bool:
+    """Whether an audiobook can actually be produced for this row — F-66.
+
+    This replaces `pages > 350`, which was not a statement about audio at
+    all. The flag drives a headphones badge on three pages and the
+    "Listen" button on the questionnaire, so what it claimed to the reader
+    was "we have this as an audiobook" — decided by page count.
+
+    Measured before changing it: the old rule marked **7,150** books as
+    having audio, of which **236** could actually be synthesised, while
+    **6,071** books that could be went unbadged. It was not merely
+    imprecise, it was close to inverted — `_gutenberg_to_api` hardcoded
+    `False` for the one source that works.
+
+    What makes a book synthesisable is `AudiobookEngine.generate`, which
+    calls `GutenbergClient.get_text(book_name)`: the text is fetched live
+    from Project Gutenberg, not read from `book_texts`. So the honest
+    answer is "is this a Gutenberg row", which the catalogue already knows
+    for free — no filesystem check, no per-request work. The UI's own help
+    text has always said this ("Generate audiobooks from Project
+    Gutenberg"); only the flag disagreed.
+
+    **This says "can be made", not "exists".** Whether a file has been
+    generated yet is answered authoritatively by
+    `GET /api/audiobook/{id}/stream`, which 404s until it has. A flag
+    cannot know that without stat-ing the disk for every row of every
+    list response, and a stale "exists" is a worse lie than an honest
+    "available on request".
+
+    Shared by all three serialisers for exactly the reason
+    `price_and_availability` above is: when this logic lived inline, the
+    catalogue path said `pages > 350`, the ML path said the same of a
+    different field, and the Gutenberg path said `False` — three
+    disagreeing answers to one question, which is how F-54 and F-36
+    happened.
+    """
+    source = row.get("source") or infer_source(row.get("book_id"), row.get("thumbnail"))
+    return source == "gutenberg"
+
+
 def price_within(row: Dict[str, Any], cap: Optional[float]) -> bool:
     """Whether a row's price is *known* and within `cap` — OI-11.
 
@@ -202,7 +242,7 @@ def _row_to_book(i: int, row: Dict[str, Any]) -> Dict[str, Any]:
         "availability": availability,
         "source": source,
         "pages": pages,
-        "audiobook": pages > 350,
+        "audiobook": audiobook_available(row),
         "description": desc,
         "thumbnail": row.get("thumbnail", ""),
         "published_year": pub_yr,

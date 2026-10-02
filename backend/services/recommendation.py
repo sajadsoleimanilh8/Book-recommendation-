@@ -41,6 +41,7 @@ from services.audio import AudiobookEngine
 from services.catalogue import (
     _safe_float,
     _safe_int,
+    audiobook_available,
     infer_format,
     infer_mood,
     normalize_language,
@@ -741,7 +742,7 @@ def _ml_to_api(b: Dict[str, Any], rank: int) -> Dict[str, Any]:
         "price": price,
         "availability": availability,
         "pages": _safe_int(b.get("page_count")),
-        "audiobook": _safe_int(b.get("page_count")) > 350,
+        "audiobook": audiobook_available(b),
         "description": b.get("description", ""),
         "thumbnail": b.get("thumbnail", ""),
         "published_year": b.get("published_year", ""),
@@ -792,7 +793,16 @@ def _gutenberg_to_api(g: Dict[str, Any], rank: int) -> Dict[str, Any]:
         "price": 0.0,
         "availability": "free_public_domain",
         "pages": None,
-        "audiobook": False,
+        # F-66: was hardcoded False — exactly backwards. This function
+        # exists only for Gutenberg results, and Gutenberg is the one
+        # source `AudiobookEngine.generate` can fetch text for, so these
+        # are the rows that *can* be synthesised. Not routed through
+        # `audiobook_available` for the same reason the price constants
+        # above are not routed through `price_and_availability`: a
+        # Gutenberg search result carries no `book_id`/`thumbnail`, so
+        # source inference would answer "google_books". The source is
+        # known unambiguously here, so the answer is stated directly.
+        "audiobook": True,
         "description": "",
         "thumbnail": "",
         "published_year": None,
