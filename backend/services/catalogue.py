@@ -129,8 +129,21 @@ def infer_mood(genre: str, title: str, desc: str) -> str:
             return mood
     return "Thoughtful"
 
-def infer_format(pages: int) -> str:
-    return "Audiobook" if pages and pages > 350 else "Print"
+def infer_format(row: Dict[str, Any]) -> str:
+    """"Audiobook" or "Print" — F-66.
+
+    This was `"Audiobook" if pages > 350`, the same falsehood as the old
+    `audiobook` flag and for the same reason: a 400-page Goodreads novel is
+    not an audiobook. It had no consumer anywhere — no page, no test, no
+    golden baseline — so it was left in place when F-66 closed and is
+    corrected here rather than removed, on the product owner's call.
+
+    Derived from `audiobook_available` so there is one answer to the
+    question instead of two. It therefore carries the same meaning: these
+    are the books available *as* an audiobook, not the ones with a file
+    already generated.
+    """
+    return "Audiobook" if audiobook_available(row) else "Print"
 
 def price_and_availability(row: Dict[str, Any]) -> tuple[Optional[float], str, str]:
     """Return (price, availability, source) for a catalogue row — section 18.
@@ -235,7 +248,7 @@ def _row_to_book(i: int, row: Dict[str, Any]) -> Dict[str, Any]:
         "genre": genre,
         "mood": infer_mood(genre, title, desc),
         "language": lang,
-        "format": infer_format(pages),
+        "format": infer_format(row),
         "rating": rating,
         "ratings_count": rc,
         "price": price,

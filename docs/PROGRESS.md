@@ -13,7 +13,7 @@ Full evidence for every `F-` reference is in [docs/PHASE-0-AUDIT.md](docs/PHASE-
 | 1 — Foundation | **PR 1 merged** 2026-08-19 | Closes F-01…F-06, F-08, F-09, F-16, F-21, F-23. |
 | 1b — Persistence | **PR 2 merged** 2026-08-19 | Postgres, Alembic, auth. Closes F-07 (write side). |
 | 1c — State migration | **PR 3 merged** 2026-08-19 | Golden baselines, F-12, read-authz sweep. |
-| 2 — Enrichment | **Code complete; coverage quota-bound** | Passes running. Found F-27…F-30, F-32, F-33. Closed F-17. Coverage is 29.07% descriptions, not code-bound — and **stalled since 2026-09-25**, see F-65. |
+| 2 — Enrichment | **Code complete; coverage quota-bound** | Passes running. Found F-27…F-30, F-32, F-33. Closed F-17. Coverage is 29.13% descriptions, not code-bound. The 2026-09-25 stall was F-65 (the job started before the network did) and is closed 2026-10-02; passes make progress again. |
 | 2b — Book intelligence | **Shipped** 2026-08-29 | §22 BookChunk, §27 semantic search, §18 availability honesty. Found F-34…F-37. |
 | S — Structure restructure | **Complete** 2026-09-10, branch `refactor/structure-cleanup` | Cleanup + Phase C (engine.py 1722→22) + Phase D (main.py 1842→165). Zero behaviour change: 264 passed / 3 xfailed and the 9 golden baselines unmoved throughout. Found F-49, F-50, B-10…B-13. |
 | 3 — AI recommendation + Librarian | **Shipped**, two deliberate gaps | Librarian tool loop with grounding guard (F-22), reading-depth relevance target (F-26), bandit, book vectors (F-44). **Not built:** §26 explainable recommendations (would need either guessed scope or data that does not exist yet) and Reading DNA (OI-12, no spec). Both are product calls, not backlog. |
@@ -31,7 +31,7 @@ them and will not be fixed by any one slice.
 
 > Kept for the measured provider-yield reasoning below it, which still holds.
 > For current coverage read the Phase 2 row above (29.07% descriptions,
-> 20,281 pending, stalled since 2026-09-25 — F-65), not these numbers.
+> 20,261 pending; the 2026-09-25 stall was F-65, closed 2026-10-02), not these numbers.
 
 ```
 books             29,975
@@ -3518,7 +3518,7 @@ Carried deliberately, with the reason. Each has a closing phase.
 | **F-55** | **The rate limiter is not deployment-ready for the deployment it is for.** `core/ratelimit.client_ip()` reads `request.client.host` and deliberately ignores `X-Forwarded-For`, which is correct with nothing in front. But uvicorn is started without `--proxy-headers` / `--forwarded-allow-ips`, so **behind any reverse proxy — which is how this would actually be deployed — every request carries the proxy's address**. Both limiters then collapse into one shared bucket: the first ten chat requests from anyone lock out everybody, and the limiter reads as protection while delivering a denial of service. Found while scoping OI-5; it applies to the audiobook limit that has been shipped since August, not just the new chat one | Not a code change so much as a deployment decision. **Decided 2026-09-21: leave it exactly as it is — no `--proxy-headers`, no proxy trust — and block it on OI-3.** The correct setting is a function of the deployment target, which is undecided: behind a proxy it needs `--proxy-headers --forwarded-allow-ips=<the proxy's IP>` *and* a `client_ip()` that honours the header it is then safe to trust; with no proxy the current code is already right. Picking one now means finding out later whether it was the right one, which is how a limiter ends up reading as protection while delivering a denial of service. Nothing is exposed while this waits — the app is local-only, which is what OI-3 is about | **Blocked on OI-3** |
 | **F-54** | **`cf_sim` and `content_sim` have always been `0.0` for every book.** Found while renaming F-14. Both are read in `_to_api` as `round(_safe_float(b.get("cf_sim")), 3)`, and **nothing anywhere assigns them** — so `_safe_float(None)` returns 0.0 and the API reports two similarity scores that are structurally constant. Same family as the `taste_vector_dim: 0` claim removed from `/api/feedback` (Waiting-on-you #3): a field describing a measurement that never happens. No consumer found — neither name appears in the frontend | **Decided 2026-09-22: removed, not populated.** Swept for consumers first — no frontend page read either field, no test asserted on one, nothing else in the backend referenced them, and this repo has no git remote, so there was no contract to break. The honest values (`content_s`, `genre_pop_s`) are both in scope at scoring time, but nothing asked for per-component scores and `ml_score` already exposes the blend — filling them would have been building a feature to justify a bug. Also removed from `_gutenberg_to_api`, where they were `None` rather than `0.0`: **the two payload shapes did not even agree with each other**, which is its own small argument that nothing was reading them | Closed 2026-09-22 |
 | ~~F-52~~ | ~~`test_every_priced_result_actually_has_a_known_price` fails intermittently — a `KeyError: 'availability'`.~~ | **Closed 2026-09-26** — root-caused by deterministic reproduction rather than re-running the flake: `_gutenberg_to_api()` omitted the key entirely, because `price_and_availability()`'s `infer_source()` misclassified a bare Gutenberg dict (no `book_id`, no `thumbnail`) as `google_books`. Fixed at the source and covered by two new tests | ✅ |
-| **F-65** | **The standing enrichment job has made zero progress since 2026-09-25, and the reason is that it starts before the network does.** Every run since logs `processed 0, throttled True, quota_exhausted False`, coverage frozen at 29.07%, 20,281 still pending. Diagnosed 2026-10-01 by elimination, each step measured, none assumed: the API key is **valid** (one keyed request returned a clean JSON `400 Required parameter: q`, and the exact volume lookup the job issues first returned `200` with real JSON); the **quota is untouched** (a keyless request gets the shared-anonymous `429`, the keyed one does not); **DNS is clean** (`www.googleapis.com` → real `172.217.x.x`, no hosts entry); **no proxy** (`ProxyEnable=0`, nothing listening on the `127.0.0.1:12334` port from the Ollama bug, `urllib.request.getproxies()` empty); **not the legacy host** (both `www.googleapis.com/books/v1` and `books.googleapis.com` answer JSON); **not the User-Agent** (identical responses with and without the job's bot-style UA); **not Docker cold-start** (runs with Docker already up fail identically); **not the client stack** (the job's own `fetch_json` code path succeeds on a settled network). What is left is **when** it runs: the task is scheduled for 04:00 with `WakeToRun=False` and `StartWhenAvailable=True`, so it fires the instant the machine wakes — which is why observed start times cluster at 10:30–12:45 instead of 04:00. `RunOnlyIfNetworkAvailable=True` only checks that an adapter has a route, not that the internet is reachable, so the first requests go out over a just-associated connection. The symptoms match that exactly: an SSL handshake timeout on one run, and on the rest an HTTP 403 whose body is **HTML, not the Books API's JSON** — something other than Google answering | **Why it stays stuck rather than self-healing, which is the actionable half:** `fetch_json` raises on 403 with **zero retries** (403 is deliberately excluded from `RETRY_STATUS`), `ProviderUnreachable` subclasses `ProviderThrottled`, and `THROTTLE_LIMIT = 3` aborts the entire run. So three instant failures end the day's pass in **6 seconds** (10-01: start 12:44:51, done 12:44:57) and nothing retries for ~24h. A transient network state costs a full day of quota. **Diagnosis only — not fixed, per instruction.** Two candidate remedies, both cheap: gate the pass on a real reachability check before the first book, and/or stop treating a bare 403 as instantly fatal (retry it with backoff like 429, or require consecutive throttles to be spread over time rather than milliseconds). **Also worth fixing regardless of cause:** `fetch_json` truncates the 403 body to 120 chars and logs no response headers, so the only evidence left behind is a generic HTML `<head>` — the `<title>`, the body text past the cut, and `Via`/`X-Debug-Tracking-Id` would have identified the rejecter on day one and made this diagnosis a two-minute job instead of a long one | **Needs the remedy decision** |
+| ~~F-65~~ | ~~**The standing enrichment job has made zero progress since 2026-09-25, and the reason is that it starts before the network does.**~~ | **Closed 2026-10-02** — all three remedies, on the product owner's approval. (a) A preflight asks Open Library (free, unauthenticated) before the first book and waits out a cold network across 15/30/60/120s; a pass that reaches nothing marks nothing and now exits **2**, so "Last Result: 0" can no longer mean both outcomes. (b) The breaker needs 3 strikes **spanning ≥120s**, with 5/20/60/120s backoff between them, bounded by a 600s total sleep budget — a burst of instant 403s no longer ends the day's pass, while a sustained refusal still stops it. 403 stays out of the retry ladder, as before: retrying a real one spends quota to learn nothing. (c) `describe_http_error` records the `<title>`, 600 characters of body and the `Via` / `X-Debug-Tracking-Id` / `Server` / `Content-Type` / `Retry-After` / `WWW-Authenticate` headers. WakeToRun left off. Verified live: preflight green in 2.9s, then a 20-book pass returned 18 ok / 1 partial / 1 not_found — the first progress since 2026-09-25 | ✅ |
 | ~~F-66~~ | ~~**The audiobook player has never called the audiobook API.** `frontend/Audiobook.html:453` fetches `/audio/{id}`, which is not a registered route.~~ | **Closed 2026-10-02** — three faults, each hiding the next, and the reported URL was only the third. (1) `audiobook` was `pages > 350`: not a statement about audio at all, flagging **7,150** books of which **236** were synthesisable while **6,071** that were went unflagged — `_gutenberg_to_api` hardcoded `False` for the one source that works, so the flag was nearer inverted than imprecise. (2) The flag reached the player via `dataset.hasAudio`, and `dataset` values are strings: `"false"` is truthy, so *every* book took the real-audio branch regardless. (3) That branch fetched the unregistered URL and 404'd into a `catch` that started browser speech, so the failure was inaudible. Fixed: `audiobook_available()` in `services/catalogue.py` now answers from `source == "gutenberg"` (what `AudiobookEngine.generate` can actually fetch text for) and is shared by all three serialisers; the player calls `/api/audiobook/{id}/stream`, probes with HEAD to tell "not generated yet" from a real failure, and the F-19 generate/poll client that was never written now exists behind an explicit button. `format`'s `"Audiobook" if pages > 350` is the same falsehood in a third guise but has **no consumer anywhere** — left in place and noted rather than removed in the same change | ✅ |
 
 ---
@@ -4259,6 +4259,71 @@ rejecter on day one. Worth fixing on its own terms, independent of this
 finding — the same argument F-53 made for reporting against ground truth:
 an error that does not record what it was cannot be diagnosed later, only
 re-encountered.
+
+
+### Fixed, 2026-10-02
+
+All three remedies, as approved. Together they change the failure mode from
+"the pass dies in six seconds and reports a provider problem" to "the pass
+waits for the network, and says plainly what it found if it still cannot
+work".
+
+**(a) A preflight before the first book.** Open Library is asked first,
+because it is free, unauthenticated, and the better question: if a plain
+search cannot complete, the network is not up and no provider will answer.
+That is the actual F-65 failure and it resolves itself within a minute or
+two of wake, so it is waited out across 15/30/60/120s rather than given up
+on. A pass that reaches nothing **marks no book** and exits **2** — the old
+exit 0 was half the reason this stayed invisible, since Task Scheduler's
+"Last Result: 0" said success whether the pass worked or did nothing.
+
+A Google-only refusal is handled differently on purpose. If Open Library
+answers and Google does not, no amount of sleeping fixes a key, a quota or
+something proxying `www.googleapis.com`; the pass continues on Open Library
+alone, which still fills ISBNs, years and older descriptions, and logs the
+refusal in full. Doing a fraction of the work beats doing none of it.
+
+The probe is a real request, not a socket check. The F-65 refusal arrived
+*with* `Via` and `X-Debug-Tracking-Id` headers, so the socket opened and
+something answered — a TCP or DNS check would have reported "fine". It costs
+one unit of the daily quota, which is the price of not spending a whole
+pass rediscovering the same thing book by book.
+
+**(b) The breaker needs time, not just a count.** Tripping now requires
+`THROTTLE_LIMIT` strikes spanning at least `THROTTLE_MIN_SPAN` (120s), with
+5/20/60/120s of backoff between them, and a successful book clears the
+strikes. The three-instant-403 burst that ended every nightly pass is
+absorbed; a provider that is genuinely refusing still stops the run, just
+after ~205s rather than ~6s. The other bound matters too: a
+`THROTTLE_SLEEP_BUDGET` of 600s stops a flapping provider from sleeping
+through the night making no progress.
+
+403 remains outside the retry ladder, deliberately and unchanged. This
+finding was never about retrying real 403s — it was about not dying on a
+cold network.
+
+**(c) The instrumentation gap, closed.** `describe_http_error` records the
+HTML `<title>` (which is the one-line answer), 600 characters of body
+instead of 120, and the headers that identify the refuser: `Via`,
+`X-Debug-Tracking-Id`, `Server`, `Content-Type`, `Retry-After`,
+`WWW-Authenticate`. The read itself went from 400 to 4,000 bytes, because
+the old cut could not span the doctype of a Google error page — the reason
+six days of logs preserved nothing but a generic `<head>`.
+
+`WakeToRun` left off, as decided.
+
+**Verified live, not just in tests.** The preflight came back green in 2.9s
+(so the network was up at the time, consistent with the diagnosis that the
+403 was situational). A real `--limit 20` pass then returned 18 ok, 1
+partial, 1 not_found, no throttles, no waiting — the first progress since
+2026-09-25. Description coverage moved to 29.13%, 20,261 still pending.
+
+`tests/test_enrichment_resilience.py` pins both halves with a fake clock, so
+the suite does not wait. The burst test is the regression guard: setting
+`THROTTLE_MIN_SPAN` back to 0 — the old count-only condition — fails it with
+*"a burst of three instant refusals ended the pass — this is F-65"*, while
+the sustained-refusal test still passes, which is the asymmetry the fix is
+for.
 
 ## F-66 · The audiobook player had never called the audiobook API
 

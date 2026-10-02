@@ -736,7 +736,7 @@ def _ml_to_api(b: Dict[str, Any], rank: int) -> Dict[str, Any]:
         "genre": b.get("genre", "Unknown"),
         "mood": infer_mood(b.get("genre", ""), b.get("title", ""), b.get("description", "")),
         "language": normalize_language(b.get("language", "en")),
-        "format": infer_format(_safe_int(b.get("page_count"))),
+        "format": infer_format(b),
         "rating": _safe_float(b.get("average_rating")),
         "ratings_count": _safe_int(b.get("ratings_count")),
         "price": price,

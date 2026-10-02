@@ -184,3 +184,21 @@ def test_the_listen_link_matches_the_file_on_disk():
                 p.name for p in FRONTEND.glob("*.html") if p.name.lower() == href.lower()
             )
         )
+
+
+def test_format_gives_the_same_answer_as_the_flag(flag):
+    """`infer_format` was `"Audiobook" if pages > 350` — the same falsehood
+    as the old flag, in a field nothing read. Closed on the product owner's
+    call by deriving it, so there is one answer to the question rather than
+    two that can drift apart (F-36, F-54, and F-66 itself).
+    """
+    from services.catalogue import infer_format
+
+    for row in (GUTENBERG, GOODREADS, GOOGLE):
+        long_row = {**row, "page_count": 900, "pages": 900}
+        expected = "Audiobook" if flag(long_row) else "Print"
+        assert infer_format(long_row) == expected
+
+    # The specific case that was wrong: a long book from a source that
+    # cannot be narrated.
+    assert infer_format({**GOODREADS, "pages": 900}) == "Print"
