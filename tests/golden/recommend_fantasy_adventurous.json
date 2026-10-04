@@ -13,57 +13,57 @@
   "results": [
     {
       "rank": 1,
+      "title": "Fantasy & Science Fiction",
+      "author": "Unknown",
+      "final_score": 0.6032
+    },
+    {
+      "rank": 2,
+      "title": "The Best from Fantasy and Science Fiction",
+      "author": "Unknown",
+      "final_score": 0.5772
+    },
+    {
+      "rank": 3,
+      "title": "The Year's Best Fantasy",
+      "author": "Unknown",
+      "final_score": 0.5678
+    },
+    {
+      "rank": 4,
+      "title": "Science Fiction & Fantasy Book Review Annual",
+      "author": "Unknown",
+      "final_score": 0.5629
+    },
+    {
+      "rank": 5,
+      "title": "The Year's Best Fantasy and Horror",
+      "author": "Unknown",
+      "final_score": 0.5611
+    },
+    {
+      "rank": 6,
+      "title": "The New York Review of Science Fiction",
+      "author": "Unknown",
+      "final_score": 0.5565
+    },
+    {
+      "rank": 7,
       "title": "At the Earth's Core",
       "author": "Edgar Rice Burroughs",
       "final_score": 0.5536
     },
     {
-      "rank": 2,
+      "rank": 8,
       "title": "The shadow over Innsmouth",
       "author": "H. P. (Howard Phillips) Lovecraft",
       "final_score": 0.5495
     },
     {
-      "rank": 3,
-      "title": "The Iceberg Express",
-      "author": "David Cory",
-      "final_score": 0.5474
-    },
-    {
-      "rank": 4,
-      "title": "At the mountains of madness",
-      "author": "H. P. (Howard Phillips) Lovecraft",
-      "final_score": 0.5427
-    },
-    {
-      "rank": 5,
-      "title": "The Voyages of Doctor Dolittle",
-      "author": "Hugh Lofting",
-      "final_score": 0.5401
-    },
-    {
-      "rank": 6,
-      "title": "Through the gates of the silver key",
-      "author": "H. P. (Howard Phillips) Lovecraft",
-      "final_score": 0.5397
-    },
-    {
-      "rank": 7,
-      "title": "The Monster Men",
-      "author": "Edgar Rice Burroughs",
-      "final_score": 0.5393
-    },
-    {
-      "rank": 8,
-      "title": "The Dunwich Horror",
-      "author": "H. P. (Howard Phillips) Lovecraft",
-      "final_score": 0.5383
-    },
-    {
       "rank": 9,
-      "title": "Tales of Wonder",
-      "author": "Lord Dunsany",
-      "final_score": 0.5368
+      "title": "The Gunslinger",
+      "author": "Stephen King",
+      "final_score": 0.5482
     }
   ]
 }

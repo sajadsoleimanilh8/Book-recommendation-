@@ -26,7 +26,7 @@ import main
 import models
 import store
 from auth import OptionalUser, SessionDep
-from services.catalogue import _safe_float, _safe_int
+from services.catalogue import _safe_float, _safe_int, weighted_rating
 from services.recommendation import apply_filters
 
 router = APIRouter()
@@ -52,10 +52,24 @@ def get_books(
         mood=mood,
         audiobook=audiobook,
     )
+    # F-67. The old key was `(rating, ratings_count)` on the raw average,
+    # which put 251 rows holding 5.0 from a *single* rating above a book with
+    # 4,780,653 ratings at 4.5 — and ranked the 19,342 books carrying a
+    # fabricated rating as though it were real.
+    #
+    # `weighted_rating` shrinks towards the catalogue mean by how much
+    # evidence there is, so a lone 5.0 lands at 4.03 and an established book
+    # barely moves. Unrated books sort last rather than being dropped: this
+    # is a catalogue listing, and a book with no ratings is still a book.
+    # `ratings_count` stays as the tiebreak among books of equal standing.
     items = sorted(
         items,
-        key=lambda b: (_safe_float(b.get("rating")), _safe_int(b.get("ratings_count"))),
-        reverse=True
+        key=lambda b: (
+            weighted_rating(b) is not None,
+            weighted_rating(b) or 0.0,
+            _safe_int(b.get("ratings_count")),
+        ),
+        reverse=True,
     )
     return {"items": items[:limit], "total": len(items)}
 

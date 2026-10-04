@@ -3525,7 +3525,7 @@ Carried deliberately, with the reason. Each has a closing phase.
 | ~~F-52~~ | ~~`test_every_priced_result_actually_has_a_known_price` fails intermittently — a `KeyError: 'availability'`.~~ | **Closed 2026-09-26** — root-caused by deterministic reproduction rather than re-running the flake: `_gutenberg_to_api()` omitted the key entirely, because `price_and_availability()`'s `infer_source()` misclassified a bare Gutenberg dict (no `book_id`, no `thumbnail`) as `google_books`. Fixed at the source and covered by two new tests | ✅ |
 | ~~F-65~~ | ~~**The standing enrichment job has made zero progress since 2026-09-25, and the reason is that it starts before the network does.**~~ | **Closed 2026-10-02** — all three remedies, on the product owner's approval. (a) A preflight asks Open Library (free, unauthenticated) before the first book and waits out a cold network across 15/30/60/120s; a pass that reaches nothing marks nothing and now exits **2**, so "Last Result: 0" can no longer mean both outcomes. (b) The breaker needs 3 strikes **spanning ≥120s**, with 5/20/60/120s backoff between them, bounded by a 600s total sleep budget — a burst of instant 403s no longer ends the day's pass, while a sustained refusal still stops it. 403 stays out of the retry ladder, as before: retrying a real one spends quota to learn nothing. (c) `describe_http_error` records the `<title>`, 600 characters of body and the `Via` / `X-Debug-Tracking-Id` / `Server` / `Content-Type` / `Retry-After` / `WWW-Authenticate` headers. WakeToRun left off. Verified live: preflight green in 2.9s, then a 20-book pass returned 18 ok / 1 partial / 1 not_found — the first progress since 2026-09-25 | ✅ |
 | ~~F-66~~ | ~~**The audiobook player has never called the audiobook API.** `frontend/Audiobook.html:453` fetches `/audio/{id}`, which is not a registered route.~~ | **Closed 2026-10-02** — three faults, each hiding the next, and the reported URL was only the third. (1) `audiobook` was `pages > 350`: not a statement about audio at all, flagging **7,150** books of which **236** were synthesisable while **6,071** that were went unflagged — `_gutenberg_to_api` hardcoded `False` for the one source that works, so the flag was nearer inverted than imprecise. (2) The flag reached the player via `dataset.hasAudio`, and `dataset` values are strings: `"false"` is truthy, so *every* book took the real-audio branch regardless. (3) That branch fetched the unregistered URL and 404'd into a `catch` that started browser speech, so the failure was inaudible. Fixed: `audiobook_available()` in `services/catalogue.py` now answers from `source == "gutenberg"` (what `AudiobookEngine.generate` can actually fetch text for) and is shared by all three serialisers; the player calls `/api/audiobook/{id}/stream`, probes with HEAD to tell "not generated yet" from a real failure, and the F-19 generate/poll client that was never written now exists behind an explicit button. `format`'s `"Audiobook" if pages > 350` is the same falsehood in a third guise but has **no consumer anywhere** — left in place and noted rather than removed in the same change | ✅ |
-| **F-67** | **64.5% of the catalogue displays a rating nobody gave.** **13,035** google_books rows carry `average_rating = 4.0035747133` with `ratings_count = **0**` — a rating with zero ratings, which cannot be anything but fabricated; the constant is within 0.001 of the mean rating of all rated rows (4.00404…), so it is mean imputation. **All 6,307** gutenberg rows carry a flat `rating = 4.0, ratings_count = 100` — identical for every one, so the count is invented too. Together **19,342 of 29,977 (64.5%)**. `/books` **sorts** by this value and `rating_min` **filters** on it, so ranking and filtering are both driven by imputed numbers, and the UI prints them as fact | Found 2026-10-02 while building the Phase 4/5 frontend — the new book page needed to know whether a rating was safe to print. Exactly the F-36 pattern (every row had `list_price = 0.00`, rendered as "Free") and the F-66 pattern (a flag asserting what it could not know), and larger than both. Section 18's rule is about price and availability; the same principle plainly covers ratings. **Not fixed** — what to show instead (null, "unrated", a count threshold, dropping the field) is a product decision, as "unknown" was for F-36. The new `book.html` omits rating deliberately. Noticed in passing: the sort has no count threshold, so two 5-star ratings outrank 4.78M at 4.5 | **Needs a decision** |
+| ~~F-67~~ | ~~**64.5% of the catalogue displays a rating nobody gave.** 13,035 google_books rows carry `average_rating = 4.0035747133` with `ratings_count = 0`; all 6,307 gutenberg rows carry a flat 4.0/100. `/books` sorts and `rating_min` filters on it.~~ | **Closed 2026-10-04** — the same decision as F-36, taken again: a rating nobody gave becomes `null`, not a plausible number. `rating_and_count()` returns `(None, None)` for a count of 0 and for every Gutenberg row (excluded **by source** — Gutenberg has no rating system, which is a fact about the source rather than about today's data). `/books` sorts unrated last and `rating_min` excludes them outright (OI-11's argument: unknown is not zero). The sort gained an evidence threshold via `reading_depth.shrink` — strength 50, neutral 4.0064 — so a lone 5.0 lands at 4.026 while 4.78M at 4.5 stays 4.500, and the 10th percentile of real counts (8,397) moves in the third decimal. The feature columns carry **0 ratings at the neutral mean** rather than `null`, because a NaN stops the ranker fitting (F-36's `list_price` note) — which also removed the fabricated popularity from the relevance target's prior for 6,307 books. 8 of 9 golden baselines moved and were reviewed before re-baselining | ✅ |
 | ~~F-68~~ | ~~**An uploaded book cannot be read, only summarised.** `GET /api/books/{id}/pages` resolves through `main.BOOK_BY_ID` and 404s for an upload even when it is `ready`.~~ | **Closed 2026-10-02 — by design, and filed in error.** OI-4's Phase 4 extension (confirmed 2026-09-20, extended 2026-09-22) draws the line explicitly: *extraction and retrieval are permitted, rendering is not.* A reader gets a private reading assistant over their own book, not a reader for it. README's Known limitations says the same. I should have read OI-4 before calling this a bug — the behaviour was correct and only the **message** was wrong: the owner got `404 Book not found` for a book that was demonstrably present and answering questions with citations, which reads as the app having lost it rather than as a policy. Fixed only that: the owner now gets the same honest empty state any text-less book gets (`text_available: false`) with a reason naming the policy, and no "yet" — nothing is queued behind it. Page reading for uploads was **not** built and must not be | ✅ |
 | **F-70** | **The LTR's training target is a linear combination of two of its own input features, so the ranker spends 14.8s of every boot learning a two-term formula.** `val R² 1.0000` in the boot log is the tell — a learned ranker does not legitimately score perfectly. `_relevance` is `(n·depth + k·prior)/(n+k)`, and with `books_with_readers: 0` — the current state — `n = 0` returns `prior = 0.4·(average_rating/5) + 0.6·(log1p(ratings_count)/count_scale)` exactly. `ranking.py:_features` supplies `average_rating/5.0` and `log1p(ratings_count)` as columns 4 and 10 of 10. A boosted tree fits that to arbitrary precision | Found 2026-10-02 while scoping F-20. Same family as F-54 (a field justifying a bug) and as the F-26 lesson documented in `train()` itself, which explains that four features were once constant and therefore dead weight — this is the mirror image, a leaked target. It resolves itself once real readers exist, because `shrink()` moves the target off the prior as `n` grows. **Compounds F-67:** the prior is computed from `average_rating` and `ratings_count`, and 64.5% of those are fabricated, so while there are no readers the definition of "relevance" driving the ranker is a formula over imputed numbers. **Not fixed** — two options, both in `docs/F-20-SCOPE.md` §5: skip training while `n = 0` (removes 14.8s, changes no ranking) or drop the two leaking features (changes rankings, moves golden baselines) | **Needs a decision** |
 | ~~F-69~~ | ~~**`questionnair.html` shipped a nav of four dead links.**~~ | **Closed 2026-10-02** — Discover / Library / Audio / Settings were all `href="#"`. Pointed at real pages, and `test_no_page_ships_a_dead_placeholder_nav` now allows at most one `href="#"` per nav (the convention for marking the current page). `chatbot.html` remains the one page with no nav and no `#auth-slot` at all — left alone, since giving it one is a layout change rather than a fix | ✅ |
@@ -4636,4 +4636,109 @@ is not a policy.
 `mylibrary.html` said "Reading uploaded books page by page is not available
 **yet**". That was wrong in a way worth fixing: "yet" promises a feature
 nobody intends to ship. It now states what the product does and does not do.
+
+## F-67 — ratings nobody gave, 2026-10-04
+
+Found while building the Phase 4/5 book page, because that page had to decide
+whether a rating was safe to print. **19,342 of 29,975 rows — 64.5% — carried
+a rating nobody gave**, in two separate fabrications:
+
+| rows | source | value | why it cannot be real |
+|---|---|---|---|
+| 13,035 | google_books | `4.0035747133` / count **0** | a rating with zero ratings; the constant is within 0.001 of the mean of every rated row, so it is mean imputation |
+| 6,307 | gutenberg | `4.0` / count **100** | identical for every single row, so the count is invented too |
+
+`/books` **sorted** by this and `rating_min` **filtered** on it, so ranking
+and filtering were both driven by imputed numbers while the UI printed them
+as fact. Section 18 governs price and availability; the same principle
+plainly covers ratings, and this is F-36's decision taken again — every row
+carried `list_price = 0.00`, both serialisers rendered it "Free", and the
+answer was `None` and "unknown" rather than a plausible number.
+
+The sort had a second defect with the same root: **no evidence threshold at
+all.** 251 rows hold 5.0 from a single rating, and they outranked a book with
+4,780,653 ratings at 4.5.
+
+### What it looks like now
+
+`rating_and_count()` joins `price_and_availability` and
+`audiobook_available` as a shared rule, for the reason those two are shared:
+when this logic lived inline the paths disagreed and only one would ever get
+fixed.
+
+Gutenberg is excluded **by source**, not by matching 4.0/100. Project
+Gutenberg has no rating system, so no Gutenberg row can carry a real rating
+— a fact about the source rather than about today's data, and it stays true
+if the placeholder ever changes.
+
+The threshold reuses `services.reading_depth.shrink`, not a second
+implementation. It is the same `(n·x + m·prior) / (n + m)` blend written for
+the reading target, and its docstring already states the property needed:
+*"one enthusiastic reader cannot outweigh a well-established prior."*
+
+| | |
+|---|---|
+| strength | **50** ratings |
+| neutral | **4.0064** — the mean of the 10,633 real ratings |
+| a lone 5.0 | 4.026 |
+| 4,780,653 at 4.5 | 4.500 |
+| 8,397 at 4.2 (p10 of real counts) | 4.199 |
+
+`NEUTRAL_RATING` is a **measured constant**, not a value recomputed at load
+time, so adding books cannot quietly move every ranking. The cost of that is
+staleness, so `test_the_neutral_rating_still_matches_the_data` re-measures it
+against the database and fails on drift beyond 0.05 — the F-26a pattern,
+which re-verified its numbers rather than restating them.
+
+### The model sees a number; the reader sees null
+
+The feature columns cannot carry `None`: it becomes NaN and
+`GradientBoostingRegressor` refuses to fit, which silently disabled the whole
+recommender the first time `list_price` was changed this way (F-36's note,
+two lines above in the same function). So an unrated book presents to the
+model as **zero ratings at the catalogue mean** — no evidence either way, and
+no fabricated popularity.
+
+That last part matters more than it looks. The Gutenberg placeholder's count
+of 100 entered the LTR features as `log1p(100) = 4.6` and the relevance
+target's prior as real popularity, for 6,307 books nobody has rated. Removing
+it fixes the target as well as the features, which is why the baselines moved.
+
+A feature column is an input to a model, not a claim to a reader. Section 18
+governs what is shown.
+
+### The golden diffs, reviewed before re-baselining
+
+1 unchanged, 4 moved only in the fourth decimal, 4 changed membership:
+
+| baseline | change |
+|---|---|
+| `recommend_fiction_dark` | unchanged |
+| `recommend_author_only` | 0 in/out, scores ±0.0006 |
+| `recommend_thoughtful_mood` | 0 in/out, scores ±0.0003 |
+| `questionnaire_selfhelp_motivational` | 0 in/out, scores ±0.0004 |
+| `questionnaire_fantasy_dark_fast` | 0 in/out, one book reordered |
+| `questionnaire_empty_answers` | 5 in, 5 out |
+| `questionnaire_popular_english` | 4 in, 4 out |
+| `recommend_no_preferences` | 4 in, 4 out |
+| `recommend_fantasy_adventurous` | 7 in, 7 out |
+
+The one movement worth checking: in `fantasy_dark_fast`, *"Through the gates
+of the silver key"* fell from rank 1 (0.7923) to rank 8 (0.5523) while **every
+other score stayed byte-identical**. Its rating data is identical to its
+siblings (gutenberg 4.0/100) and they all sit at 0.55–0.58, so the old 0.7923
+was the outlier — 0.21 above books with the same inputs. The old value was not
+attributed to a specific cause and no story was invented for it. What *was*
+verified: the new ordering is byte-identical across two separate fresh fits in
+separate processes, so it is not F-51 flakiness and is safe to pin. The test
+database held no leftover comment, progress or reminder state either.
+
+### Still open after this
+
+The weighted threshold reached `/books` but **not the ranker**: its features
+use the raw `average_rating`, so "Historic Indiana" and "The Floating
+Islands" — both 5.0 from one rating — still rank 3rd and 5th in
+`no_preferences`, and both moved *up*. Approved as a separate, larger
+baseline move; F-70's leaking features stay for now and are revisited when
+real readers exist.
 

@@ -47,6 +47,7 @@ from services.catalogue import (
     normalize_language,
     price_and_availability,
     price_within,
+    rating_and_count,
 )
 from services.chat import ChatbotEngine
 from services.comments import CommentEngine
@@ -718,7 +719,16 @@ def apply_filters(
     if mood:
         out = [b for b in out if mood.lower() in b.get("mood", "").lower()]
     if rating_min is not None:
-        out = [b for b in out if _safe_float(b.get("rating")) >= rating_min]
+        # F-67: a book nobody has rated does not have a rating of at least
+        # anything. It is excluded rather than treated as 0.0 — the OI-11
+        # argument for prices, which found that `_safe_float(None) == 0.0`
+        # made `max_price=5` match all 29,975 rows. Unknown is not zero, and
+        # a filter that quietly includes what it cannot judge is worse than
+        # one that is absent.
+        out = [
+            b for b in out
+            if b.get("rating") is not None and _safe_float(b.get("rating")) >= rating_min
+        ]
     if max_price is not None:
         # OI-11. `_safe_float` turned the unknown price every non-Gutenberg row
         # carries into 0.0, so "books under $5" matched the entire catalogue —
@@ -738,6 +748,7 @@ def _ml_to_api(b: Dict[str, Any], rank: int) -> Dict[str, Any]:
     # Same rule as the catalogue path. Two serialisers disagreeing about what
     # a book costs is how F-36 would come back.
     price, availability, inferred_source = price_and_availability(b)
+    _ml_rating = rating_and_count(b)
     return {
         "id": b.get("id", rank),
         "title": b.get("title", "Unknown"),
@@ -746,8 +757,11 @@ def _ml_to_api(b: Dict[str, Any], rank: int) -> Dict[str, Any]:
         "mood": infer_mood(b.get("genre", ""), b.get("title", ""), b.get("description", "")),
         "language": normalize_language(b.get("language", "en")),
         "format": infer_format(b),
-        "rating": _safe_float(b.get("average_rating")),
-        "ratings_count": _safe_int(b.get("ratings_count")),
+        # F-67, same rule as the catalogue serialiser. Two payload builders
+        # disagreeing about what a book costs is how F-36 came back; the same
+        # is true of what readers thought of it.
+        "rating": _ml_rating[0],
+        "ratings_count": _ml_rating[1],
         "price": price,
         "availability": availability,
         "pages": _safe_int(b.get("page_count")),

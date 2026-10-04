@@ -170,6 +170,92 @@ def price_and_availability(row: Dict[str, Any]) -> tuple[Optional[float], str, s
     return None, "unknown", source
 
 
+# F-67. The mean of the 10,633 ratings the catalogue actually has, measured
+# 2026-10-02. Used as the neutral centre for shrinkage and as the value the
+# *feature* columns carry for an unrated book — never shown to a reader.
+#
+# A measured constant rather than a value recomputed at load time, so that
+# adding books cannot quietly move every ranking. `test_the_neutral_rating
+# _still_matches_the_data` re-measures it and fails if it drifts, which makes
+# the staleness visible instead of silent — the F-26a pattern.
+NEUTRAL_RATING = 4.0064
+
+# How much evidence it takes to move away from that centre, in ratings.
+#
+# The problem this solves is concrete: 251 catalogue rows carry 5.0 from a
+# single rating, and sorting on the raw average put them above a book with
+# 4,780,653 ratings at 4.5. 50 is decisive against those (one 5.0 shrinks to
+# 4.03) while being negligible for anything genuinely rated — the 10th
+# percentile of real rating counts is 8,397, which is 168x this, so an
+# established book moves in the third decimal place.
+RATING_PRIOR_STRENGTH = 50.0
+
+
+def rating_and_count(row: Dict[str, Any]) -> tuple[Optional[float], Optional[int]]:
+    """`(rating, ratings_count)`, or `(None, None)` when nobody rated it — F-67.
+
+    **64.5% of the catalogue — 19,342 of 29,975 rows — carried a rating that
+    nobody gave.** Two separate fabrications, found while building the Phase
+    4/5 book page, because that page had to decide whether a rating was safe
+    to print:
+
+    * **13,035 google_books rows** carry `average_rating = 4.0035747133` with
+      `ratings_count = 0`. A rating with zero ratings cannot be anything but
+      invented, and the constant sits within 0.001 of the mean of every rated
+      row, so it is mean imputation.
+    * **All 6,307 gutenberg rows** carry exactly `4.0` and `100` — identical
+      for every one, so the count is invented too.
+
+    This is section 18's rule applied to ratings, and the decision is F-36's,
+    taken again: every row in the catalogue carried `list_price = 0.00` and
+    both serialisers rendered it as "Free", telling readers that copyrighted
+    books cost nothing. The answer there was `None` and "unknown", not a
+    plausible number. The answer here is the same.
+
+    Gutenberg is excluded by **source**, not by matching 4.0/100. Project
+    Gutenberg has no rating system, so no Gutenberg row can carry a real
+    rating — that is a fact about the source rather than about today's data,
+    and it stays true if the placeholder value ever changes.
+
+    Shared by both serialisers, the sort, the filter and the DataFrame, for
+    the reason `price_and_availability` and `audiobook_available` above are:
+    when this logic lived inline the paths disagreed, and only one of them
+    would ever get fixed.
+    """
+    source = row.get("source") or infer_source(row.get("book_id"), row.get("thumbnail"))
+    if source == "gutenberg":
+        return None, None
+
+    count = _safe_int(row.get("ratings_count"))
+    if count <= 0:
+        return None, None
+
+    rating = _safe_float(row.get("average_rating") or row.get("rating"))
+    if rating <= 0:
+        # A count with no rating is as incoherent as a rating with no count.
+        return None, None
+
+    return rating, count
+
+
+def weighted_rating(row: Dict[str, Any]) -> Optional[float]:
+    """A rating shrunk towards the catalogue mean by how little evidence it
+    has — `None` when there is none at all.
+
+    `shrink` is `services.reading_depth`'s, not a second implementation: it
+    is the same `(n·x + m·prior) / (n + m)` blend, written for the reading
+    target, and its docstring already states the property this needs — *"one
+    enthusiastic reader cannot outweigh a well-established prior"*. That is
+    the F-67 sort problem in the reading-depth domain.
+    """
+    from services.reading_depth import shrink
+
+    rating, count = rating_and_count(row)
+    if rating is None:
+        return None
+    return shrink(rating, float(count), NEUTRAL_RATING, RATING_PRIOR_STRENGTH)
+
+
 def audiobook_available(row: Dict[str, Any]) -> bool:
     """Whether an audiobook can actually be produced for this row — F-66.
 
@@ -235,8 +321,9 @@ def _row_to_book(i: int, row: Dict[str, Any]) -> Dict[str, Any]:
     desc = str(row.get("description") or "No description available.").strip()
     pages = _safe_int(row.get("page_count") or row.get("pages"))
     price, availability, source = price_and_availability(row)
-    rating = _safe_float(row.get("average_rating") or row.get("rating"))
-    rc = _safe_int(row.get("ratings_count"))
+    # F-67: null, not a number, when nobody rated it. 64.5% of the
+    # catalogue is in that position.
+    rating, rc = rating_and_count(row)
     lang = normalize_language(row.get("language"))
     pub_yr = row.get("published_year") or row.get("publication_year") or ""
 
@@ -300,8 +387,22 @@ def _books_to_df(books: List[Dict[str, Any]]) -> pd.DataFrame:
         "author": b["author"],
         "genre": b["genre"],
         "description": b["description"],
-        "average_rating": b["rating"],
-        "ratings_count": b["ratings_count"],
+        # F-67: the API says `null` for a rating nobody gave; these columns
+        # cannot. `None` becomes NaN and GradientBoostingRegressor refuses
+        # to fit — exactly the trap documented for `list_price` below, which
+        # silently disabled the whole recommender the first time it was hit.
+        #
+        # So an unrated book presents to the model as **zero ratings at the
+        # catalogue mean**: no evidence either way, and no fabricated
+        # popularity from the Gutenberg placeholder's count of 100. That also
+        # fixes the relevance *target*, which reads these same two columns
+        # (`_relevance`'s prior) — the prior was being computed from the
+        # imputed numbers for 64.5% of the catalogue.
+        #
+        # The distinction is the point: a feature column is an input to a
+        # model, not a claim to a reader. Section 18 governs what is shown.
+        "average_rating": b["rating"] if b["rating"] is not None else NEUTRAL_RATING,
+        "ratings_count": b["ratings_count"] if b["ratings_count"] is not None else 0,
         "page_count": b["pages"],
         # 0.0 rather than None where the price is unknown (F-36). This is a
         # feature column, not a claim: `None` becomes NaN and

@@ -11,51 +11,51 @@
   "results": [
     {
       "rank": 1,
-      "title": "Through the gates of the silver key",
-      "author": "H. P. (Howard Phillips) Lovecraft",
-      "final_score": 0.7923
-    },
-    {
-      "rank": 2,
       "title": "The shadow over Innsmouth",
       "author": "H. P. (Howard Phillips) Lovecraft",
       "final_score": 0.5808
     },
     {
-      "rank": 3,
+      "rank": 2,
       "title": "Four Weird Tales",
       "author": "Algernon Blackwood",
       "final_score": 0.5807
     },
     {
-      "rank": 4,
+      "rank": 3,
       "title": "The Dunwich Horror",
       "author": "H. P. (Howard Phillips) Lovecraft",
       "final_score": 0.5663
     },
     {
-      "rank": 5,
+      "rank": 4,
       "title": "The Eyes Have It",
       "author": "Randall Garrett",
       "final_score": 0.5599
     },
     {
-      "rank": 6,
+      "rank": 5,
       "title": "Conjure wife",
       "author": "Fritz Leiber",
       "final_score": 0.5537
     },
     {
-      "rank": 7,
+      "rank": 6,
       "title": "The Works of Edgar Allan Poe — Volume 1",
       "author": "Edgar Allan Poe",
       "final_score": 0.5533
     },
     {
-      "rank": 8,
+      "rank": 7,
       "title": "The Works of Edgar Allan Poe — Volume 3",
       "author": "Edgar Allan Poe",
       "final_score": 0.5529
+    },
+    {
+      "rank": 8,
+      "title": "Through the gates of the silver key",
+      "author": "H. P. (Howard Phillips) Lovecraft",
+      "final_score": 0.5523
     },
     {
       "rank": 9,
