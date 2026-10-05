@@ -96,23 +96,35 @@ Worth persisting — deterministic given their inputs, and slow:
 - the genre-popularity factors and the ANN index (~1s)
 - the comment-embedder SVD and the chat intent classifier (~1s)
 
-Worth persisting, and the largest single win:
+~~Worth persisting, and the largest single win: the assembled
+content-vector matrix (16.5s), cached as a `.npy`.~~
 
-- **The assembled content-vector matrix (16.5s).** This is the biggest stage
-  of the boot, and it is a database read, not a computation: 29,975 rows each
-  carrying a 384-float array, reassembled into one (29975, 384) matrix.
-  float32 at that shape is ~46 MB, and 16.5s to materialise 46 MB from a
-  local Postgres is dominated by per-row deserialisation, not by the data.
-  Cached as a single `.npy` beside the LSA artefact it loads in well under a
-  second.
+**Second correction, 2026-10-05 — and this one removed the artefact
+entirely.** This section proposed caching the (29975, 384) matrix on the
+reasoning that the 16.5s was "dominated by per-row deserialisation, not by
+the data". The per-row part was right; *which* per-row operation was wrong.
+Splitting `load_content_vectors` into its three phases:
 
-  It is also the *easiest* artefact to invalidate correctly, which is
-  unusual for the biggest win. `load_content_vectors` is already all-or-
-  nothing by design (F-44: a missing vector would be filled with zeros and
-  that book would silently never be anyone's neighbour), and its report
-  already carries `requested`, `found`, `missing` and `models`. A manifest of
-  row count, row-id digest and `models` is sufficient, and all of it is
-  already computed.
+| phase | time |
+|---|---|
+| one bulk `SELECT` of all 29,975 vectors | **1.60s** |
+| `resolve_book_pk` × 29,975 | **15.03s** |
+| assemble the matrix | 0.01s |
+
+The vectors were never the cost. `resolve_book_pk` memoises into
+`_pk_cache`, but that cache starts empty on every boot, so the loop issued
+**29,975 separate `SELECT books.id WHERE source = ? AND external_id = ?`** —
+an N+1 on the keys. Caching the matrix would have hidden it behind a 46 MB
+artefact with a manifest, a digest and an invalidation rule, while leaving
+the N+1 in place for every other caller of `resolve_book_pk`.
+
+`store.prime_pk_cache()` loads every key in one query instead: **15.10s →
+0.08s**, with **0 mismatches** across all 29,975 books against the per-row
+path. No file on disk and nothing to invalidate, because it reads live rows
+every boot. It only pre-warms and never declares the cache complete, so a
+row added while the process runs still falls through to the per-row query
+and is found. Golden baselines unchanged, as they must be: same vectors,
+same keys.
 
 Not worth persisting:
 
@@ -231,9 +243,9 @@ pass.
    no artefact and no invalidation at all, and changes no ranking, because
    the model currently reproduces the prior exactly (§5). Strictly the
    cheapest and safest of the three.
-2. **Cache the assembled content-vector matrix** — removes ~16s, the largest
-   stage. This *is* artefact persistence, but of the one artefact whose
-   invalidation inputs are already computed and already all-or-nothing (§4).
+2. ~~**Cache the assembled content-vector matrix**~~ **Done 2026-10-05, by
+   priming the pk cache instead** — the 16.5s was an N+1 on the keys, not
+   the vectors (§4), so it is removed without any artefact.
 3. **Then re-measure, and decide whether the rest of F-20 is worth it.**
    After 1 and 2 the boot is ~9s, of which under 4s is actual fitting
    (feature matrix, KMeans, genre-popularity, comment SVD, chat classifier).

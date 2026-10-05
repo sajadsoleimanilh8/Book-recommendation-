@@ -46,6 +46,42 @@ log = logging.getLogger(__name__)
 _pk_cache: dict[tuple[str, str], int | None] = {}
 
 
+def prime_pk_cache(session: Session) -> int:
+    """Load every catalogue `(source, external_id) -> id` in one query — F-20.
+
+    `resolve_book_pk` memoises into `_pk_cache`, but the cache starts empty
+    on every boot, and `load_content_vectors` then calls it once per book:
+    29,975 round trips of `SELECT books.id WHERE source = ? AND external_id
+    = ?`. Measured 2026-10-05 on one boot:
+
+        bulk select of 29,975 vectors      1.60s
+        resolve_book_pk x 29,975          15.03s
+        assemble the (29975, 384) matrix   0.01s
+
+    So the 16.5s F-20 attributed to "reading the vectors out of Postgres"
+    was almost entirely an N+1 query on the *keys*, not the vectors. The
+    scope's remedy was to cache the assembled matrix as an artefact; this
+    removes the same cost with no artefact, no file on disk and no
+    invalidation question, because it reads live rows every boot.
+
+    **Only pre-warms; never declares the cache complete.** A key absent
+    after priming still falls through to the per-row query in
+    `resolve_book_pk`, exactly as before — so a row added to `books` while
+    the process runs (a re-ingest, say) is still found rather than reported
+    missing. Today there are no misses, so nothing falls through.
+
+    Returns the number of keys loaded.
+    """
+    rows = session.execute(
+        select(Book.id, Book.source, Book.external_id).where(
+            Book.external_id.isnot(None)
+        )
+    ).all()
+    for pk, source, external_id in rows:
+        _pk_cache[(source, str(external_id).strip())] = pk
+    return len(rows)
+
+
 def resolve_book_pk(session: Session, book: dict[str, Any]) -> int | None:
     """Map an in-memory book (positional id) to its durable books.id.
 
@@ -220,6 +256,10 @@ def load_content_vectors(
     by_pk = {pk: vec for pk, vec, _ in rows}
     models = {m for _, _, m in rows}
     report["models"] = sorted(m for m in models if m)
+
+    # F-20: one query for every key, instead of one per book in the loop
+    # below. 15s of a 40s boot.
+    prime_pk_cache(session)
 
     if len(report["models"]) > 1:
         # Two vector spaces in one column: cosine between them is a number,

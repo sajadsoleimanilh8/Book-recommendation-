@@ -3511,7 +3511,7 @@ Carried deliberately, with the reason. Each has a closing phase.
 | ~~F-17~~ | ~~Book "pages" return placeholder strings~~ | **Closed** — serves real Gutenberg text, honest empty state otherwise | ✅ |
 | **F-26a** | **Reading depth is measured against the excerpt, not the book.** `book_texts` holds ~11 opening pages (20,358 chars avg), so depth means "did the opening hold the reader", not "how much of the book was read". Normalised by excerpt length because against a 300-page book every reader would score ≤ ~4% | Needs whole-book text. When it lands: switch the denominator in `services/reading_depth.py` to the full page count, re-baseline, and expect depth scores to fall. **Re-verified 2026-10-01 and still exactly true**: 6,305 `book_texts` rows, 20,358 chars average, `is_complete = true` on zero of them | **Phase 5 — now in progress, so this is due rather than future** |
 | ~~F-11~~ | ~~Unmounted second frontend~~ | **Closed** — OI-1 resolved and `backend/static/` deleted 2026-09-08; the row survived the deletion by three weeks, which is the same stale-row pattern as F-52/F-53/F-60 below | ✅ |
-| **F-20** | **The recommender stack refits on every boot.** `lifespan.fit_ml()` runs unconditionally at startup and `recommendation.fit()` rebuilds clustering, nearest-neighbour similarity, genre-popularity, the LTR ranker, comment SVD and the chat classifier each time. None of those are persisted | **Open, not blocked** — the only thing unblocking it needed was someone to look. Half-right as originally written: the LSA vector space *does* persist (`ml/embeddings.py` joblib-dumps `lsa_{dim}.joblib`), which is why boots are survivable, but that is the search space, not the recommender. **"Closes in: Phase 1" was impossible** — Phase 1 merged 2026-08-19. Cost is boot latency, not correctness; the care needed is that a persisted ranker must be invalidated when the catalogue or the target changes, or it silently serves a model fitted to data that no longer exists. **Scoped, and measurement changed what it implies:** boot is 40.0s, of which 16.5s is reading the content vectors out of Postgres and 14.8s is training the LTR — the rest is under 9s, under 4s of it actual fitting. So the prize for artefact persistence as framed is <4s against a new way to serve a stale model. Recommendation in the scope doc is to drop the LTR train while there are no readers (F-70) and cache the vector matrix, then likely close F-20 as no longer worth doing | **Scoped 2026-10-02, awaiting a decision — `docs/F-20-SCOPE.md`** |
+| **F-20** | **The recommender stack refits on every boot.** `lifespan.fit_ml()` runs unconditionally at startup and `recommendation.fit()` rebuilds clustering, nearest-neighbour similarity, genre-popularity, the LTR ranker, comment SVD and the chat classifier each time. None of those are persisted | **Open, not blocked** — the only thing unblocking it needed was someone to look. Half-right as originally written: the LSA vector space *does* persist (`ml/embeddings.py` joblib-dumps `lsa_{dim}.joblib`), which is why boots are survivable, but that is the search space, not the recommender. **"Closes in: Phase 1" was impossible** — Phase 1 merged 2026-08-19. Cost is boot latency, not correctness; the care needed is that a persisted ranker must be invalidated when the catalogue or the target changes, or it silently serves a model fitted to data that no longer exists. **Scoped, and measurement changed what it implies:** boot is 40.0s, of which 16.5s is reading the content vectors out of Postgres and 14.8s is training the LTR — the rest is under 9s, under 4s of it actual fitting. So the prize for artefact persistence as framed is <4s against a new way to serve a stale model. Recommendation in the scope doc is to drop the LTR train while there are no readers (F-70) and cache the vector matrix, then likely close F-20 as no longer worth doing | **§7 step 2 done 2026-10-05** (boot 40.0s → 25.0s); step 1 pending review — `docs/F-20-SCOPE.md` |
 | **F-51** | **Ranking is not reproducible across separate model fits, for near-tied candidates.** Found while reviewing F-47's golden diff: two candidates ~0.001-0.005 apart in score returned in different order across separate fresh fits of the identical code and data, while agreeing every time within one fit. Rules out the bandit (unseeded, would vary within a fit too) and `MiniBatchKMeans` (`random_state=42` already set). Suspected cause: GPU floating-point non-determinism in the MiniLM embedding pass — the one input to ranking that is neither seeded nor cached across fits. Currently worked around in the golden tests with an evidence-based safe prefix (`MAX_SAFE_PREFIX` in `test_golden_ranking.py`), not fixed at the source | **Source isolated 2026-09-23, during F-62's investigation - that half is done, do not redo it.** Measured directly: MiniLM output is bit-identical within one fit and differs by ~1e-7 per component across separate fits, and the cause is batch composition, not the GPU being nondeterministic per se. What remains is only the *remedy* decision - a deterministic CUDA mode (slower fits, needs measuring) versus a documented, accepted tolerance - plus whatever golden baselines that moves. **Blocked on the product owner, 2026-09-26:** choosing and implementing it means repeated full embedding fits on the GPU, which is close enough to F-41's thermal incident to not start unasked. Touches the core ML fit; deserves its own review | Phase 8 (evaluation) |
 | ~~F-53~~ | ~~The standing enrichment job ran green for three days while doing nothing.~~ | **Closed** — `/health` reports `enrichment.{pending, last_progress, days_since_progress, stalled}` derived from `max(books.enriched_at)`, ground truth rather than a run counter (2026-09-22). Its residual — the run history itself readable from the app, not just `logs/enrichment/history.log` — closed separately as `GET /api/health/enrichment-history` (2026-09-26); this row previously still listed that as outstanding after it shipped, corrected here | ✅ |
 | **F-57** | **The nightly enrichment job would have sent readers' private book titles to Google.** Found while scoping Phase 4, before any upload feature existed. `scripts/enrich.py:pending_query` selects on `enrichment_status == 'pending'` and takes `sources: list[str] \| None = None`, applying **no source filter when that is None** — which is how the standing OI-7 job calls it. An uploaded book carrying the default `pending` status would have been queued and its title and author sent to the Google Books API: a third party learning what is in someone's private library, paid for out of the quota that is this project's binding constraint (F-30, OI-7). The same shape as the 'absent-as-negative' family — a default that was correct when every row was catalogue and silently widens as the data model grows | **Fixed**: `books.owner_id` (NULL = catalogue) plus `catalogue_only()` applied to all four passes that walk `books`. Written as `owner_id IS NULL`, not `source != 'upload'` — a denylist fails open, so the next private source anyone adds is included by default and invisibly | Closed 2026-09-22 |
@@ -4741,4 +4741,55 @@ Islands" — both 5.0 from one rating — still rank 3rd and 5th in
 `no_preferences`, and both moved *up*. Approved as a separate, larger
 baseline move; F-70's leaking features stay for now and are revisited when
 real readers exist.
+
+## F-20 step 2 — the 15 seconds were an N+1, not the vectors, 2026-10-05
+
+The scope said 16.5s of the boot was "reading the content vectors out of
+Postgres" and proposed caching the assembled matrix as a `.npy`. Splitting
+`load_content_vectors` into its phases before building anything:
+
+| phase | time |
+|---|---|
+| one bulk `SELECT` of all 29,975 vectors | 1.60s |
+| `resolve_book_pk` × 29,975 | **15.03s** |
+| assemble the matrix | 0.01s |
+
+`resolve_book_pk` memoises into `_pk_cache`, which starts empty every boot,
+so the loop issued 29,975 separate `SELECT books.id WHERE source = ? AND
+external_id = ?`. The matrix cache would have hidden that behind a 46 MB
+artefact with a manifest and an invalidation rule, and left the N+1 in place
+for every other caller.
+
+`store.prime_pk_cache()` loads every key in one query: **15.10s → 0.08s**,
+**0 mismatches** across all 29,975 books against the per-row path. No file,
+nothing to invalidate. It pre-warms and never declares the cache complete, so
+a row added while the process runs still falls through and is found.
+
+**Boot, re-measured on an idle machine: 40.0s → 25.0s.**
+
+| stage | before | after |
+|---|---|---|
+| vector load + MiniLM weights | 19.3s | 4.9s |
+| LTR train | 14.8s | 14.4s |
+| everything else | 5.9s | 5.7s |
+
+The LTR is now 58% of the boot — that is step 1.
+
+Tests: `tests/test_pk_cache_priming.py` pins equivalence (every book to the
+same row) and asserts the primed loop issues **zero** queries — counted with a
+SQLAlchemy cursor listener rather than timed, since seconds vary by machine
+and a count does not. Verified to bite: disabling the prime fails it with
+*"resolving 29,975 primed books issued 29975 queries; the N+1 is back"*.
+Golden baselines unchanged, as they must be.
+
+**An F-67 side effect I did not record at the time.** The re-measured boot
+logs `KMeans: best k=11`; every boot before F-67 logged k=13. Not caused by
+this change — KMeans clusters the TF-IDF/numeric matrix, not the vectors, and
+the keys are identical. It is F-67's: `ml/features.py` builds
+`rating_popularity = average_rating × log1p(ratings_count)` and feeds both
+columns into that matrix, and F-67 took the Gutenberg count from 100 to 0 for
+6,307 rows. The silhouette search then settles on a different k. It is
+already inside the F-67 baselines, which were regenerated with it and pass,
+so no ranking is unaccounted for — but `cluster_match` is an LTR feature and
+the cluster count is a visible model property, so it belongs on the record.
 
