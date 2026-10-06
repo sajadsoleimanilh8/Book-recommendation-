@@ -52,6 +52,7 @@ rather than a surprise.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import threading
 import time
@@ -116,17 +117,68 @@ def _get_redis():
     return _redis
 
 
-def client_ip(request: Request) -> str:
-    """The caller's address.
+def _is_trusted_proxy(ip_str: str) -> bool:
+    """Whether the immediate TCP peer is inside a configured trusted range.
 
-    `X-Forwarded-For` is deliberately ignored. It is attacker-controlled
-    unless a trusted proxy overwrites it, so honouring it here would let
-    anyone reset their own limit by inventing a header — a rate limiter that
-    can be bypassed with one line of curl is worse than none, because it
-    reads as protection. When this sits behind a real proxy, that proxy's
-    trusted header should be read here, deliberately.
+    `TRUSTED_PROXY_NETWORKS` is empty unless an operator has deliberately set
+    `TRUSTED_PROXY_CIDR` — see `core/config.py` for the full reasoning. A
+    direct address that fails to parse (never observed from a real ASGI
+    server, but `request.client` is `Optional` and "unknown" is passed
+    through here) is simply not trusted, rather than raising out of a rate
+    limit check.
     """
-    return request.client.host if request.client else "unknown"
+    if not config.TRUSTED_PROXY_NETWORKS:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return any(addr in network for network in config.TRUSTED_PROXY_NETWORKS)
+
+
+def client_ip(request: Request) -> str:
+    """The caller's address — F-55, proxy-aware.
+
+    `X-Forwarded-For` is honoured **only** when the request's immediate TCP
+    peer — `request.client.host`, which nothing upstream of this process can
+    forge — is inside `TRUSTED_PROXY_CIDR`. With nothing configured (the
+    default) this is exactly the old behaviour: the header is ignored
+    outright, because it is attacker-controlled by anyone who is *not* a
+    trusted proxy, and honouring it unconditionally would let anyone reset
+    their own limit by inventing one line of curl — a rate limiter that can
+    be bypassed that easily is worse than none, because it reads as
+    protection.
+
+    Behind a configured proxy, the header's **leftmost** entry is taken as
+    the caller's address. A proxy appends the hop it just saw to the right
+    of whatever arrived, so the leftmost entry is the first hop's claim —
+    the original client when there is exactly one proxy in front of this
+    app, which is the topology `TRUSTED_PROXY_CIDR` is written for. Only one
+    trusted hop is supported for that reason; a chain of several proxies,
+    where only the nearest is this app's own, is a sharper problem (which
+    entries to trust, and how many) that this project does not have yet and
+    should not guess an answer to.
+
+    A leftmost entry that is not a parseable address (a malformed or empty
+    header from a misbehaving proxy) falls back to the direct peer rather
+    than being trusted as-is — a rate-limit bucket keyed on garbage is a
+    limiter that quietly stops limiting, which is the failure this whole
+    function exists to avoid.
+    """
+    direct = request.client.host if request.client else "unknown"
+    if direct == "unknown" or not _is_trusted_proxy(direct):
+        return direct
+
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if not forwarded:
+        return direct
+
+    candidate = forwarded.split(",", 1)[0].strip()
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        return direct
+    return candidate
 
 
 def caller_keys(scope: str, request: Request, account_id: Optional[int] = None) -> list[str]:

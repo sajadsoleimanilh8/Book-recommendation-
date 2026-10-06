@@ -254,9 +254,23 @@ if __name__ == "__main__":
     # The host now defaults to loopback and has to be widened on purpose, and
     # reload is off in production. `workers` is deliberately absent: see
     # `lifespan.py` for why this app is single-worker.
+    #
+    # F-55: `proxy_headers`/`forwarded_allow_ips` are uvicorn's own half of
+    # the trusted-proxy story — they make `request.url.scheme` (so HTTPS
+    # redirects and secure-cookie logic see the request as HTTPS when the
+    # proxy terminated TLS) trust the same proxy `core.ratelimit.client_ip()`
+    # does. Driven by the same `TRUSTED_PROXY_CIDR`, not a second setting to
+    # keep in step: uvicorn's `forwarded_allow_ips` accepts exactly this
+    # project's CIDR syntax (confirmed against the installed uvicorn's own
+    # `_TrustedHosts`, which parses a `/`-containing entry as an
+    # `ipaddress.ip_network`). Off by construction when nothing is
+    # configured — `forwarded_allow_ips=""` trusts nothing, which is the
+    # same fail-closed default `TRUSTED_PROXY_NETWORKS` has.
     uvicorn.run(
         "main:app",
         host=os.getenv("HOST", "127.0.0.1"),
         port=int(os.getenv("PORT", "8000")),
         reload=config.DEBUG and not config.IS_PRODUCTION,
+        proxy_headers=bool(config.TRUSTED_PROXY_CIDR),
+        forwarded_allow_ips=config.TRUSTED_PROXY_CIDR or "",
     )

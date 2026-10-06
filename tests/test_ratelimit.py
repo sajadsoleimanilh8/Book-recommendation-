@@ -114,6 +114,110 @@ def test_forwarded_headers_are_ignored(in_process):
     assert ratelimit.client_ip(FakeRequest()) == "10.0.0.1"
 
 
+# -- F-55: trusted proxy --------------------------------------------------
+#
+# A real deploy puts a reverse proxy in front of this app, and at that point
+# `request.client.host` is the *proxy's* address for every single caller —
+# the old ignore-everything behaviour above would then bucket the entire
+# site's traffic under one IP. These pin the opposite failure the fix must
+# not reintroduce: honouring the header from something that is not the
+# configured proxy.
+
+
+class _FakeClient:
+    def __init__(self, host):
+        self.host = host
+
+
+class _FakeRequest:
+    def __init__(self, host, headers=None):
+        self.client = _FakeClient(host)
+        self.headers = headers or {}
+
+
+@pytest.fixture
+def trusted_proxy(monkeypatch):
+    """One trusted proxy at 10.0.0.1, the shape a single reverse proxy in
+    front of this app actually has."""
+    from core import config
+
+    monkeypatch.setattr(config, "TRUSTED_PROXY_NETWORKS", config._parse_trusted_proxy_cidrs("10.0.0.1/32"))
+
+
+def test_with_no_trusted_proxy_configured_the_header_is_still_ignored(in_process):
+    """The default must stay the default: empty `TRUSTED_PROXY_NETWORKS` is
+    exactly today's ignore-everything behaviour, not a new opt-out path."""
+    req = _FakeRequest("10.0.0.1", {"X-Forwarded-For": "203.0.113.9"})
+    assert ratelimit.client_ip(req) == "10.0.0.1"
+
+
+def test_a_header_from_the_trusted_proxy_is_honoured(in_process, trusted_proxy):
+    req = _FakeRequest("10.0.0.1", {"X-Forwarded-For": "203.0.113.9"})
+    assert ratelimit.client_ip(req) == "203.0.113.9"
+
+
+def test_a_spoofed_header_from_outside_the_trusted_range_is_rejected(in_process, trusted_proxy):
+    """The test the finding explicitly asks for. A caller connecting
+    directly — not through the configured proxy — gets the header ignored
+    and is bucketed on its own real, un-spoofable peer address, exactly as
+    it would be with no trusted proxy configured at all."""
+    req = _FakeRequest("203.0.113.66", {"X-Forwarded-For": "198.51.100.1"})
+    assert ratelimit.client_ip(req) == "203.0.113.66"
+
+
+def test_the_leftmost_forwarded_entry_is_the_one_trusted(in_process, trusted_proxy):
+    """A chain of `client, proxy1, proxy2` — the leftmost is the first hop's
+    claim about who the caller is, which for the one-trusted-proxy topology
+    this supports is the original client."""
+    req = _FakeRequest("10.0.0.1", {"X-Forwarded-For": "203.0.113.9, 10.0.0.1"})
+    assert ratelimit.client_ip(req) == "203.0.113.9"
+
+
+def test_a_malformed_forwarded_header_falls_back_to_the_direct_peer(in_process, trusted_proxy):
+    """A proxy is trusted to *forward*, not to always forward something
+    parseable. A bucket keyed on garbage is a limiter that quietly stops
+    limiting — the one failure this whole mechanism exists to avoid."""
+    req = _FakeRequest("10.0.0.1", {"X-Forwarded-For": "not-an-ip-address"})
+    assert ratelimit.client_ip(req) == "10.0.0.1"
+
+
+def test_an_empty_forwarded_header_falls_back_to_the_direct_peer(in_process, trusted_proxy):
+    req = _FakeRequest("10.0.0.1", {"X-Forwarded-For": ""})
+    assert ratelimit.client_ip(req) == "10.0.0.1"
+
+
+def test_a_sibling_address_outside_the_exact_trusted_ip_is_not_trusted(in_process, trusted_proxy):
+    """`/32` means exactly one address. A neighbour on the same subnet
+    (10.0.0.2) is not the configured proxy and must not be treated as one —
+    trust is granted to specific ranges, never implied by proximity."""
+    req = _FakeRequest("10.0.0.2", {"X-Forwarded-For": "203.0.113.9"})
+    assert ratelimit.client_ip(req) == "10.0.0.2"
+
+
+def test_a_cidr_range_trusts_every_address_inside_it(in_process, monkeypatch):
+    """The configured value is a CIDR *range*, not only a single host — a
+    proxy tier with several front-end addresses is a real topology, and the
+    setting supports it without listing each address."""
+    from core import config
+
+    monkeypatch.setattr(
+        config, "TRUSTED_PROXY_NETWORKS", config._parse_trusted_proxy_cidrs("10.0.0.0/24")
+    )
+    for host in ("10.0.0.1", "10.0.0.254"):
+        req = _FakeRequest(host, {"X-Forwarded-For": "203.0.113.9"})
+        assert ratelimit.client_ip(req) == "203.0.113.9", host
+
+
+def test_a_malformed_cidr_in_the_environment_fails_loudly_at_parse_time():
+    """A typo in `TRUSTED_PROXY_CIDR` is a security setting silently not
+    taking effect. That must be an immediate, loud error — not a value this
+    app boots with and nobody is ever told is wrong."""
+    from core import config
+
+    with pytest.raises(RuntimeError, match="TRUSTED_PROXY_CIDR"):
+        config._parse_trusted_proxy_cidrs("not-a-cidr-range")
+
+
 # -- the endpoint ----------------------------------------------------------
 
 BODY = {"book_id": 1, "book_name": "Animal Farm", "language": "en"}

@@ -11,6 +11,7 @@ without benefit.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import secrets
 from pathlib import Path
@@ -41,6 +42,62 @@ def _bool(name: str, default: bool = False) -> bool:
 ENV = os.getenv("ENV", "development").strip().lower()
 IS_PRODUCTION = ENV == "production"
 DEBUG = _bool("DEBUG", not IS_PRODUCTION)
+
+
+# --- Trusted proxy (F-55) ---------------------------------------------------
+#
+# `core.ratelimit.client_ip()` ignored `X-Forwarded-For` outright, which was
+# correct with nothing in front of this app but wrong the moment a real
+# reverse proxy sits in front of it (OI-3, undecided until now): every
+# caller would then share the proxy's one address, and the per-IP limit
+# would bound the whole site's traffic rather than each visitor's.
+#
+# Empty by default — on purpose, and the point of this setting. Honouring
+# the header from *any* source would let an attacker reset their own limit
+# by inventing one (the reason it was ignored outright before this existed).
+# Trust is granted to specific CIDR ranges, never implied by the header's
+# mere presence, and only the immediate TCP peer's address is checked
+# against them — a spoofed `X-Forwarded-For` from outside the proxy cannot
+# forge that peer address, which is the one thing this check relies on.
+#
+# Pairs with uvicorn's own `--proxy-headers --forwarded-allow-ips=<proxy
+# IP>` (documented in the production .env.example): that flag is what makes
+# `request.url.scheme` and redirect/cookie logic trust the proxy for HTTPS
+# detection, a different concern from this one. The two should name the
+# same proxy address, but neither depends on the other being set — this
+# check reads the header directly rather than relying on uvicorn to have
+# already rewritten `request.client.host`, so `client_ip()` behaves
+# correctly (refuses to trust the header) even if an operator forgets the
+# uvicorn flag, rather than silently inheriting whatever uvicorn decided.
+_TRUSTED_PROXY_CIDR_RAW = os.getenv("TRUSTED_PROXY_CIDR", "").strip()
+
+
+def _parse_trusted_proxy_cidrs(raw: str) -> tuple:
+    """Comma-separated CIDR ranges -> parsed networks. Empty input is not an
+    error — it is the secure default this whole section exists to keep.
+
+    A malformed entry *is* an error, raised at import time rather than
+    discovered the first time a request happens to arrive from a proxy: a
+    typo here is a security setting silently not taking effect, which
+    should fail loudly and immediately, not fail open.
+    """
+    networks = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(part, strict=False))
+        except ValueError as exc:
+            raise RuntimeError(
+                f"TRUSTED_PROXY_CIDR entry {part!r} is not a valid CIDR range "
+                f"(e.g. 10.0.0.5/32 or 10.0.0.0/24): {exc}"
+            ) from exc
+    return tuple(networks)
+
+
+TRUSTED_PROXY_CIDR = _TRUSTED_PROXY_CIDR_RAW
+TRUSTED_PROXY_NETWORKS = _parse_trusted_proxy_cidrs(_TRUSTED_PROXY_CIDR_RAW)
 
 
 # --- Database -------------------------------------------------------------
@@ -183,6 +240,7 @@ def summary() -> dict:
         "redis": REDIS_URL.rsplit("@", 1)[-1],
         "catalogue_languages": CATALOGUE_LANGUAGES,
         "google_books_key_present": bool(GOOGLE_BOOKS_API_KEY),
+        "trusted_proxy_cidr": TRUSTED_PROXY_CIDR or None,
         # OI-5: what would stop this configuration being deployable. Empty in
         # production by construction (the guard above refuses to boot
         # otherwise); on a laptop it is the standing to-do list, visible
