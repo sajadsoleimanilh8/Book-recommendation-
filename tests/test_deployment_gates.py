@@ -340,6 +340,17 @@ def test_production_refuses_to_boot_without_a_jwt_secret():
     assert "JWT_SECRET" in r.stderr, r.stderr[-2000:]
 
 
+def test_production_refuses_to_boot_on_an_unfilled_template_placeholder():
+    """`.env.production.example` copied to `.env` without filling it in.
+    An unfilled ANTHROPIC_API_KEY looks *present*, so the Claude chain would
+    be selected and 401 on every call — the Librarian degrading silently to
+    the classifier. Refused at boot instead, naming the field."""
+    r = _in_production("import main", ANTHROPIC_API_KEY="REPLACE_WITH_YOUR_ANTHROPIC_API_KEY")
+
+    assert r.returncode != 0, "booted in production with an unfilled placeholder"
+    assert "ANTHROPIC_API_KEY" in r.stderr, r.stderr[-2000:]
+
+
 def test_a_correctly_configured_production_boots():
     """A guard that nothing can satisfy is not a guard, it is a wall."""
     r = _in_production("import main; print('booted')")

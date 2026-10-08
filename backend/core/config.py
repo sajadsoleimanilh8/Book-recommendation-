@@ -210,6 +210,9 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 # is a published one.
 DEV_DEFAULT_PASSWORDS = {"digikitab_dev"}
 
+# Every placeholder in `.env.production.example` starts with this.
+PLACEHOLDER_PREFIX = "REPLACE_WITH"
+
 
 def production_problems() -> list[str]:
     """Settings that are fine on a laptop and unacceptable on a network.
@@ -226,6 +229,19 @@ def production_problems() -> list[str]:
         problems.append("REDIS_PASSWORD is empty — Redis would be unauthenticated")
     if DEBUG:
         problems.append("DEBUG is on")
+    # The production template's placeholders, copied over unfilled. The same
+    # gap as a development default, one step later: `.env.production.example`
+    # deliberately ships no usable value, so a value that still reads
+    # REPLACE_WITH... is a field nobody filled in — an ANTHROPIC_API_KEY that
+    # looks present and 401s on every call, degrading the Librarian silently.
+    unfilled = sorted(
+        name for name, value in os.environ.items()
+        if value.strip().startswith(PLACEHOLDER_PREFIX)
+    )
+    if unfilled:
+        problems.append(
+            "still set to the production template's placeholder: " + ", ".join(unfilled)
+        )
     return problems
 
 
