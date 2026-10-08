@@ -476,14 +476,22 @@ class Librarian:
             if not response.tool_calls:
                 text = _clean(response.content)
                 break
-            messages.append({
+            turn = {
                 "role": "assistant",
                 "content": response.content,
                 "tool_calls": [
                     {"function": {"name": c.name, "arguments": c.arguments}}
                     for c in response.tool_calls
                 ],
-            })
+            }
+            # Opaque provider state for this turn — Claude's thinking blocks
+            # and real tool_use ids, which must go back unchanged for the
+            # loop to continue (see `LLMResponse.native`). Added only when a
+            # provider set it, so the Ollama request body is byte-identical
+            # to before.
+            if response.native is not None:
+                turn["native"] = response.native
+            messages.append(turn)
             for call in response.tool_calls:
                 result = self._run_tool(call.name, call.arguments, ctx)
                 ctx.corpus.append(json.dumps(result, ensure_ascii=False))

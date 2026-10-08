@@ -633,3 +633,46 @@ def test_private_and_catalogue_results_are_not_conflated_in_one_answer():
     assert result.grounded, result.message
     titles = {b["title"] for b in result.books}
     assert titles == {"Notes on Grief", "My Uploaded Novel"}
+
+
+# -- provider-native turns (Claude's thinking blocks) ------------------------
+#
+# Claude requires thinking blocks to be passed back unchanged for a tool loop
+# to continue; Anthropic says dropping them "breaks the turn". This project's
+# history is OpenAI-shaped and has nowhere to put one, so a provider hands its
+# own form of the turn back as `LLMResponse.native` and the loop carries it.
+
+
+def test_a_native_turn_is_carried_back_unchanged_on_the_next_step():
+    native = [
+        {"type": "thinking", "thinking": "", "signature": "sig-abc"},
+        {"type": "tool_use", "id": "toolu_real_1", "name": "search_catalog",
+         "input": {"query": "grief"}},
+    ]
+    first = LLMResponse(
+        content="",
+        tool_calls=[ToolCall(id="toolu_real_1", name="search_catalog",
+                             arguments={"query": "grief"})],
+        model="claude",
+        native=native,
+    )
+    llm = Script(first, saying("ok"))
+    run(llm)
+
+    second_request, _ = llm.sent[1]
+    assistant_turns = [m for m in second_request if m.get("role") == "assistant"]
+    assert assistant_turns, "the tool-calling turn was not appended to history"
+    assert assistant_turns[-1]["native"] is native, (
+        "the provider's own turn did not make it back to the provider"
+    )
+
+
+def test_without_native_the_history_is_exactly_what_it_was_before():
+    """Ollama never sets `native`. Its request body must be byte-identical to
+    the one it got before this existed — no new key, not even a null one."""
+    llm = Script(calling(call("search_catalog", query="grief")), saying("ok"))
+    run(llm)
+
+    second_request, _ = llm.sent[1]
+    for message in second_request:
+        assert "native" not in message, message

@@ -3,6 +3,7 @@
 from .base import BookProvider, NormalizedBook, QuotaExceeded, clean_isbn, isbn_10_to_13
 from .google_books import GoogleBooksProvider
 from .llm import (
+    ClaudeProvider,
     FallbackLLM,
     LLMProvider,
     LLMResponse,
@@ -23,6 +24,7 @@ __all__ = [
     "clean_isbn",
     "isbn_10_to_13",
     "reconcile",
+    "ClaudeProvider",
     "FallbackLLM",
     "LLMProvider",
     "LLMResponse",

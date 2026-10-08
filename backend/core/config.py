@@ -191,6 +191,13 @@ CATALOGUE_LANGUAGES = [
 
 GOOGLE_BOOKS_API_KEY = os.getenv("GOOGLE_BOOKS_API_KEY", "").strip()
 
+# Section 10/12, applied to the AI Librarian (F-22 Phase B): Claude when a
+# key is configured, the local Ollama chain when it is not. Read here, not
+# via a bare `os.getenv` inside `services/providers/llm.py`, so every
+# credential this app holds is readable from one file (the same reason
+# GOOGLE_BOOKS_API_KEY lives here rather than inside `providers/google_books.py`).
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+
 
 # --- What production refuses to start with --------------------------------
 #
@@ -240,6 +247,7 @@ def summary() -> dict:
         "redis": REDIS_URL.rsplit("@", 1)[-1],
         "catalogue_languages": CATALOGUE_LANGUAGES,
         "google_books_key_present": bool(GOOGLE_BOOKS_API_KEY),
+        "anthropic_key_present": bool(ANTHROPIC_API_KEY),
         "trusted_proxy_cidr": TRUSTED_PROXY_CIDR or None,
         # OI-5: what would stop this configuration being deployable. Empty in
         # production by construction (the guard above refuses to boot

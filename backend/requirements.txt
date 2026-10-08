@@ -50,6 +50,14 @@ pypdf==6.19.0             # PDF text-layer extraction. Chosen over PyMuPDF,
                           # through a text extractor. pypdf is BSD-3-Clause,
                           # pure Python, and needs no system libraries.
 
+# --- AI Librarian: Claude (F-22 Phase B, 2026-10-06) ---
+# Only used when ANTHROPIC_API_KEY is set; without it the Ollama chain runs
+# and this package is never imported. The official SDK rather than raw HTTP:
+# it owns the wire format, version header, retries and typed errors.
+# anthropic 1.x is built on httpx2, a separate package from the httpx pinned
+# below for fastapi.testclient — the two coexist; neither replaces the other.
+anthropic==1.12.1
+
 # --- Tests ---
 pytest==9.1.1
 httpx==0.28.1             # required by fastapi.testclient
